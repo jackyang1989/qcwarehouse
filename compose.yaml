@@ -1,0 +1,13 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: qcwarehouse
+      POSTGRES_PASSWORD: qcwarehouse
+      POSTGRES_DB: qcwarehouse
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - qcwarehouse-db:/var/lib/postgresql/data
+volumes:
+  qcwarehouse-db:

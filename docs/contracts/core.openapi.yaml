@@ -1,0 +1,2841 @@
+openapi: 3.1.0
+info:
+  title: QC Warehouse R1 core transaction contracts
+  version: 1.0.0
+  description: 交易写链及轨迹读取。其余端点按开发规格指定章节。cookieSession包括临时onboarding会话，授权按x-roles。
+servers:
+- url: /api/v1
+paths:
+  /auth/registration/complete:
+    post:
+      operationId: completeRegistration
+      summary: 校验已验证邮箱及短时身份，在一个事务领码
+      security:
+      - cookieSession: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Registration'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - onboarding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - terms_version_ids
+              properties:
+                terms_version_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  minItems: 1
+              additionalProperties: false
+  /orders:
+    post:
+      operationId: createDraft
+      summary: 创建多项目草稿
+      security:
+      - cookieSession: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - lines
+              properties:
+                lines:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Line'
+                  minItems: 1
+                customer_notes:
+                  type: string
+                  minLength: 1
+              additionalProperties: false
+  /orders/{id}:
+    patch:
+      operationId: editDraft
+      summary: 校验草稿版本及所有权
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              - lines
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                lines:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Line'
+                  minItems: 1
+              additionalProperties: false
+  /orders/{id}/quotes:
+    post:
+      operationId: quoteOrder
+      summary: 核验逐行能力、数量档、附加项及交期后锁定价格
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Quote'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+              additionalProperties: false
+  /orders/{id}/submit:
+    post:
+      operationId: submitOrder
+      summary: 接受尚有效的报价并创建收费项
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - order
+                - charge
+                properties:
+                  order:
+                    $ref: '#/components/schemas/Order'
+                  charge:
+                    $ref: '#/components/schemas/Charge'
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              - quote_id
+              - terms_version_ids
+              - acknowledgements
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                quote_id:
+                  type: string
+                  format: uuid
+                terms_version_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  minItems: 1
+                acknowledgements:
+                  type: object
+                  required:
+                  - scope_notice
+                  - samples_not_batch
+                  - seller_refund_is_mine
+                  - no_certification
+                  - restricted_items
+                  properties:
+                    scope_notice:
+                      const: true
+                    samples_not_batch:
+                      const: true
+                    seller_refund_is_mine:
+                      const: true
+                    no_certification:
+                      const: true
+                    restricted_items:
+                      const: true
+                  additionalProperties: false
+              additionalProperties: false
+  /charges/{id}/checkout:
+    post:
+      operationId: checkout
+      summary: 创建或复用 Stripe Checkout 尝试
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Checkout'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - quote_revision
+              properties:
+                quote_revision:
+                  type: integer
+                  minimum: 1
+              additionalProperties: false
+  /me/parcels:
+    post:
+      operationId: adviseParcel
+      summary: 允许零订单登记或关联多个本人订单
+      security:
+      - cookieSession: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Parcel'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - tracking_no
+              - address_id
+              properties:
+                tracking_no:
+                  type: string
+                  minLength: 1
+                address_id:
+                  type: string
+                  format: uuid
+                carrier_code:
+                  type: string
+                  minLength: 1
+                order_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  minItems: 0
+              additionalProperties: false
+  /staff/intake/lookup:
+    post:
+      operationId: lookupParcel
+      summary: 按实际运单查询，歧义交人工核实
+      security:
+      - cookieSession: []
+      parameters: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - match_state
+                - order_ids
+                properties:
+                  match_state:
+                    type: string
+                    enum:
+                    - unmatched
+                    - user_only
+                    - matched
+                    - ambiguous
+                  order_ids:
+                    type: array
+                    items:
+                      type: string
+                      format: uuid
+                    minItems: 0
+                  receiving_code:
+                    type: string
+                    minLength: 1
+                  advice_id:
+                    type: string
+                    format: uuid
+                  package_id:
+                    type: string
+                    format: uuid
+                  candidate_count:
+                    type: integer
+                    minimum: 0
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - receiver
+      - warehouse_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - tracking_no
+              properties:
+                tracking_no:
+                  type: string
+                  minLength: 1
+                carrier_code:
+                  type: string
+                  minLength: 1
+              additionalProperties: false
+  /staff/intake/check-in:
+    post:
+      operationId: checkIn
+      summary: 实收后记录入仓；可在无委托时操作
+      security:
+      - cookieSession: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Parcel'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - receiver
+      - warehouse_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - tracking_no
+              - outer_media_ids
+              properties:
+                tracking_no:
+                  type: string
+                  minLength: 1
+                outer_media_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  minItems: 1
+                carrier_code:
+                  type: string
+                  minLength: 1
+                weight_g:
+                  type: integer
+                  minimum: 1
+                advice_id:
+                  type: string
+                  format: uuid
+              additionalProperties: false
+  /staff/packages/{id}/items:
+    post:
+      operationId: intakeItems
+      summary: 每件入库编号，可分批拆包
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - item_ids
+                - revision
+                properties:
+                  item_ids:
+                    type: array
+                    items:
+                      type: string
+                      format: uuid
+                    minItems: 1
+                  revision:
+                    type: integer
+                    minimum: 1
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - receiver
+      - warehouse_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              - items
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                    - code
+                    - location_id
+                    properties:
+                      code:
+                        type: string
+                        minLength: 1
+                      location_id:
+                        type: string
+                        format: uuid
+                      component_of:
+                        type: string
+                        format: uuid
+                    additionalProperties: false
+                  minItems: 1
+              additionalProperties: false
+  /staff/items/{id}/assign:
+    post:
+      operationId: assignItem
+      summary: 实物归属、委托位置及识别证据核对后绑定
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - assignment_id
+                - revision
+                properties:
+                  assignment_id:
+                    type: string
+                    format: uuid
+                  revision:
+                    type: integer
+                    minimum: 1
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - receiver
+      - warehouse_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              - order_line_id
+              - expected_item_id
+              - evidence_ids
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                order_line_id:
+                  type: string
+                  format: uuid
+                expected_item_id:
+                  type: string
+                  format: uuid
+                evidence_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  minItems: 1
+              additionalProperties: false
+  /staff/inspection-tasks/{id}/start:
+    post:
+      operationId: startTask
+      summary: 锁定本任务，允许同订单其他独立任务同时作业
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - inspector
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+              additionalProperties: false
+  /staff/inspection-tasks/{id}/results:
+    put:
+      operationId: recordResults
+      summary: 按锁定模板检查类型、单位、证据与原因，整批写入
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - inspector
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              - results
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                results:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Result'
+                  minItems: 1
+              additionalProperties: false
+  /staff/inspection-tasks/{id}/submit:
+    post:
+      operationId: submitTask
+      summary: 检查完整性并交复核
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - inspector
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+              additionalProperties: false
+  /staff/orders/{id}/report/submit:
+    post:
+      operationId: submitReport
+      summary: 按全部委托范围核验任务并冻结候选快照
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Report'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - inspector
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - task_ids
+              - revision
+              properties:
+                task_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  minItems: 1
+                revision:
+                  type: integer
+                  minimum: 1
+              additionalProperties: false
+  /staff/reports/{id}/approve:
+    post:
+      operationId: approveReport
+      summary: 独立审批后异步生成PDF，等待发布
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Report'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - reviewer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - checklist
+              - revision
+              properties:
+                checklist:
+                  type: array
+                  items:
+                    type: string
+                    minLength: 1
+                  minItems: 1
+                revision:
+                  type: integer
+                  minimum: 1
+              additionalProperties: false
+  /orders/{id}/dispositions:
+    post:
+      operationId: instruct
+      summary: 仅授权本人实物，商家寄回需客户提供地址
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instruction'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - item_id
+              - action
+              - terms_version_id
+              properties:
+                item_id:
+                  type: string
+                  format: uuid
+                action:
+                  type: string
+                  enum:
+                  - to_forwarder
+                  - to_domestic_address
+                  - return_to_seller
+                  - retain
+                  - reserve_reference
+                terms_version_id:
+                  type: string
+                  format: uuid
+                destination:
+                  type: object
+                  properties:
+                    recipient:
+                      type: string
+                      minLength: 1
+                    phone:
+                      type: string
+                      minLength: 1
+                    address:
+                      type: string
+                      minLength: 1
+                    member_code:
+                      type: string
+                      minLength: 1
+                  required:
+                  - recipient
+                  - phone
+                  - address
+                  additionalProperties: false
+                return_info:
+                  type: object
+                  required:
+                  - requested_from_seller
+                  - customer_pays_shipping
+                  properties:
+                    requested_from_seller:
+                      const: true
+                    customer_pays_shipping:
+                      const: true
+                    deadline:
+                      type: string
+                      format: date-time
+                  additionalProperties: false
+              additionalProperties: false
+              allOf:
+              - if:
+                  properties:
+                    action:
+                      enum:
+                      - return_to_seller
+                      - to_domestic_address
+                      - to_forwarder
+                then:
+                  required:
+                  - destination
+              - if:
+                  properties:
+                    action:
+                      const: return_to_seller
+                then:
+                  required:
+                  - return_info
+              - if:
+                  properties:
+                    action:
+                      const: to_forwarder
+                then:
+                  properties:
+                    destination:
+                      required:
+                      - member_code
+  /dispatch-batches:
+    post:
+      operationId: planBatch
+      summary: 校验同一组织、地址及动作，形成预览
+      security:
+      - cookieSession: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - batch_id
+                - revision
+                properties:
+                  batch_id:
+                    type: string
+                    format: uuid
+                  revision:
+                    type: integer
+                    minimum: 1
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - disposition_ids
+              properties:
+                disposition_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  minItems: 1
+              additionalProperties: false
+  /dispatch-batches/{id}/confirm:
+    post:
+      operationId: confirmBatch
+      summary: 确认精确清单并保存授权
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - batch_id
+                - revision
+                properties:
+                  batch_id:
+                    type: string
+                    format: uuid
+                  revision:
+                    type: integer
+                    minimum: 1
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+              additionalProperties: false
+  /staff/dispatch-batches/{id}/quote:
+    post:
+      operationId: quoteBatch
+      summary: 校验逐包重量与成员，按批次出版本报价
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - quote_id
+                - revision
+                - amount_cents
+                properties:
+                  quote_id:
+                    type: string
+                    format: uuid
+                  revision:
+                    type: integer
+                    minimum: 1
+                  amount_cents:
+                    type: integer
+                    minimum: 0
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - warehouse_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              - rate_version_id
+              - parcels
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                rate_version_id:
+                  type: string
+                  format: uuid
+                parcels:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                    - item_ids
+                    - weight_g
+                    properties:
+                      item_ids:
+                        type: array
+                        items:
+                          type: string
+                          format: uuid
+                        minItems: 1
+                      weight_g:
+                        type: integer
+                        minimum: 1
+                    additionalProperties: false
+                  minItems: 1
+              additionalProperties: false
+  /quotes/{id}/accept:
+    post:
+      operationId: acceptShippingQuote
+      summary: 确认国内寄件或保管费用
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Charge'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+              additionalProperties: false
+  /staff/shipments/{id}/handover:
+    post:
+      operationId: handover
+      summary: 已付且有逐件授权时实际交接，原子登记出库和跟踪
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - shipment_id
+                - tracking_id
+                - state
+                properties:
+                  shipment_id:
+                    type: string
+                    format: uuid
+                  tracking_id:
+                    type: string
+                    format: uuid
+                  state:
+                    type: string
+                    enum:
+                    - shipped
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - warehouse_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              - item_ids
+              - carrier_code
+              - tracking_no
+              - evidence_ids
+              - handed_at
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                item_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  minItems: 1
+                carrier_code:
+                  type: string
+                  minLength: 1
+                tracking_no:
+                  type: string
+                  minLength: 1
+                evidence_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  minItems: 1
+                handed_at:
+                  type: string
+                  format: date-time
+              additionalProperties: false
+  /staff/shipments/{id}/receive-return:
+    post:
+      operationId: receiveShipmentReturn
+      summary: 仓库确认实际退回的物件并登记库位
+      security:
+      - cookieSession: []
+      x-roles:
+      - warehouse_admin
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, item_ids, evidence_ids, location_id, received_at]
+              additionalProperties: false
+              properties:
+                revision: {type: integer, minimum: 1}
+                item_ids:
+                  type: array
+                  minItems: 1
+                  uniqueItems: true
+                  items: {type: string, format: uuid}
+                evidence_ids:
+                  type: array
+                  minItems: 1
+                  items: {type: string, format: uuid}
+                location_id: {type: string, format: uuid}
+                received_at: {type: string, format: date-time}
+      responses:
+        '200':
+          description: 本次已确认的退回件及整包退回状态
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [shipment_id, revision, received_item_ids, return_status]
+                additionalProperties: false
+                properties:
+                  shipment_id: {type: string, format: uuid}
+                  revision: {type: integer, minimum: 1}
+                  received_item_ids:
+                    type: array
+                    items: {type: string, format: uuid}
+                  return_status: {type: string, enum: [partial, complete]}
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /me/parcels/{id}/tracking:
+    get:
+      operationId: trackInbound
+      summary: 验证归属并读脱敏缓存
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: locale
+        in: query
+        schema:
+          type: string
+          enum:
+          - en
+          - zh-CN
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tracking'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+  /shipments/{id}/tracking:
+    get:
+      operationId: trackOutbound
+      summary: 验证归属并读脱敏缓存
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: locale
+        in: query
+        schema:
+          type: string
+          enum:
+          - en
+          - zh-CN
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tracking'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+  /staff/orders/{id}/refunds:
+    post:
+      operationId: requestRefund
+      summary: 核验收费归属及可退余额
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - refund_id
+                - state
+                properties:
+                  refund_id:
+                    type: string
+                    format: uuid
+                  state:
+                    type: string
+                    minLength: 1
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - support
+      - super_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - payment_id
+              - amount_cents
+              - reason
+              properties:
+                payment_id:
+                  type: string
+                  format: uuid
+                amount_cents:
+                  type: integer
+                  minimum: 1
+                reason:
+                  type: string
+                  minLength: 1
+              additionalProperties: false
+  /staff/refunds/{id}/approve:
+    post:
+      operationId: approveRefund
+      summary: 最近MFA，锁定余额后异步请求原路退款
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - refund_id
+                - state
+                properties:
+                  refund_id:
+                    type: string
+                    format: uuid
+                  state:
+                    type: string
+                    minLength: 1
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - super_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+              additionalProperties: false
+  /me/items:
+    get:
+      operationId: ownedItems
+      summary: 本人已认领的仓内实物，包括待委托件
+      security:
+      - cookieSession: []
+      parameters: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                      - item_id
+                      - code
+                      - custody_state
+                      - allowed_actions
+                      properties:
+                        item_id:
+                          type: string
+                          format: uuid
+                        code:
+                          type: string
+                          minLength: 1
+                        custody_state:
+                          type: string
+                          minLength: 1
+                        allowed_actions:
+                          type: array
+                          items:
+                            type: string
+                            minLength: 1
+                          minItems: 0
+                      additionalProperties: false
+                    minItems: 0
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+  /me/items/{id}/dispositions:
+    post:
+      operationId: instructWithoutOrder
+      summary: 未委托物件的授权，和订单入口共用指令服务
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instruction'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - action
+              - terms_version_id
+              properties:
+                action:
+                  type: string
+                  enum:
+                  - to_forwarder
+                  - to_domestic_address
+                  - return_to_seller
+                  - retain
+                  - reserve_reference
+                terms_version_id:
+                  type: string
+                  format: uuid
+                destination:
+                  type: object
+                  properties:
+                    recipient:
+                      type: string
+                      minLength: 1
+                    phone:
+                      type: string
+                      minLength: 1
+                    address:
+                      type: string
+                      minLength: 1
+                    member_code:
+                      type: string
+                      minLength: 1
+                  required:
+                  - recipient
+                  - phone
+                  - address
+                  additionalProperties: false
+                return_info:
+                  type: object
+                  required:
+                  - requested_from_seller
+                  - customer_pays_shipping
+                  properties:
+                    requested_from_seller:
+                      const: true
+                    customer_pays_shipping:
+                      const: true
+                    deadline:
+                      type: string
+                      format: date-time
+                  additionalProperties: false
+              additionalProperties: false
+              allOf:
+              - if:
+                  properties:
+                    action:
+                      enum:
+                      - return_to_seller
+                      - to_domestic_address
+                      - to_forwarder
+                then:
+                  required:
+                  - destination
+              - if:
+                  properties:
+                    action:
+                      const: return_to_seller
+                then:
+                  required:
+                  - return_info
+              - if:
+                  properties:
+                    action:
+                      const: to_forwarder
+                then:
+                  properties:
+                    destination:
+                      required:
+                      - member_code
+  /me/billing:
+    get:
+      operationId: billing
+      summary: 按收费项列检查、合包运费和保管账目
+      security:
+      - cookieSession: []
+      parameters: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - charges
+                properties:
+                  charges:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Bill'
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+  /me/reference-samples:
+    get:
+      operationId: references
+      summary: 返回本组织已授权参考样及有效期
+      security:
+      - cookieSession: []
+      parameters: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                      - reference_id
+                      - item_id
+                      - state
+                      - expires_at
+                      properties:
+                        reference_id:
+                          type: string
+                          format: uuid
+                        item_id:
+                          type: string
+                          format: uuid
+                        state:
+                          type: string
+                          minLength: 1
+                        expires_at:
+                          type: string
+                          format: date-time
+                      additionalProperties: false
+                    minItems: 0
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+  /staff/dispatch-batches/{id}/parcels:
+    post:
+      operationId: packShipment
+      summary: 扫描逐包清单并核对已付授权包裹计划
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - shipment_id
+                - revision
+                properties:
+                  shipment_id:
+                    type: string
+                    format: uuid
+                  revision:
+                    type: integer
+                    minimum: 1
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - warehouse_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              - quote_id
+              - item_ids
+              - weight_g
+              - packed_media_ids
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                quote_id:
+                  type: string
+                  format: uuid
+                item_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  minItems: 1
+                weight_g:
+                  type: integer
+                  minimum: 1
+                packed_media_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  minItems: 1
+              additionalProperties: false
+  /orders/{id}/scope-revisions:
+    post:
+      operationId: proposeScope
+      summary: 记录变更前后范围与差价
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - scope_revision_id
+                - adjustment_cents
+                properties:
+                  scope_revision_id:
+                    type: string
+                    format: uuid
+                  adjustment_cents:
+                    type: integer
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+      - support
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              - reason
+              - positions
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                reason:
+                  type: string
+                  minLength: 1
+                positions:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  minItems: 1
+              additionalProperties: false
+  /scope-revisions/{id}/accept:
+    post:
+      operationId: acceptScope
+      summary: 用户确认范围，正差价支付后生效，负差价生成退款待办
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - scope_revision_id
+                - state
+                properties:
+                  scope_revision_id:
+                    type: string
+                    format: uuid
+                  state:
+                    type: string
+                    minLength: 1
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+              additionalProperties: false
+  /orders/{id}/report/versions/{n}/pdf:
+    get:
+      operationId: reportPDF
+      summary: 下载已发布指定版本前再次核验组织
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: n
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+        in: path
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - url
+                - expires_at
+                - version
+                properties:
+                  url:
+                    type: string
+                    minLength: 1
+                  expires_at:
+                    type: string
+                    format: date-time
+                  version:
+                    type: integer
+                    minimum: 1
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
+  /staff/payments/{id}/refunds:
+    post:
+      operationId: requestPaymentRefund
+      summary: 跨订单运费及零订单收费按付款申请退款
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - refund_id
+                - state
+                properties:
+                  refund_id:
+                    type: string
+                    format: uuid
+                  state:
+                    type: string
+                    minLength: 1
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - support
+      - super_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - amount_cents
+              - reason
+              properties:
+                amount_cents:
+                  type: integer
+                  minimum: 1
+                reason:
+                  type: string
+                  minLength: 1
+              additionalProperties: false
+  /staff/orders/{id}/quotes:
+    post:
+      operationId: issueManualQuote
+      summary: 对本人负责的人工询价，锁定逐行金额、交期和到期时间后发客户确认
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+        in: path
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Quote'
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - support
+      - super_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - revision
+              - reason
+              - expires_at
+              - lines
+              - terms_version_ids
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                reason:
+                  type: string
+                  minLength: 1
+                expires_at:
+                  type: string
+                  format: date-time
+                terms_version_ids:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    format: uuid
+                lines:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                    - order_line_id
+                    - amount_cents
+                    - business_days
+                    properties:
+                      order_line_id:
+                        type: string
+                        format: uuid
+                      amount_cents:
+                        type: integer
+                        minimum: 0
+                      business_days:
+                        type: integer
+                        minimum: 1
+components:
+  schemas:
+    Error:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+              minLength: 1
+            message:
+              type: string
+              minLength: 1
+            details:
+              type: object
+          additionalProperties: false
+      additionalProperties: false
+    Line:
+      type: object
+      required:
+      - category_id
+      - offer_id
+      - quantity
+      properties:
+        category_id:
+          type: string
+          format: uuid
+        offer_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+        options:
+          type: object
+          additionalProperties: true
+          description: Published template or versioned snapshot defines keys.
+        attributes:
+          type: object
+          additionalProperties: true
+          description: Published template or versioned snapshot defines keys.
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+            description: Published template or versioned snapshot defines keys.
+          minItems: 0
+      additionalProperties: false
+    Order:
+      type: object
+      required:
+      - id
+      - public_no
+      - state
+      - revision
+      properties:
+        id:
+          type: string
+          format: uuid
+        public_no:
+          type: string
+          minLength: 1
+        state:
+          type: string
+          minLength: 1
+        revision:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    Quote:
+      type: object
+      required:
+      - id
+      - order_id
+      - revision
+      - currency
+      - amount_cents
+      - expires_at
+      - line_snapshot
+      properties:
+        id:
+          type: string
+          format: uuid
+        order_id:
+          type: string
+          format: uuid
+        revision:
+          type: integer
+          minimum: 1
+        currency:
+          type: string
+          enum:
+          - USD
+        amount_cents:
+          type: integer
+          minimum: 0
+        expires_at:
+          type: string
+          format: date-time
+        line_snapshot:
+          type: array
+          items:
+            $ref: '#/components/schemas/QuoteLine'
+          minItems: 1
+      additionalProperties: false
+    Task:
+      type: object
+      required:
+      - id
+      - state
+      - revision
+      - template_version_id
+      properties:
+        id:
+          type: string
+          format: uuid
+        state:
+          type: string
+          minLength: 1
+        revision:
+          type: integer
+          minimum: 1
+        template_version_id:
+          type: string
+          format: uuid
+      additionalProperties: false
+    Charge:
+      type: object
+      required:
+      - charge_item_id
+      - amount_cents
+      - currency
+      properties:
+        charge_item_id:
+          type: string
+          format: uuid
+        amount_cents:
+          type: integer
+          minimum: 0
+        currency:
+          type: string
+          enum:
+          - USD
+        state:
+          type: string
+          enum:
+          - open
+          - processing
+          - paid
+          - void
+      additionalProperties: false
+    Parcel:
+      type: object
+      required:
+      - id
+      - state
+      - revision
+      properties:
+        id:
+          type: string
+          format: uuid
+        state:
+          type: string
+          minLength: 1
+        revision:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    Result:
+      type: object
+      required:
+      - item_key
+      - component
+      - attempt
+      - status
+      - method
+      - is_final
+      properties:
+        item_key:
+          type: string
+          minLength: 1
+        component:
+          type: string
+          minLength: 1
+        attempt:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum:
+          - RECORDED
+          - OBSERVED_ISSUE
+          - NOT_OBSERVED
+          - NOT_TESTED
+          - NOT_APPLICABLE
+          - BLOCKED
+        method:
+          type: string
+          minLength: 1
+        is_final:
+          type: boolean
+        typed_value: {}
+        unit:
+          type: string
+          minLength: 1
+        reason:
+          type: string
+          minLength: 1
+        evidence_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          minItems: 0
+        details:
+          type: object
+          description: Template-validated severity, part and bilingual observations
+      additionalProperties: false
+      allOf:
+      - if:
+          properties:
+            status:
+              enum:
+              - BLOCKED
+              - NOT_TESTED
+              - NOT_APPLICABLE
+        then:
+          required:
+          - reason
+          properties:
+            typed_value:
+              type: 'null'
+      - if:
+          properties:
+            status:
+              const: RECORDED
+        then:
+          required:
+          - typed_value
+          properties:
+            typed_value:
+              not:
+                type: 'null'
+    Tracking:
+      type: object
+      required:
+      - tracking_id
+      - direction
+      - carrier
+      - tracking_no
+      - transport_state
+      - sync_state
+      - locale
+      - translation_status
+      - events
+      - allowed_actions
+      properties:
+        tracking_id:
+          type: string
+          format: uuid
+        direction:
+          type: string
+          minLength: 1
+        carrier:
+          type:
+          - string
+          - 'null'
+        tracking_no:
+          type: string
+          minLength: 1
+        transport_state:
+          type: string
+          minLength: 1
+        sync_state:
+          type: string
+          minLength: 1
+        locale:
+          type: string
+          enum:
+          - en
+          - zh-CN
+        translation_status:
+          type: string
+          minLength: 1
+        events:
+          type: array
+          items:
+            type: object
+            required:
+            - id
+            - text
+            - source
+            properties:
+              id:
+                type: string
+                minLength: 1
+              text:
+                type: string
+                minLength: 1
+              source:
+                type: string
+                minLength: 1
+              occurred_at:
+                type: string
+                format: date-time
+              location:
+                type: string
+                minLength: 1
+              status_code:
+                type: string
+                minLength: 1
+            additionalProperties: false
+          minItems: 0
+        allowed_actions:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          minItems: 0
+        warehouse_state:
+          type:
+          - string
+          - 'null'
+        last_success_at:
+          type: string
+          format: date-time
+        latest_event_at:
+          type: string
+          format: date-time
+        localized_snapshot_at:
+          type: string
+          format: date-time
+        next_allowed_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    Instruction:
+      type: object
+      required:
+      - id
+      - item_id
+      - state
+      - revision
+      properties:
+        id:
+          type: string
+          format: uuid
+        item_id:
+          type: string
+          format: uuid
+        state:
+          type: string
+          minLength: 1
+        revision:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+    Report:
+      type: object
+      required:
+      - id
+      - version
+      - state
+      properties:
+        id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+        state:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    Registration:
+      type: object
+      required:
+      - user_id
+      - org_id
+      - receiving_code
+      - warehouse_address_status
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        org_id:
+          type: string
+          format: uuid
+        receiving_code:
+          type: string
+          minLength: 1
+        warehouse_address_status:
+          type: string
+          enum:
+          - available
+          - pending
+        warehouse_address:
+          oneOf:
+          - type: 'null'
+          - type: object
+            additionalProperties: false
+            required:
+            - recipient
+            - phone
+            - address_zh
+            - address_en
+            properties:
+              recipient:
+                type: string
+                minLength: 1
+              phone:
+                type: string
+                minLength: 1
+              address_zh:
+                type: string
+                minLength: 1
+              address_en:
+                type: string
+                minLength: 1
+      additionalProperties: false
+    Checkout:
+      oneOf:
+      - type: object
+        required:
+        - state
+        - attempt_id
+        - checkout_url
+        properties:
+          state:
+            type: string
+            enum:
+            - requires_payment
+          attempt_id:
+            type: string
+            format: uuid
+          checkout_url:
+            type: string
+            format: uri
+        additionalProperties: false
+      - type: object
+        required:
+        - state
+        - charge_item_id
+        properties:
+          state:
+            type: string
+            enum:
+            - processing
+            - paid
+          charge_item_id:
+            type: string
+            format: uuid
+        additionalProperties: false
+    QuoteLine:
+      type: object
+      additionalProperties: false
+      required:
+      - order_line_id
+      - category_id
+      - offer_id
+      - template_version_id
+      - quantity
+      - price_version
+      - amount_cents
+      - business_days
+      properties:
+        order_line_id:
+          type: string
+          format: uuid
+        category_id:
+          type: string
+          format: uuid
+        offer_id:
+          type: string
+          format: uuid
+        template_version_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+        price_version:
+          type: string
+          format: uuid
+        amount_cents:
+          type: integer
+          minimum: 0
+        business_days:
+          type: integer
+          minimum: 1
+        options:
+          type: object
+        capacity_note:
+          type: string
+          minLength: 1
+    Bill:
+      type: object
+      additionalProperties: false
+      required:
+      - charge_item_id
+      - purpose
+      - state
+      - amount_cents
+      - currency
+      - refunded_cents
+      - order_ids
+      properties:
+        charge_item_id:
+          type: string
+          format: uuid
+        purpose:
+          enum:
+          - inspection
+          - dispatch
+          - storage
+        state:
+          type: string
+          minLength: 1
+        amount_cents:
+          type: integer
+          minimum: 0
+        currency:
+          const: USD
+        refunded_cents:
+          type: integer
+          minimum: 0
+        order_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        batch_id:
+          type: string
+          format: uuid
+        receipt_url:
+          type: string
+          format: uri
+        latest_attempt_state:
+          type: string
+          minLength: 1
+  securitySchemes:
+    cookieSession:
+      type: apiKey
+      in: cookie
+      name: session

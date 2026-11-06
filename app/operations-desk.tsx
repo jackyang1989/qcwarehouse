@@ -13,12 +13,17 @@ const jobNames:Record<string,string>={
 };
 export function OperationsDesk() {
   const {data,error,reload}=useLoad("/staff/admin/jobs");
+  const [emailState,setEmailState]=useState("");
+  const email=useLoad("/staff/admin/email-deliveries"+(emailState?"?state="+encodeURIComponent(emailState):""));
   const [reauth,setReauth]=useState(false);
   const [scheduled,setScheduled]=useState<string>();
+  const [retriedEmail,setRetriedEmail]=useState<string>();
   return <>
-    <div className="page-head"><p className="eyebrow">OPERATIONS / BACKGROUND JOBS</p><h1>后台作业恢复</h1>
-      <p className="muted">核对失败原因，完成修复后重新安排原作业。</p></div>
+    <div className="page-head"><p className="eyebrow">OPERATIONS / BACKGROUND JOBS</p><h1>后台作业与邮件通道恢复</h1>
+      <p className="muted">核对失败原因、邮件通道告警与退信抑制状态，完成修复后重新安排作业或受控补发通知。</p></div>
     {error&&<ErrorBlock error={error}/>}
+    {email.error&&<ErrorBlock error={email.error}/>}
+    {email.data?.channel_alert?.message&&<div className="notice" role="alert"><strong>邮件通道独立告警：</strong>{email.data.channel_alert.message}</div>}
     {!data&&!error&&<p role="status">正在读取失败队列…</p>}
     {data&&!error&&<Panel title="失败待处理">
       {!data.rows.length&&<Empty>当前没有可重排的失败作业。</Empty>}
@@ -43,7 +48,43 @@ export function OperationsDesk() {
       </details>)}
       <button type="button" onClick={reload}>刷新作业状态</button>
     </Panel>}
+    <Panel title="邮件投递与退信抑制">
+      <div className="form inline-form">
+        <label>投递状态<select value={emailState} onChange={e=>setEmailState(e.target.value)}>
+          <option value="">全部状态</option>
+          <option value="unknown">超时未知 (unknown)</option>
+          <option value="deferred">延后待重试 (deferred)</option>
+          <option value="bounced">硬退信 (bounced)</option>
+          <option value="complained">垃圾投诉 (complained)</option>
+          <option value="submitted">已提交供应商 (submitted)</option>
+          <option value="delivered">已送达 (delivered)</option>
+          <option value="queued">排队中 (queued)</option>
+        </select></label>
+        <button type="button" onClick={email.reload}>刷新邮件状态</button>
+      </div>
+      {email.data&&!email.data.rows.length&&<Empty>当前筛选条件下没有邮件投递记录。</Empty>}
+      {email.data?.rows.map((row:Row)=><details className="card" key={row.id}>
+        <summary><span className="code">{row.masked_email}</span> · {jobNames[row.template]??row.template} · 尝试 #{row.attempt} · <Tag>{row.state}</Tag>{row.suppressed&&<> · <Tag>地址已抑制 ({row.delivery_state})</Tag></>}</summary>
+        <Table headers={["关联订单","供应商 MessageID","地址状态","错误码","更新时间"]} rows={[[
+          row.order_public_no?<Link href={"/admin/orders/"+row.order_public_no}>{row.order_public_no}</Link>:"—",
+          row.provider_message_id??"—",
+          row.delivery_state,
+          row.error_code??"—",
+          stamp(row.updated_at),
+        ]]}/>
+        {row.can_retry&&<Form label="新建下一投递尝试 (attempt + 1)" run={async fields=>{
+          try {
+            await request("/staff/admin/email-deliveries/"+row.id+"/retry","POST",{attempt:row.attempt,reason:text(fields,"reason")});
+            setRetriedEmail(row.id);email.reload();
+          } catch(e) {
+            if(e instanceof RequestError&&e.code==="STAFF_REAUTH_REQUIRED")setReauth(true);
+            throw e;
+          }
+        }}><label>核查结论与重发原因<textarea name="reason" required minLength={4} maxLength={1000}/></label></Form>}
+      </details>)}
+    </Panel>
     {scheduled&&<p className="notice" role="status">作业 #{scheduled} 已重新排队，处理结果请刷新核对。</p>}
+    {retriedEmail&&<p className="notice" role="status">邮件记录 {retriedEmail} 已创建新投递尝试并加入队列。</p>}
     {reauth&&<p className="notice"><Link href="/staff/login?next=%2Fadmin%2Foperations">重新验证员工身份后继续</Link></p>}
   </>;
 }

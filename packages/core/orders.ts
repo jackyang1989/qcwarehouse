@@ -17,7 +17,7 @@ export const priceSchema=z.object({
 }).refine(p=>p.maximum>=p.minimum && Number(!!p.unit_cents)+Number(!!p.package_cents)===1);
 export type LineInput={category_id:string; offer_id:string; quantity:number; options?:object; attributes?:object; items?:object[]};
 const offersSql=`
-  select o.id offer_id,o.sku_code,o.title,c.id category_id,c.labels category,t.id template_version_id,t.content,
+  select o.id offer_id,o.sku_code,o.title,c.id category_id,c.labels category,c.admission_snapshot,t.id template_version_id,t.content,
     st.code service,p.id price_version,p.rules
   from service_offers o join service_types st on st.id=o.service_type_id
   join offer_templates ot on ot.offer_id=o.id join categories c on c.id=ot.category_id
@@ -29,12 +29,17 @@ const offersSql=`
     and not exists(select 1 from template_capabilities tc join capabilities cap on cap.id=tc.capability_id
       where tc.template_version_id=t.id and (cap.revoked_at is not null or cap.approved_by is null))
 `;
+function allowOfferRow(row:{rules?:{demo?:boolean};admission_snapshot?:{demo?:boolean}}) {
+  return isDemo() || (row.rules?.demo!==true && row.admission_snapshot?.demo!==true);
+}
 export async function catalog(db: DB) {
-  return (await db.query(offersSql+" order by o.sku_code,t.version desc")).rows.filter(row=>isDemo() || row.rules.demo!==true);
+  return (await db.query(offersSql+" order by o.sku_code,t.version desc")).rows
+    .filter(allowOfferRow)
+    .map(({admission_snapshot: _admission, ...rest}) => rest);
 }
 async function eligible(db: DB, line: LineInput,manual=false) {
   const offer=(await db.query(offersSql+" and o.id=$1 and c.id=$2 order by t.version desc limit 1",[line.offer_id,line.category_id])).rows[0];
-  guard(offer && (isDemo() || offer.rules.demo!==true),"OFFER_UNAVAILABLE","This offer is not available.");
+  guard(offer && allowOfferRow(offer),"OFFER_UNAVAILABLE","This offer is not available.");
   const p=priceSchema.parse(offer.rules);
   guard(line.quantity>=p.minimum && (!line.items || line.items.length<=line.quantity) &&
     (offer.service!=="compare" || [2,3].includes(line.quantity)), "QUANTITY_UNAVAILABLE","Choose a valid quantity for this service.",422);

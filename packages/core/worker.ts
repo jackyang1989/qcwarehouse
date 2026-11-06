@@ -2,6 +2,7 @@ import { pool, transaction } from "../db";
 import { publishReport } from "./inspection";
 import { executeRefund } from "./payments";
 import { consumeTrackingCallback, subscribeTrackingOnce, syncTrackingOnce } from "./logistics";
+import { consumeEmailWebhook, deliverEmailOnce, queueNotificationEmail } from "./email";
 import { audit, guard, one, role, type Actor } from "./common";
 import { requireStaffMfa } from "./auth";
 import type { DB } from "../db";
@@ -51,13 +52,18 @@ export async function workOnce() {
           (select org_id from dispatch_batches where id=$3),(select b.org_id from shipments s join dispatch_batches b on b.id=s.batch_id where s.id=$4),
           (select org_id from charge_items where id=$5),$6::uuid)`,[j.payload.order_id??null,j.payload.package_id??null,
           j.payload.batch_id??null,j.payload.shipment_id??null,j.payload.charge_id??null,j.payload.org_id??null])).rows[0];
-        if(recipient) await db.query(`insert into notifications(user_id,order_id,template,locale,payload,dedupe_key)
-          values($1,$2,$3,'en',$4,$5) on conflict do nothing`,[recipient.user_id,j.payload.order_id??null,j.type,j.payload,"outbox:"+j.id]);
+        if(recipient) {
+          const inserted=(await db.query<{id:string}>(`insert into notifications(user_id,order_id,template,locale,payload,dedupe_key)
+            values($1,$2,$3,'en',$4,$5) on conflict do nothing returning id`,[recipient.user_id,j.payload.order_id??null,j.type,j.payload,"outbox:"+j.id])).rows[0];
+          if(inserted) await queueNotificationEmail(db,inserted.id,recipient.user_id);
+        }
       }
       await db.query("update outbox_events set processed_at=now(),last_error=null where id=$1",[j.id]);
       return true;
     });
     if(worked) return true;
+    if(await deliverEmailOnce()) return true;
+    if(await transaction(consumeEmailWebhook)) return true;
     return await transaction(consumeTrackingCallback);
   } catch (error) {
     if(jobId) await pool.query(`update outbox_events set attempts=attempts+1,last_error=$2,

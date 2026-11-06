@@ -415,6 +415,7 @@ export function CustomerDesk({path}:{path:string}) {
   const visibleOrders=isHome?orders.slice(0,5):orders.filter(order=>
     order.public_no.toLowerCase().includes(orderQuery.trim().toLowerCase())&&(!orderState||order.state===orderState));
   return <>
+    {data.email_delivery?.banner_message&&<div className="notice" role="alert"><strong>{data.email_delivery.banner_message}</strong>{data.email_delivery.masked_email?` (${data.email_delivery.masked_email})`:""}. Important updates remain available in your account notifications and action centre.</div>}
     {isHome&&<><div className="page-head row"><div><p className="eyebrow">CLIENT WORKSPACE</p><h1>Your inspections</h1><p className="muted">Manage your warehouse deliveries, inspection reports and item instructions.</p></div>
       <Link className="button primary" href="/orders/new">New inspection <span aria-hidden="true">→</span></Link></div>
       <div className="ops-columns"><Panel title="Warehouse receiving address">
@@ -521,6 +522,7 @@ const actionTitles:Record<string,string>={
   return_to_seller:"Review seller return quote",to_forwarder:"Review forwarding quote",to_domestic_address:"Review domestic shipping quote",
   retain:"Review storage extension",needs_carrier:"Confirm parcel carrier",needs_verification:"Verify parcel tracking",waiting_customer:"Review support case",
   dispatch:"Review shipping payment",storage:"Review storage payment",
+  bounced:"We couldn't deliver email to this address",complained:"We couldn't deliver email to this address",
 };
 export function CustomerActions() {
   const {data,error,reload}=useLoad("/actions");
@@ -533,7 +535,8 @@ export function CustomerActions() {
     {data&&!error&&<Panel title="Your next actions"><Table headers={["Action","Reference","Due",""]} rows={data.rows.map((row:Row)=>{
       const href=row.kind==="order"?"/orders/"+row.reference+(row.state==="awaiting_payment"?"/payment":row.state==="awaiting_samples"?"/parcels":""):row.kind==="parcel"?"/parcels/"+row.id:
         row.kind==="quote"||row.kind==="charge"?"/account/billing#"+row.kind+"-"+row.id:
-        row.kind==="scope"?"/orders/"+row.reference+"#scope-"+row.id:"/support/cases/"+row.id;
+        row.kind==="scope"?"/orders/"+row.reference+"#scope-"+row.id:
+        row.kind==="email"?"/account":"/support/cases/"+row.id;
       return [row.kind==="scope"?"Review inspection scope":actionTitles[row.state],row.reference?<span className="code">{row.reference}</span>:"—",stamp(row.due_at),<Link href={href}>Open</Link>];
     })} empty="You’re all caught up. New actions will appear here when an order, parcel, quote or case needs your input."/></Panel>}
   </>;

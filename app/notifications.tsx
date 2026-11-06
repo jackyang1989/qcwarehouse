@@ -16,6 +16,7 @@ const noticeTitles:Record<string,string>={
   "quote.offered":"A manual inspection quote is ready",
   "shipment.handed_over":"Your parcel has been handed to the carrier",
   "shipment.return_received":"Returned items have been received at the warehouse",
+  "email.delivery_failed":"We couldn't deliver email to this address",
 };
 function UpdatesTable({notices,onRead}:{notices:Row[];onRead:()=>void}) {
   return <>
@@ -26,6 +27,7 @@ function UpdatesTable({notices,onRead}:{notices:Row[];onRead:()=>void}) {
         notice.shipment_id?"/shipments/"+notice.shipment_id:
         notice.advice_id?"/parcels/"+notice.advice_id:
         notice.charge_id?"/account/billing#charge-"+notice.charge_id:
+        notice.template==="email.delivery_failed"?"/account":
         notice.template==="payment.confirmed"||notice.template==="dispatch.quoted"?"/account/billing":null;
       return [noticeTitles[notice.template]??"Account update",stamp(notice.created_at),notice.read_at?"Read":"Unread",
         <div className="actions">{href&&<Link href={href}>Open</Link>}

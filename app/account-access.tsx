@@ -63,14 +63,15 @@ export function Login({staff,methods,next,verify,oauth}:{
       })}
       {!showEmail&&emailAvailable&&<button type="button" onClick={()=>setShowEmail(true)}>Continue with email</button>}
     </div>}
-    {methods.demo&&<p className="notice">{staff?"本地测试环境。使用预置员工测试账号获取测试验证码。":"Local test environment. Use an @qcw.test address to get a test code on this page."}</p>}
-    {staff&&!methods.demo?<Form label="登录" run={async f=>after(await request("/staff/auth/login","POST",{
+    {methods.demo&&<p className="notice">{staff?"本地测试环境。可使用员工密码+TOTP验证器登录，或使用下方 @qcw.test 测试验证码快捷登录。":"Local test environment. Use an @qcw.test address to get a test code on this page."}</p>}
+    {staff&&<Form label="密码与验证器登录" run={async f=>after(await request("/staff/auth/login","POST",{
       email:text(f,"email"),password:String(f.get("password")??""),otp:text(f,"otp"),
     }))}>
       <label>员工邮箱<input name="email" type="email" autoComplete="username" required/></label>
       <label>密码<input name="password" type="password" autoComplete="current-password" required/></label>
       <label>验证器动态码<input name="otp" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" required/></label>
-    </Form>:emailAvailable&&(staff||showEmail)&&(challenge?
+    </Form>}
+    {emailAvailable&&(staff&&methods.demo||!staff&&showEmail)&&(challenge?
       <div className="code-step">
         <p>{staff?"测试账号":challenge.demo_code?"Test code for":"Code sent to"} <strong>{email}</strong></p>
         {challenge.demo_code&&<p className="code">{challenge.demo_code}</p>}
@@ -81,7 +82,7 @@ export function Login({staff,methods,next,verify,oauth}:{
         </Form>
         <button type="button" onClick={()=>setChallenge(undefined)}>{staff?"更换邮箱或重新获取验证码":"Change email or request another code"}</button>
       </div>:<Form label={methods.demo?(staff?"获取测试验证码":"Get test code"):"Email me a verification code"} run={f=>sendCode(text(f,"email"))}>
-        <label>{staff?"员工邮箱":"Email address"}<input name="email" type="email" autoComplete="email" defaultValue={email} required/></label>
+        <label>{staff?"测试员工邮箱 (@qcw.test)":"Email address"}<input name="email" type="email" autoComplete="email" defaultValue={email} required/></label>
       </Form>)}
     {!staff&&!emailAvailable&&<p className="muted small">Email codes are currently unavailable. <Link href="/contact">Contact support</Link> if you need account access.</p>}
   </section>;

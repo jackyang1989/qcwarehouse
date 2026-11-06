@@ -2,6 +2,7 @@ import type { DB } from "../db";
 import { z } from "zod";
 import { guard, hash, one, organization, role, type Actor } from "./common";
 import { receiving } from "./auth";
+import { customerEmailDeliveryStatus } from "./email";
 import { orderDTO } from "./orders";
 import { orderShipments } from "./fulfillment-reads";
 import { waybill } from "./intake";
@@ -57,7 +58,9 @@ export async function customerActions(db:DB,actor:Actor) {
     union all select s.id,'scope','scope_review',o.public_no,null from scope_revisions s join orders o on o.id=s.order_id
       where o.org_id=$1 and o.state='awaiting_samples' and s.accepted_at is null
       and s.previous_snapshot->>'order_revision'=o.revision::text
-  ) actions order by due_at nulls last,kind,reference,id limit 200`,[org]);
+    union all select e.id,'email',e.delivery_state,null,null from user_emails e
+      where e.user_id=$2 and e.is_primary and e.delivery_state in ('bounced','complained')
+  ) actions order by due_at nulls last,kind,reference,id limit 200`,[org,actor.id]);
   return {rows};
 }
 export async function customerDesk(db:DB,actor:Actor) {
@@ -83,7 +86,7 @@ export async function customerDesk(db:DB,actor:Actor) {
   const notices=(await customerNotifications(db,actor)).rows;
   const references=(await db.query(`select r.id reference_id,r.item_id,r.state,r.expires_at,w.code from reference_samples r join warehouse_items w on w.id=r.item_id
     where r.org_id=$1 order by r.expires_at desc limit 100`,[org])).rows;
-  return {orders,advices,shipments,quotes,batches,reports,tickets,notices,references,profile:await receiving(db,actor.id),items:await items(db,actor),bills:await bills(db,actor)};
+  return {orders,advices,shipments,quotes,batches,reports,tickets,notices,references,profile:await receiving(db,actor.id),email_delivery:await customerEmailDeliveryStatus(db,actor),items:await items(db,actor),bills:await bills(db,actor)};
 }
 export async function customerNotifications(db:DB,actor:Actor,unread=false,before:string|null=null) {
   const org=organization(actor),pageSize=50;

@@ -7,10 +7,16 @@ export type Row=Record<string,any>;
 export class RequestError extends Error {
   constructor(message:string,public code?:string) { super(message); }
 }
+function browserCookie(key:string) {
+  if(typeof document==="undefined") return "";
+  return document.cookie.split(";").map(s=>s.trim()).find(s=>s.startsWith(key+"="))?.slice(key.length+1)??"";
+}
 export async function request(path:string,method="GET",body?:unknown,idempotencyKey?:string) {
   const form=body instanceof FormData;
+  const csrf=browserCookie("qcw_csrf");
   const r=await fetch("/api/v1"+path,{method,cache:"no-store",headers:method==="GET"?{}:{
     ...(!form?{"content-type":"application/json"}:{}),"Idempotency-Key":idempotencyKey??crypto.randomUUID(),
+    ...(csrf?{"X-CSRF-Token":csrf}:{}),
   },...(body!==undefined?{body:form?body:JSON.stringify(body)}:{})});
   const data=await r.json();
   if(!r.ok) throw new RequestError(data.error?.message??"Request failed.",data.error?.code);

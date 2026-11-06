@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import sharp from "sharp";
 import Stripe from "stripe";
@@ -25,7 +25,7 @@ const {handle}=await import("../packages/core/http");
 const {pool}=await import("../packages/db");
 const {workOnce}=await import("../packages/core/worker");
 const {syncTrackingOnce}=await import("../packages/core/logistics");
-const {encryptSecret,decryptSecret}=await import("../packages/core/auth");
+const {encryptSecret,decryptSecret,passwordHash}=await import("../packages/core/auth");
 
 before(async()=>{
   const actual=await pool.query<{name:string}>("select current_database() name");
@@ -47,9 +47,10 @@ class Client {
   }
   async fetch(path:string,body?:unknown,method=body===undefined?"GET":"POST",expected=200,key=randomUUID()) {
     const multipart=body instanceof FormData;
+    const csrf=this.jar.get("qcw_csrf");
     const req=new Request(origin+"/api/v1"+path,{method,headers:{
       cookie:[...this.jar].map(([k,v])=>k+"="+v).join("; "),
-      ...(method!=="GET"?{origin,"Idempotency-Key":key,...(!multipart?{"content-type":"application/json"}:{})}:{})
+      ...(method!=="GET"?{origin,"Idempotency-Key":key,...(csrf?{"x-csrf-token":csrf}:{}),...(!multipart?{"content-type":"application/json"}:{})}:{})
     },...(body!==undefined?{body:multipart?body:JSON.stringify(body)}:{})});
     const response=await handle(req,path.split("?")[0]);
     for(const c of response.headers.getSetCookie()) {
@@ -1670,6 +1671,290 @@ test("audit filters expose immutable records to administrators with explicit fie
   await admin.fetch(path,{},"POST",404);
   await admin.fetch("/staff/audit?before_id=9223372036854775808",undefined,"GET",422);
   await assert.rejects(pool.query("update audit_events set action='modified' where id=$1",[first.rows[0].id]),{code:"23514"});
+});
+
+test("OTP challenges enforce generation, browser binding, cross-resend failure budget, and concurrent single-use verification",async()=>{
+  const browserA=new Client(),browserB=new Client();
+  const email=randomUUID()+"@qcw.test";
+  const first=await browserA.fetch("/auth/otp/request",{email},"POST",202);
+  assert.equal(first.resend_after,60);
+  const firstRow=(await pool.query("select generation,attempts,consumed_at from verification_challenges where id=$1",[first.challenge_id])).rows[0];
+  assert.equal(firstRow.generation,1);
+  await browserA.fetch("/auth/otp/verify",{challenge_id:first.challenge_id,code:"000000"},"POST",400);
+  await browserA.fetch("/auth/otp/verify",{challenge_id:first.challenge_id,code:"999999"},"POST",400);
+
+  const second=await browserA.fetch("/auth/otp/request",{email},"POST",202);
+  const afterResend=(await pool.query("select consumed_at from verification_challenges where id=$1",[first.challenge_id])).rows[0];
+  assert(afterResend.consumed_at,"Resending an OTP must invalidate the previous challenge.");
+  await browserA.fetch("/auth/otp/verify",{challenge_id:first.challenge_id,code:first.demo_code},"POST",400);
+  const secondRow=(await pool.query("select generation from verification_challenges where id=$1",[second.challenge_id])).rows[0];
+  assert.equal(secondRow.generation,2);
+
+  for(let i=0;i<3;i++) {
+    await browserA.fetch("/auth/otp/verify",{challenge_id:second.challenge_id,code:"111111"},"POST",400);
+  }
+  const exhausted=(await pool.query("select consumed_at,attempts from verification_challenges where id=$1",[second.challenge_id])).rows[0];
+  assert.equal(exhausted.attempts,3);
+  assert(exhausted.consumed_at,"Reaching the 1-hour total failure budget across resends must consume the active challenge.");
+  await browserA.fetch("/auth/otp/verify",{challenge_id:second.challenge_id,code:second.demo_code},"POST",400);
+  await browserA.fetch("/auth/otp/request",{email},"POST",429);
+
+  const email2=randomUUID()+"@qcw.test";
+  const fresh=await browserA.fetch("/auth/otp/request",{email:email2},"POST",202);
+  await browserB.fetch("/auth/otp/verify",{challenge_id:fresh.challenge_id,code:fresh.demo_code},"POST",400);
+  const [attempt1,attempt2]=await Promise.all([
+    handle(new Request(origin+"/api/v1/auth/otp/verify",{
+      method:"POST",
+      headers:{origin,"content-type":"application/json",cookie:"qcw_browser="+(browserA as unknown as {jar:Map<string,string>}).jar.get("qcw_browser")},
+      body:JSON.stringify({challenge_id:fresh.challenge_id,code:fresh.demo_code}),
+    }),"/auth/otp/verify"),
+    handle(new Request(origin+"/api/v1/auth/otp/verify",{
+      method:"POST",
+      headers:{origin,"content-type":"application/json",cookie:"qcw_browser="+(browserA as unknown as {jar:Map<string,string>}).jar.get("qcw_browser")},
+      body:JSON.stringify({challenge_id:fresh.challenge_id,code:fresh.demo_code}),
+    }),"/auth/otp/verify"),
+  ]);
+  assert.deepEqual([attempt1.status,attempt2.status].sort((a,b)=>a-b),[200,400]);
+});
+
+test("Postmark transactional email delivery tracks timeouts, webhooks, out-of-order events, and suppression while keeping in-app notices active",async t=>{
+  const custA=await signCustomer(),custB=await signCustomer();
+  for(let i=0;i<100;i++){if(!await workOnce())break;}
+  const admin=await staffLogin("admin"),receiver=await staffLogin("receiving");
+  const adminId=(await admin.fetch("/me")).actor.id;
+  await pool.query("insert into staff_roles(user_id,role) values($1,'support') on conflict do nothing",[adminId]);
+  setFixtureEnv(t,{
+    QCW_DEMO:"0",
+    POSTMARK_SERVER_TOKEN:"postmark-live-fixture",
+    EMAIL_FROM:"no-reply@qcwarehouse.test",
+    POSTMARK_MESSAGE_STREAM:"outbound",
+    POSTMARK_WEBHOOK_TOKEN:"webhook-secret-fixture",
+  });
+  let callIndex=0;
+  const fetchMock=t.mock.method(globalThis,"fetch",async (url:string,init:RequestInit)=>{
+    assert.equal(url,"https://api.postmarkapp.com/email");
+    assert.equal(new Headers(init.headers).get("X-Postmark-Server-Token"),"postmark-live-fixture");
+    callIndex++;
+    if(callIndex===1) {
+      throw new DOMException("The operation was aborted due to timeout","TimeoutError");
+    }
+    return Response.json({ErrorCode:0,MessageID:`pm-msg-${callIndex}`});
+  });
+
+  try {
+    const ticketA=await custA.c.fetch("/me/cases",{subject:"Email delivery check",message:"Testing Postmark pipeline."});
+    const claimedA=await admin.fetch(`/staff/tickets/${ticketA.id}/events`,{kind:"claim",revision:1});
+    const repliedA=await admin.fetch(`/staff/tickets/${ticketA.id}/events`,{
+      kind:"reply",revision:claimedA.revision,body:"First support update for email delivery.",
+    });
+
+    assert.equal(await workOnce(),true);
+    assert.equal(await workOnce(),true);
+    assert.equal(fetchMock.mock.callCount(),1);
+    await workOnce();
+    assert.equal(fetchMock.mock.callCount(),1);
+
+    await custA.c.fetch("/staff/admin/email-deliveries",undefined,"GET",403);
+    await receiver.fetch("/staff/admin/email-deliveries",undefined,"GET",403);
+    const list1=await admin.fetch("/staff/admin/email-deliveries?state=unknown");
+    assert.equal(list1.channel_alert.degraded,true);
+    assert(list1.channel_alert.unknown_count>=1);
+    const attempt1=list1.rows.find((r:{user_id:string})=>r.user_id===custA.registration.user_id);
+    assert(attempt1);
+    assert.equal(attempt1.state,"unknown");
+    assert.equal(attempt1.error_code,"REQUEST_TIMEOUT");
+    assert.equal(attempt1.can_retry,true);
+
+    const retried=await admin.fetch(`/staff/admin/email-deliveries/${attempt1.id}/retry`,{
+      attempt:1,reason:"Verified with Postmark that attempt 1 timed out before submission.",
+    });
+    assert.equal(retried.attempt,2);
+    assert.equal(retried.state,"queued");
+
+    assert.equal(await workOnce(),true);
+    assert.equal(fetchMock.mock.callCount(),2);
+    const attempt2=(await admin.fetch("/staff/admin/email-deliveries")).rows.find((r:{id:string})=>r.id===retried.id);
+    assert.equal(attempt2.state,"submitted");
+    assert.equal(attempt2.provider_message_id,"pm-msg-2");
+
+    const webhookPath="/webhooks/email/postmark";
+    function postWebhook(payload:object,secret="webhook-secret-fixture") {
+      return handle(new Request(origin+"/api/v1"+webhookPath,{
+        method:"POST",
+        headers:{"content-type":"application/json","x-postmark-webhook-secret":secret},
+        body:JSON.stringify(payload),
+      }),webhookPath);
+    }
+    assert.equal((await postWebhook({RecordType:"Delivery",MessageID:"pm-msg-2"},"wrong-secret")).status,401);
+
+    assert.equal((await postWebhook({
+      RecordType:"Bounce",Type:"Transient",Inactive:false,MessageID:"pm-msg-2",ID:101,
+    })).status,200);
+    assert.equal(await workOnce(),true);
+    assert.equal((await custA.c.fetch("/me/email-delivery-status")).delivery_state,"degraded");
+    assert.equal((await custA.c.fetch("/me/email-delivery-status")).suppressed,false);
+
+    assert.equal((await postWebhook({
+      RecordType:"Delivery",MessageID:"pm-msg-2",DeliveredAt:"2026-11-06T12:00:00Z",
+    })).status,200);
+    assert.equal(await workOnce(),true);
+    assert.equal((await custA.c.fetch("/me/email-delivery-status")).delivery_state,"deliverable");
+    assert.equal((await admin.fetch("/staff/admin/email-deliveries")).rows.find((r:{id:string})=>r.id===retried.id).state,"delivered");
+
+    assert.equal((await postWebhook({
+      RecordType:"Bounce",Type:"HardBounce",Inactive:true,MessageID:"pm-msg-2",ID:102,
+    })).status,200);
+    assert.equal((await postWebhook({
+      RecordType:"Bounce",Type:"HardBounce",Inactive:true,MessageID:"pm-msg-2",ID:102,
+    })).status,200);
+    assert.equal(await workOnce(),true);
+
+    assert.equal((await postWebhook({
+      RecordType:"Delivery",MessageID:"pm-msg-2",DeliveredAt:"2026-11-06T12:05:00Z",
+    })).status,200);
+    assert.equal(await workOnce(),true);
+    assert.equal((await admin.fetch("/staff/admin/email-deliveries")).rows.find((r:{id:string})=>r.id===retried.id).state,"bounced");
+
+    const statusA=await custA.c.fetch("/me/email-delivery-status");
+    assert.equal(statusA.delivery_state,"bounced");
+    assert.equal(statusA.suppressed,true);
+    assert.equal(statusA.banner_message,"We couldn't deliver email to this address");
+    assert.equal((await custA.c.fetch("/me/desk")).email_delivery.banner_message,"We couldn't deliver email to this address");
+    assert((await custA.c.fetch("/actions")).rows.some((r:{kind:string;state:string})=>r.kind==="email"&&r.state==="bounced"));
+    assert((await custA.c.fetch("/me/notifications")).rows.some((n:{template:string})=>n.template==="email.delivery_failed"));
+
+    await admin.fetch(`/staff/admin/email-deliveries/${retried.id}/retry`,{
+      attempt:2,reason:"Should not retry a bounced address.",
+    },"POST",409);
+
+    await admin.fetch(`/staff/tickets/${ticketA.id}/events`,{
+      kind:"reply",revision:repliedA.revision,body:"Second support update while email is suppressed.",
+    });
+    for(let i=0;i<20;i++){if(!await workOnce())break;}
+    assert.equal(fetchMock.mock.callCount(),2);
+    const noticesA=await custA.c.fetch("/me/notifications");
+    assert.equal(noticesA.rows.filter((n:{template:string})=>n.template==="ticket.reply").length,2);
+    const suppressedRow=(await admin.fetch("/staff/admin/email-deliveries?state=bounced")).rows.find(
+      (r:{user_id:string;error_code:string})=>r.user_id===custA.registration.user_id&&r.error_code==="ADDRESS_SUPPRESSED"
+    );
+    assert(suppressedRow);
+
+    const ticketB=await custB.c.fetch("/me/cases",{subject:"Complaint check",message:"Testing spam complaint suppression."});
+    const claimedB=await admin.fetch(`/staff/tickets/${ticketB.id}/events`,{kind:"claim",revision:1});
+    await admin.fetch(`/staff/tickets/${ticketB.id}/events`,{
+      kind:"reply",revision:claimedB.revision,body:"Support update for customer B.",
+    });
+    for(let i=0;i<20;i++){if(!await workOnce())break;}
+    assert.equal(fetchMock.mock.callCount(),3);
+    assert.equal((await postWebhook({
+      RecordType:"SpamComplaint",MessageID:"pm-msg-3",ID:201,
+    })).status,200);
+    assert.equal(await workOnce(),true);
+    const statusB=await custB.c.fetch("/me/email-delivery-status");
+    assert.equal(statusB.delivery_state,"complained");
+    assert.equal(statusB.suppressed,true);
+    assert.equal(statusB.banner_message,"We couldn't deliver email to this address");
+  } finally {
+    await pool.query("delete from staff_roles where user_id=$1 and role='support'",[adminId]);
+  }
+});
+
+test("customer 30-day sessions, staff 12-hour MFA sessions, and session-bound CSRF tokens enforce isolation and revocation",async()=>{
+  const custA=await signCustomer(),custB=await signCustomer();
+  const sessA=(await pool.query<{kind:string;days:number}>(
+    "select kind,round(extract(epoch from (expires_at - created_at))/86400)::int as days from sessions where token_hash=$1",
+    [custA.c.sessionHash()]
+  )).rows[0];
+  assert.equal(sessA.kind,"customer");
+  assert.equal(sessA.days,30);
+
+  const jarA=(custA.c as unknown as {jar:Map<string,string>}).jar;
+  const jarB=(custB.c as unknown as {jar:Map<string,string>}).jar;
+  const sessionSecretA=jarA.get("session")!;
+  const csrfB=jarB.get("qcw_csrf")!;
+
+  const missingCsrf=await handle(new Request(origin+"/api/v1/auth/logout",{
+    method:"POST",headers:{origin,cookie:`session=${sessionSecretA}`},
+  }),"/auth/logout");
+  assert.equal(missingCsrf.status,403);
+  assert.equal((await missingCsrf.json()).error.code,"CSRF_INVALID");
+
+  const crossSessionCsrf=await handle(new Request(origin+"/api/v1/auth/logout",{
+    method:"POST",headers:{origin,cookie:`session=${sessionSecretA}; qcw_csrf=${csrfB}`,"x-csrf-token":csrfB},
+  }),"/auth/logout");
+  assert.equal(crossSessionCsrf.status,403);
+  assert.equal((await crossSessionCsrf.json()).error.code,"CSRF_INVALID");
+
+  const badOrigin=await handle(new Request(origin+"/api/v1/auth/logout",{
+    method:"POST",headers:{origin:"https://evil.example",cookie:`session=${sessionSecretA}`,"x-csrf-token":jarA.get("qcw_csrf")!},
+  }),"/auth/logout");
+  assert.equal(badOrigin.status,403);
+  assert.equal((await badOrigin.json()).error.code,"ORIGIN_REJECTED");
+
+  const staffId=randomUUID(),staffEmail=`mfa-${staffId}@qcw.test`;
+  const totpSecretHex="3132333435363738393031323334353637383930";
+  const password="StaffPassword!2026";
+  await pool.query(
+    "insert into users(id,display_name,locale,password_hash,mfa_secret_enc) values($1,'MFA Staff','zh-CN',$2,$3)",
+    [staffId,passwordHash(password),encryptSecret(totpSecretHex).toString("base64url")]
+  );
+  await pool.query(
+    "insert into user_emails(user_id,original_email,normalized_email,verified_at,is_primary,login_enabled) values($1,$2::text,($2::text)::citext,now(),true,true)",
+    [staffId,staffEmail]
+  );
+  await pool.query("insert into staff_roles(user_id,role) values($1,'receiver')", [staffId]);
+
+  const counter=Math.floor(Date.now()/30000);
+  const bytes=Buffer.alloc(8);
+  bytes.writeBigUInt64BE(BigInt(counter));
+  const digest=createHmac("sha1",Buffer.from(totpSecretHex,"hex")).update(bytes).digest();
+  const totp=String((digest.readUInt32BE(digest[19]&15)&0x7fffffff)%1000000).padStart(6,"0");
+
+  const staffClient=new Client();
+  await staffClient.fetch("/staff/auth/login",{email:staffEmail,password:"WrongPassword",otp:totp},"POST",401);
+  const loginRes=await staffClient.fetch("/staff/auth/login",{email:staffEmail,password,otp:totp},"POST",200);
+  assert.equal(loginRes.kind,"staff");
+
+  const sessStaff=(await pool.query<{kind:string;hours:number;mfa_at:Date|null}>(
+    "select kind,round(extract(epoch from (expires_at - created_at))/3600)::int as hours,mfa_at from sessions where token_hash=$1",
+    [staffClient.sessionHash()]
+  )).rows[0];
+  assert.equal(sessStaff.kind,"staff");
+  assert.equal(sessStaff.hours,12);
+  assert(sessStaff.mfa_at);
+
+  const replayClient=new Client();
+  await replayClient.fetch("/staff/auth/login",{email:staffEmail,password,otp:totp},"POST",401);
+
+  await staffClient.fetch("/auth/logout",{},"POST",200);
+  await staffClient.fetch("/me",undefined,"GET",401);
+});
+
+test("catalog and order creation enforce joint category, capability, template, and demo eligibility guards",async t=>{
+  const {c}=await signCustomer();
+  const initial=(await c.fetch("/catalog")).offers as {offer_id:string;category_id:string;sku_code:string;category:{en:string}}[];
+  const bags=initial.find(o=>o.category.en==="Bags")!;
+  assert(bags);
+
+  await pool.query("update categories set status='PAUSED' where id=$1",[bags.category_id]);
+  try {
+    assert(!(await c.fetch("/catalog")).offers.some((o:{offer_id:string})=>o.offer_id===bags.offer_id));
+    await c.fetch("/orders",{lines:[{category_id:bags.category_id,offer_id:bags.offer_id,quantity:1}]},"POST",409);
+  } finally {
+    await pool.query("update categories set status='ACTIVE' where id=$1",[bags.category_id]);
+  }
+
+  await pool.query("update capabilities set revoked_at=now() where code='demo-visual'");
+  try {
+    assert.equal((await c.fetch("/catalog")).offers.length,0);
+    await c.fetch("/orders",{lines:[{category_id:bags.category_id,offer_id:bags.offer_id,quantity:1}]},"POST",409);
+  } finally {
+    await pool.query("update capabilities set revoked_at=null where code='demo-visual'");
+  }
+
+  setFixtureEnv(t,{QCW_DEMO:"0"});
+  assert.equal((await c.fetch("/catalog")).offers.length,0);
+  await c.fetch("/orders",{lines:[{category_id:bags.category_id,offer_id:bags.offer_id,quantity:1}]},"POST",409);
 });
 
 test("all core operations have a validated success response",assertCoreCoverage);

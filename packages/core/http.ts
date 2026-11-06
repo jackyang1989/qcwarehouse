@@ -5,10 +5,11 @@ import addFormats from "ajv-formats";
 import { parse } from "yaml";
 import { z } from "zod";
 import { transaction, pool, type DB } from "../db";
-import { actorFrom, appOrigin, completeRegistration, cookie, currentTerms, finishProvider, getCookie, pendingProvider, publicPolicy, staffSignIn, startOtp, startProvider, verifyOtp, reportDownloadSignature, reportShareToken, verifyReportDownload } from "./auth";
+import { actorFrom, appOrigin, completeRegistration, cookie, csrfCookie, csrfTokenFor, currentTerms, finishProvider, getCookie, pendingProvider, publicPolicy, staffSignIn, startOtp, startProvider, verifyCsrfToken, verifyOtp, reportDownloadSignature, reportShareToken, verifyReportDownload } from "./auth";
 import { Problem, guard, hash, idempotent, isDemo, one, organization, role, uuid, type Actor } from "./common";
 import { integrationPreflight, signInMethods } from "./integrations";
 import { failedJobs, retryFailedJob } from "./worker";
+import { customerEmailDeliveryStatus, receivePostmarkWebhook, retryEmailDelivery, staffEmailDeliveries } from "./email";
 import { catalog, issueManualQuote, orderDetail, quoteOrder, requestManualQuote, saveOrder, submitOrder } from "./orders";
 import { advise, assign, checkIn, decideIntakeClaim, intakeItems, lookup, requestIntakeClaim, savePhoto, waybill } from "./intake";
 import { amendReport, amendReportInput, approveReport, editReportRevision, readReport, recordResults, reportDesk, returnReport, revisionChanges, staffReport, startTask, submitReport, submitReportRevision, submitTask, taskDetail } from "./inspection";
@@ -82,11 +83,17 @@ function actorRequired(actor:Actor|null):Actor {
 function csrf(req:Request) {
   const origin=req.headers.get("origin");
   guard(origin===appOrigin(),"ORIGIN_REJECTED","This request must come from QC Warehouse.",403);
+  const secret=getCookie(req,"session")||getCookie(req,"qcw_onboarding");
+  if(secret) {
+    guard(verifyCsrfToken(secret,req.headers.get("x-csrf-token")??""),"CSRF_INVALID","Session security token is missing or invalid.",403);
+  }
 }
 function authResult(result:{state:string;secret:string;kind:string}) {
-  return result.state==="signed_in"
-    ? [cookie("session",result.secret,43200),cookie("qcw_provider","",0)]
-    : [cookie("qcw_onboarding",result.secret,1200),cookie("qcw_provider","",0)];
+  if(result.state==="signed_in") {
+    const age=result.kind==="customer"?2592000:43200;
+    return [cookie("session",result.secret,age),csrfCookie(csrfTokenFor(result.secret),age),cookie("qcw_provider","",0)];
+  }
+  return [cookie("qcw_onboarding",result.secret,1200),csrfCookie(csrfTokenFor(result.secret),1200),cookie("qcw_provider","",0)];
 }
 function binary(file:{data:Buffer;mime:string}) {
   return new Response(new Uint8Array(file.data),{headers:{"content-type":file.mime,"cache-control":"private, no-store","x-content-type-options":"nosniff"}});
@@ -227,17 +234,22 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
     const data=z.object({email:emailSchema,password:z.string().min(1).max(256),otp:z.string().regex(/^\d{6}$/)}).parse(await input(req));
     const secret=await staffSignIn(data.email,data.password,data.otp);
     guard(secret,"LOGIN_FAILED","The staff credentials are invalid.",401);
-    return json({state:"signed_in",kind:"staff"},200,[cookie("session",secret,43200)]);
+    return json({state:"signed_in",kind:"staff"},200,[cookie("session",secret,43200),csrfCookie(csrfTokenFor(secret),43200)]);
   }
   if(method==="POST" && path==="/auth/logout") {
     csrf(req);
     const sid=getCookie(req,"session");
     if(sid) await pool.query("update sessions set revoked_at=now() where token_hash=$1",[hash(sid)]);
-    return json({ok:true},200,[cookie("session","",0),cookie("qcw_onboarding","",0),cookie("qcw_provider","",0)]);
+    return json({ok:true},200,[cookie("session","",0),cookie("qcw_onboarding","",0),cookie("qcw_provider","",0),csrfCookie("",0)]);
   }
   if(method==="POST" && path==="/webhooks/stripe") {
     const event=verifyStripe(await req.text(),req.headers.get("stripe-signature")??"");
     return json(await transaction(db=>stripeEvent(db,event)));
+  }
+  if(method==="POST" && path==="/webhooks/email/postmark") {
+    const raw=await req.text();
+    guard(raw.length<=500000,"BODY_TOO_LARGE","Webhook payload too large.",413);
+    return json(await transaction(db=>receivePostmarkWebhook(db,req,raw)));
   }
   const callback=path.match(/^\/webhooks\/tracking\/kuaidi100\/([a-f0-9]{64})$/);
   if(method==="POST" && callback) {
@@ -247,6 +259,7 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   }
   if(method==="GET" && path==="/me") return json({actor:actorRequired(actor)});
   if(method==="GET" && path==="/me/desk") return json(await transaction(db=>customerDesk(db,actorRequired(actor))));
+  if(method==="GET" && path==="/me/email-delivery-status") return json(await transaction(db=>customerEmailDeliveryStatus(db,actorRequired(actor))));
   if(method==="GET"&&path==="/me/notifications") {
     const unread=z.enum(["1","0"]).nullable().parse(url.searchParams.get("unread"))==="1";
     const before=idSchema.nullable().parse(url.searchParams.get("before"));
@@ -338,6 +351,16 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
     const id=z.string().regex(/^[1-9][0-9]{0,18}$/).refine(v=>BigInt(v)<=9223372036854775807n).parse(retryJob[1]);
     return extraWrite(req,path,actor,z.object({attempts:z.number().int().positive(),reason:z.string().trim().min(4).max(1000)}).strict(),
       (db,a,b)=>retryFailedJob(db,a,id,b.attempts,b.reason,hash(getCookie(req,"session"))));
+  }
+  if(method==="GET"&&path==="/staff/admin/email-deliveries") {
+    const state=url.searchParams.get("state")?.trim()||null;
+    return json(await transaction(db=>staffEmailDeliveries(db,actorRequired(actor),state)));
+  }
+  const retryEmail=path.match(/^\/staff\/admin\/email-deliveries\/([a-f0-9-]{36})\/retry$/i);
+  if(method==="POST"&&retryEmail) {
+    const id=idSchema.parse(retryEmail[1]);
+    return extraWrite(req,path,actor,z.object({attempt:z.number().int().positive(),reason:z.string().trim().min(4).max(1000)}).strict(),
+      (db,a,b)=>retryEmailDelivery(db,a,id,b.attempt,b.reason,hash(getCookie(req,"session"))));
   }
   if(method==="GET"&&path==="/staff/orders") {
     const filters=staffOrderFilters.parse(Object.fromEntries([...url.searchParams].filter(([,value])=>value!=="")));
@@ -512,7 +535,7 @@ export async function handle(req:Request,path:string) {
       ?idSchema.parse(req.headers.get("idempotency-key")):null;
     if(op.operationId==="completeRegistration") {
       const result=await completeRegistration(getCookie(req,"qcw_onboarding"),getCookie(req,"qcw_browser"),data.terms_version_ids);
-      return json(result.profile,status,[cookie("session",result.secret,43200),cookie("qcw_onboarding","",0)]);
+      return json(result.profile,status,[cookie("session",result.secret,2592000),csrfCookie(csrfTokenFor(result.secret),2592000),cookie("qcw_onboarding","",0)]);
     }
     const a=actorRequired(actor);
     guard(a.kind==="customer"?op["x-roles"].includes("customer"):op["x-roles"].some(r=>a.roles.includes(r)),

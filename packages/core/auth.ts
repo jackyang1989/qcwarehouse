@@ -28,6 +28,16 @@ export function verifyReportDownload(actorId:string,reportId:string,expiry:strin
 export function cookie(name: string, value: string, age: number) {
   return `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${age}${appOrigin().startsWith("https:") ? "; Secure" : ""}`;
 }
+export function csrfCookie(value: string, age: number) {
+  return `qcw_csrf=${value}; Path=/; SameSite=Lax; Max-Age=${age}${appOrigin().startsWith("https:") ? "; Secure" : ""}`;
+}
+export function csrfTokenFor(secret: string) {
+  return createHmac("sha256", pepper()).update("csrf:" + hash(secret)).digest("base64url");
+}
+export function verifyCsrfToken(secret: string, candidate: string) {
+  if (!secret || !/^[A-Za-z0-9_-]{43}$/.test(candidate)) return false;
+  return timingSafeEqual(Buffer.from(candidate), Buffer.from(csrfTokenFor(secret)));
+}
 export function getCookie(request: Request, key: string) {
   return request.headers.get("cookie")?.split(";").map(s => s.trim()).find(s => s.startsWith(key + "="))?.slice(key.length + 1) ?? "";
 }
@@ -53,9 +63,10 @@ export async function requireStaffMfa(db:DB,actor:Actor,sessionHash:string,maxAg
 }
 async function session(db: DB, userId: string, kind: Actor["kind"], mfa = false) {
   const secret = token();
+  const interval = kind === "customer" ? "30 days" : "12 hours";
   await db.query(`insert into sessions(id,user_id,kind,token_hash,auth_version,expires_at,mfa_at)
-    select $1,id,$2,$3,auth_version,now()+interval '12 hours',case when $4 then now() end from users where id=$5`,
-    [uuid(),kind,hash(secret),mfa,userId]);
+    select $1,id,$2,$3,auth_version,now()+($4::interval),case when $5 then now() end from users where id=$6`,
+    [uuid(),kind,hash(secret),interval,mfa,userId]);
   return secret;
 }
 type Identity = { provider: string; issuer: string; subject: string; email: string };
@@ -96,8 +107,11 @@ async function signInIdentity(db: DB, identity: Identity, browser: string, allow
     values($1,$2,$3,$4,$5,$6,now()+interval '20 minutes')`,[hash(secret),email,provider,issuer,subject,hash(browser)]);
   return {state:"onboarding" as const,secret,kind:"customer"};
 }
-export async function startOtp(email: string, browser: string, verifiedIdentity?: Identity) {
+export type OtpPurpose = "signin" | "register" | "link" | "change_email" | "recovery" | "reauth";
+
+export async function startOtp(email: string, browser: string, verifiedIdentity?: Identity, purpose: OtpPurpose = "signin") {
   const normalized = email.trim().toLowerCase();
+  const browserHash = hash(browser);
   const otp = randomInt(0,1000000).toString().padStart(6,"0");
   const challengeId = uuid();
   const demo = isDemo() && normalized.endsWith("@qcw.test");
@@ -105,13 +119,22 @@ export async function startOtp(email: string, browser: string, verifiedIdentity?
   guard(demo || mail.enabled,"EMAIL_UNAVAILABLE","Email verification is unavailable.",503);
   await transaction(async (db) => {
     await lock(db,"otp:" + normalized);
-    const recent = await one<{count:number}>(db,`select count(*)::int count from verification_challenges
-      where (target_email=$1 or browser_binding_hash=$2) and expires_at>now()-interval '1 hour'`,[normalized,hash(browser)]);
-    guard(recent.count < 5,"RATE_LIMITED","Please wait before requesting another code.",429);
-    await db.query(`update verification_challenges set consumed_at=now() where browser_binding_hash=$1 and target_email=$2 and purpose='signin' and consumed_at is null`,[hash(browser),normalized]);
-    const digest = createHmac("sha256",pepper()).update(challengeId + ":" + otp).digest("hex");
+    const budget = await one<{email_count:number;browser_count:number;failed_attempts:number;next_gen:number}>(db,`
+      select
+        count(*) filter (where target_email=$1)::int as email_count,
+        count(*) filter (where browser_binding_hash=$2)::int as browser_count,
+        coalesce(sum(attempts) filter (where target_email=$1 and purpose=$3),0)::int as failed_attempts,
+        coalesce(max(generation) filter (where target_email=$1 and purpose=$3),0)::int + 1 as next_gen
+      from verification_challenges
+      where (target_email=$1 or browser_binding_hash=$2) and expires_at>now()-interval '1 hour'`,
+      [normalized,browserHash,purpose]);
+    guard(budget.email_count < 5 && budget.browser_count < 20 && budget.failed_attempts < 5,
+      "RATE_LIMITED","Please wait before requesting another code.",429);
+    await db.query(`update verification_challenges set consumed_at=now()
+      where browser_binding_hash=$1 and target_email=$2 and purpose=$3 and consumed_at is null`,[browserHash,normalized,purpose]);
+    const digest = createHmac("sha256",pepper()).update(`${challengeId}:${purpose}:${otp}`).digest("hex");
     await db.query(`insert into verification_challenges(id,target_email,purpose,browser_binding_hash,code_hmac,expires_at,generation,verified_identity)
-      values($1,$2,'signin',$3,$4,now()+interval '10 minutes',1,$5)`,[challengeId,normalized,hash(browser),digest,verifiedIdentity ?? null]);
+      values($1,$2,$3,$4,$5,now()+interval '10 minutes',$6,$7)`,[challengeId,normalized,purpose,browserHash,digest,budget.next_gen,verifiedIdentity ?? null]);
   });
   if (!demo) {
     const submitted = await fetch("https://api.postmarkapp.com/email", {
@@ -130,16 +153,29 @@ export async function startOtp(email: string, browser: string, verifiedIdentity?
       guard(false,"EMAIL_UNAVAILABLE","The verification email could not be submitted. Request a new code.",503);
     }
   }
-  return {challenge_id:challengeId,...(demo ? {demo_code:otp} : {})};
+  return {challenge_id:challengeId,resend_after:60,...(demo ? {demo_code:otp} : {})};
 }
-export async function verifyOtp(challengeId: string, otp: string, browser: string) {
+export async function verifyOtp(challengeId: string, otp: string, browser: string, purpose: OtpPurpose = "signin") {
+  const browserHash = hash(browser);
   const result = await transaction(async db => {
-    const c = (await db.query(`select *, expires_at>now() valid from verification_challenges where id=$1 and purpose='signin'
-      and browser_binding_hash=$2 and consumed_at is null for update`,[challengeId,hash(browser)])).rows[0];
+    const target = (await db.query<{target_email:string}>("select target_email::text from verification_challenges where id=$1",[challengeId])).rows[0];
+    if (!target) return null;
+    await lock(db,"otp:" + target.target_email.toLowerCase());
+    const c = (await db.query(`select *, expires_at>now() valid from verification_challenges where id=$1 and purpose=$2
+      and browser_binding_hash=$3 and consumed_at is null for update`,[challengeId,purpose,browserHash])).rows[0];
     if (!c?.valid || c.attempts >= 5) return null;
-    const digest = createHmac("sha256",pepper()).update(challengeId + ":" + otp).digest();
+    const total = await one<{failed:number}>(db,`select coalesce(sum(attempts),0)::int as failed from verification_challenges
+      where target_email=$1 and purpose=$2 and expires_at>now()-interval '1 hour'`,[c.target_email,purpose]);
+    if (total.failed >= 5) {
+      await db.query("update verification_challenges set consumed_at=now() where id=$1",[challengeId]);
+      return null;
+    }
+    const digest = createHmac("sha256",pepper()).update(`${challengeId}:${purpose}:${otp}`).digest();
     if (!timingSafeEqual(digest,Buffer.from(c.code_hmac,"hex"))) {
-      await db.query("update verification_challenges set attempts=attempts+1 where id=$1",[challengeId]);
+      const nextAttempts = Number(c.attempts) + 1;
+      const exhausted = nextAttempts >= 5 || total.failed + 1 >= 5;
+      await db.query("update verification_challenges set attempts=$2,consumed_at=case when $3 then now() else consumed_at end where id=$1",
+        [challengeId,nextAttempts,exhausted]);
       return null;
     }
     await db.query("update verification_challenges set consumed_at=now() where id=$1",[challengeId]);
@@ -307,7 +343,7 @@ export async function staffSignIn(email:string,password:string,otp:string) {
     const [salt,digest]=(user?.password_hash ?? "invalid:"+"0".repeat(128)).split(":");
     const verified=timingSafeEqual(scryptSync(password,salt,64),Buffer.from(digest,"hex"));
     let otpOK=false;
-    if (user?.mfa_secret_enc && /^\d{6}$/.test(otp)) {
+    if (verified && user?.mfa_secret_enc && /^\d{6}$/.test(otp)) {
       const secret=unseal(Buffer.from(user.mfa_secret_enc,"base64url"));
       const counter=Math.floor(Date.now()/30000);
       for (const offset of [-1,0,1]) {

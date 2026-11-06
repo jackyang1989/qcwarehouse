@@ -40,8 +40,9 @@ export function stripeSettings() {
 export function postmarkSettings() {
   const token = get("POSTMARK_SERVER_TOKEN"), from = get("EMAIL_FROM");
   const stream = get("POSTMARK_MESSAGE_STREAM") ?? "outbound";
+  const webhookToken = get("POSTMARK_WEBHOOK_TOKEN");
   const testToken = token === "POSTMARK_API_TEST";
-  return {token, from, stream, testToken, enabled: !isDemo() && !!(token && from) && !testToken};
+  return {token, from, stream, webhookToken, testToken, enabled: !isDemo() && !!(token && from) && !testToken};
 }
 export function trackingSettings() {
   return {

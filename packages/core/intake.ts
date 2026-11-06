@@ -2,6 +2,7 @@ import sharp from "sharp";
 import type { DB } from "../db";
 import { audit, code, event, guard, hash, lock, one, organization, revision, role, uuid, type Actor } from "./common";
 import { readyOrder } from "./orders";
+import { requireSpace } from "./storage";
 
 export function waybill(value:string) {
   const normalized=value.replace(/\s+/g,"").toUpperCase();
@@ -16,9 +17,11 @@ export async function advise(db:DB,actor:Actor,input:{tracking_no:string;address
   const org=organization(actor),tracking=waybill(input.tracking_no);
   await lock(db,"org:"+org);await lock(db,"waybill:"+tracking);
   const carrier=input.carrier_code ? await validCarrier(db,input.carrier_code) : null;
-  const prev=(await db.query(`select a.id,a.org_id,a.revision from tracking_records t join package_advices a on a.id=t.advice_id
-    where t.direction='inbound' and t.closed_at is null and t.tracking_norm=$1 and (t.carrier_code=$2 or t.carrier_code is null or $2 is null)`,[tracking,carrier])).rows[0];
-  guard(!prev || prev.org_id===org,"TRACKING_REVIEW_REQUIRED","This tracking number requires staff verification.");
+  const matches=await candidates(db,tracking,carrier??undefined);
+  const match=matches[0];
+  guard(matches.length<=1 && (!match || match.org_id===org && match.advice_id),
+    "TRACKING_REVIEW_REQUIRED","This tracking number requires staff verification.");
+  const prev=match?{id:match.advice_id,revision:match.advice_revision}:undefined;
   const orders=[...new Set(input.order_ids??[])];
   for(const order of orders) await one(db,"select id from orders where id=$1 and org_id=$2",[order,org]);
   let row=prev;
@@ -33,7 +36,7 @@ export async function advise(db:DB,actor:Actor,input:{tracking_no:string;address
   return {id:row.id,revision:row.revision,state:"advised"};
 }
 export async function candidates(db:DB,tracking:string,carrier?:string) {
-  return (await db.query(`select t.id,t.org_id,t.advice_id,t.package_id,t.carrier_code,p.receiving_code
+  return (await db.query(`select t.id,t.org_id,t.advice_id,t.package_id,t.carrier_code,a.revision advice_revision,p.receiving_code
     from tracking_records t left join package_advices a on a.id=t.advice_id
     left join customer_receiving_profiles p on p.user_id=a.user_id where t.direction='inbound'
     and t.tracking_norm=$1 and t.closed_at is null and ($2::text is null or t.carrier_code is null or t.carrier_code=$2)`,[tracking,carrier??null])).rows;
@@ -90,9 +93,11 @@ export async function checkIn(db:DB,actor:Actor,input:{tracking_no:string;carrie
     values($1,$2,$3,$4,now(),0,$5,$6) returning id,state,revision`,
     [code("P-"),t?.org_id??null,t?.advice_id??null,actor.id,input.weight_g??null,t?.org_id?"checked_in":"unmatched"]);
   await attachEvidence(db,actor,input.outer_media_ids,"intake_outer",{org:t?.org_id??null,package:pkg.id});
-  if(t) await db.query("update tracking_records set package_id=$2,carrier_code=coalesce(carrier_code,$3) where id=$1",[t.id,pkg.id,carrier]);
-  else await db.query(`insert into tracking_records(direction,package_id,carrier_code,tracking_norm,generation,transport_state,sync_state)
-    values('inbound',$1,$2,$3,1,'unknown','pending')`,[pkg.id,carrier,tracking]);
+  if(t) await db.query(`update tracking_records set package_id=$2,carrier_code=coalesce(carrier_code,$3),
+    sync_state=case when sync_state='needs_carrier' and $3::text is not null then 'pending' else sync_state end,
+    revision=revision+1 where id=$1`,[t.id,pkg.id,carrier]);
+  else await db.query(`insert into tracking_records(direction,package_id,carrier_code,tracking_norm,generation,transport_state,sync_state,next_query_at)
+    values('inbound',$1,$2,$3,1,'unknown',case when $2::text is null then 'needs_carrier' else 'pending' end,now())`,[pkg.id,carrier,tracking]);
   await audit(db,actor,"physical_check_in","packages",pkg.id);
   await event(db,"package.received",{package_id:pkg.id});
   return pkg;
@@ -103,9 +108,11 @@ export async function intakeItems(db:DB,actor:Actor,id:string,input:{revision:nu
   if(initial.org_id) await lock(db,"org:"+initial.org_id);
   const pkg=await one(db,"select * from packages where id=$1 for update",[id]);
   revision(pkg.revision,input.revision);
+  const counts=new Map<string,number>();
+  for(const item of input.items) counts.set(item.location_id,(counts.get(item.location_id)??0)+1);
+  for(const id of [...counts.keys()].sort()) await requireSpace(db,id,counts.get(id)!);
   const ids=[];
   for(const item of input.items) {
-    await one(db,"select id from storage_locations where id=$1 and active",[item.location_id]);
     if(item.component_of) await one(db,"select id from warehouse_items where id=$1 and package_id=$2",[item.component_of,id]);
     const row=await one<{id:string}>(db,`insert into warehouse_items(code,org_id,package_id,parent_item_id,intake_batch_id,
       identity_state,condition_state,custody_state,location_id,received_at)
@@ -181,13 +188,15 @@ export async function decideIntakeClaim(db:DB,actor:Actor,id:string,decision:"ap
       [match.package_id,ticket.org_id,advice.id]);
     await db.query("update warehouse_items set org_id=$2,revision=revision+1 where package_id=$1 and org_id is null",[match.package_id,ticket.org_id]);
     await db.query("update media_assets set org_id=$2 where package_id=$1 and org_id is null",[match.package_id,ticket.org_id]);
-    await db.query("update tracking_records set org_id=$2,advice_id=$3,carrier_code=coalesce(carrier_code,$4),revision=revision+1 where id=$1",
+    await db.query(`update tracking_records set org_id=$2,advice_id=$3,carrier_code=coalesce(carrier_code,$4),
+      sync_state=case when sync_state='needs_carrier' then 'pending' else sync_state end,
+      next_query_at=coalesce(next_query_at,now()),revision=revision+1 where id=$1`,
       [match.id,ticket.org_id,advice.id,details.carrier_code]);
     await db.query(`insert into package_claims(id,package_id,applicant_id,evidence_ids,state,reviewed_by,decided_at)
       values($1,$2,$3,$4,'approved',$5,now())`,[uuid(),match.package_id,details.applicant_id,[details.proof_id],actor.id]);
     await event(db,"package.received",{package_id:match.package_id});
   }
-  await db.query("update tickets set state='resolved',resolved_at=now(),details=details||$2::jsonb where id=$1",
+  await db.query("update tickets set state='resolved',resolved_at=now(),next_action_at=null,revision=revision+1,details=details||$2::jsonb where id=$1",
     [id,{decision,reviewed_by:actor.id}]);
   await db.query(`insert into ticket_events(id,ticket_id,actor_type,actor_id,kind,body)
     values($1,$2,'staff',$3,'internal_note',$4)`,[uuid(),id,actor.id,reason]);

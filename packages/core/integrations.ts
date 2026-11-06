@@ -26,7 +26,8 @@ export function oidcSettings(provider: OidcProvider) {
   const { id, secret, issuer } = oauth[provider];
   const clientId = get(id), clientSecret = get(secret);
   const base = origin(get("APP_URL") ?? "http://localhost:3000", process.env.NODE_ENV !== "production");
-  return { clientId, clientSecret, issuer, callback: base && base + "/api/v1/auth/" + provider + "/callback" };
+  const callback=base&&base+"/api/v1/auth/"+provider+"/callback";
+  return {clientId,clientSecret,issuer,callback,configured:!!(clientId && clientSecret && callback)};
 }
 export function stripeSettings() {
   const key = get("STRIPE_SECRET_KEY"), webhook = get("STRIPE_WEBHOOK_SECRET");
@@ -39,7 +40,8 @@ export function stripeSettings() {
 export function postmarkSettings() {
   const token = get("POSTMARK_SERVER_TOKEN"), from = get("EMAIL_FROM");
   const stream = get("POSTMARK_MESSAGE_STREAM") ?? "outbound";
-  return {token, from, stream, testToken: token === "POSTMARK_API_TEST"};
+  const testToken = token === "POSTMARK_API_TEST";
+  return {token, from, stream, testToken, enabled: !isDemo() && !!(token && from) && !testToken};
 }
 export function trackingSettings() {
   return {
@@ -47,17 +49,27 @@ export function trackingSettings() {
     callbackBase: origin(get("TRACKING_CALLBACK_BASE_URL") ?? get("APP_URL")),
   };
 }
+export function signInMethods() {
+  return {
+    google:oidcSettings("google").configured,
+    microsoft:oidcSettings("microsoft").configured,
+    email:postmarkSettings().enabled,
+    demo:isDemo(),
+  };
+}
+export type SignInMethods = ReturnType<typeof signInMethods>;
+
 export function integrationPreflight() {
   const demo = isDemo(), stripe = stripeSettings(), mail = postmarkSettings(), tracking = trackingSettings();
   function oidcStatus(provider: OidcProvider) {
-    const cfg = oidcSettings(provider);
-    return {configured: !!(cfg.clientId && cfg.clientSecret && cfg.callback), callback: cfg.callback};
+    const {configured,callback}=oidcSettings(provider);
+    return {configured,callback};
   }
   return {
     demo, google: oidcStatus("google"), microsoft: oidcStatus("microsoft"),
     stripe: {mode: stripe.mode, webhookConfigured: !!stripe.webhook, liveEnabled: stripe.liveEnabled,
       checkoutConfigured: !demo && !!stripe.webhook && (stripe.mode === "test" || stripe.mode === "live" && stripe.liveEnabled)},
-    postmark: {configured: !!(mail.token && mail.from), testToken: mail.testToken, enabled: !demo && !!(mail.token && mail.from) && !mail.testToken},
+    postmark: {configured: !!(mail.token && mail.from), testToken: mail.testToken, enabled: mail.enabled},
     kuaidi100: {queryConfigured: !!(tracking.key && tracking.customer), httpsCallbackConfigured: !!tracking.callbackBase,
       subscribeConfigured: !!(tracking.key && tracking.callbackBase), workerEnabled: !demo && !!(tracking.key && (tracking.customer || tracking.callbackBase))},
   };

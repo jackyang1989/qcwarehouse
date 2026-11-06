@@ -1,0 +1,52 @@
+name: Core contract
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: qcwarehouse
+          POSTGRES_PASSWORD: qcwarehouse-ci
+          POSTGRES_DB: qcw_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U qcwarehouse -d qcw_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgresql://qcwarehouse:qcwarehouse-ci@127.0.0.1:5432/qcw_test
+      APP_URL: http://localhost:3000
+      AUTH_OTP_PEPPER: ci-only-fixture-pepper-never-use-in-production
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - run: npm ci
+      - name: Validate documented contracts
+        run: |
+          python3 -m venv "$RUNNER_TEMP/qcw-contract"
+          "$RUNNER_TEMP/qcw-contract/bin/python" -m pip install 'PyYAML==6.0.1' 'jsonschema==4.23.0'
+          "$RUNNER_TEMP/qcw-contract/bin/python" docs/contracts/check.py
+      - name: Migrate empty database and verify relations
+        run: |
+          DATABASE_URL="$TEST_DATABASE_URL" npm run db:migrate
+          psql "$TEST_DATABASE_URL" -X -v ON_ERROR_STOP=1 -f docs/contracts/verify.sql
+      - run: npm run test:integration
+      - run: npm run build
+      - run: npm run check

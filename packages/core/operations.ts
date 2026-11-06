@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { DB } from "../db";
 import { audit, code, event, guard, hash, lock, one, organization, revision, role, uuid, type Actor } from "./common";
 import { readyOrder, templateSchema } from "./orders";
+import { requireSpace } from "./storage";
 
 export async function cancelOrder(db:DB,actor:Actor,id:string,rev:number) {
   const org=organization(actor);
@@ -56,13 +57,15 @@ export async function publishTemplate(db:DB,actor:Actor,id:string) {
   await audit(db,actor,"publish_template","template_versions",id);
   return {id,state:"PUBLISHED"};
 }
-export async function reportIssue(db:DB,actor:Actor,subject:string,message:string,orderId?:string) {
+export const orderCaseCategory=z.enum(["receipt_mismatch","measurement_dispute","return_info_incomplete","damage_or_loss","payment_refund"]);
+export async function reportIssue(db:DB,actor:Actor,subject:string,message:string,orderId?:string,category?:z.infer<typeof orderCaseCategory>) {
   const org=organization(actor);
+  guard(!category||orderId,"ORDER_REQUIRED","Select an order for this type of support case.",422);
   if(orderId) await one(db,"select id from orders where id=$1 and org_id=$2",[orderId,org]);
   const id=uuid();
   const ticket=await one(db,`insert into tickets(id,public_no,org_id,order_id,category,subject,next_action_at)
-    values($1,$2,$3,$4,'non_standard_quote',$5,now()+interval '24 hours') returning id,public_no,state`,
-    [id,code("C-"),org,orderId??null,subject]);
+    values($1,$2,$3,$4,$5,$6,now()+interval '24 hours') returning id,public_no,state`,
+    [id,code("C-"),org,orderId??null,category??"non_standard_quote",subject]);
   await db.query("insert into ticket_events(id,ticket_id,actor_type,actor_id,kind,body) values($1,$2,'customer',$3,'message',$4)",[uuid(),id,actor.id,message]);
   await audit(db,actor,"create_ticket","tickets",id);
   return ticket;
@@ -74,14 +77,15 @@ export async function moveItem(db:DB,actor:Actor,id:string,rev:number,location:s
   const w=await one(db,"select * from warehouse_items where id=$1 for update",[id]);
   revision(w.revision,rev);
   guard(["stored","received"].includes(w.custody_state),"ITEM_UNAVAILABLE","This item is not in storage.");
-  await one(db,"select id from storage_locations where id=$1 and active",[location]);
+  guard(w.location_id!==location,"LOCATION_UNCHANGED","Choose a different storage location.");
+  await requireSpace(db,location,1);
   await db.query("update warehouse_items set location_id=$2,revision=revision+1 where id=$1",[id,location]);
   await db.query("insert into storage_events(item_id,from_location_id,to_location_id,action,operator_id) values($1,$2,$3,'move',$4)",[id,w.location_id,location,actor.id]);
   await audit(db,actor,"move_item","warehouse_items",id,{location_id:location});
   return {id,revision:rev+1};
 }
 export async function scopeProposal(db:DB,actor:Actor,id:string,input:{revision:number;reason:string;positions:string[]}) {
-  if(actor.kind==="staff") role(actor,"support");
+  if(actor.kind==="staff") role(actor,"support","super_admin");
   const first=await one(db,"select org_id from orders where id=$1 and ($2::uuid is null or org_id=$2)",[id,actor.org]);
   await lock(db,"org:"+first.org_id);
   const o=await one(db,"select * from orders where id=$1 for update",[id]);
@@ -103,10 +107,31 @@ export async function scopeProposal(db:DB,actor:Actor,id:string,input:{revision:
   }
   const seq=await one<{n:number}>(db,"select coalesce(max(revision),0)::int+1 n from scope_revisions where order_id=$1",[id]);
   const row=await one(db,`insert into scope_revisions(id,order_id,revision,previous_snapshot,proposed_snapshot,reason,adjustment_cents)
-    values($1,$2,$3,$4,$5,$6,$7) returning id as scope_revision_id,adjustment_cents`,
+    values($1,$2,$3,$4,$5,$6,$7) returning id as scope_revision_id,adjustment_cents,revision`,
     [uuid(),id,seq.n,{positions:positions.map(x=>x.id),order_revision:o.revision},{positions:input.positions},input.reason,adjustment]);
   await audit(db,actor,"propose_scope","orders",id);
   return row;
+}
+export async function scopeReview(db:DB,actor:Actor,id:string) {
+  const org=actor.kind==="customer"?organization(actor):null;
+  if(org===null)role(actor,"support","super_admin");
+  const order=await one<{id:string;revision:number;state:string;public_no:string}>(db,
+    "select id,revision,state,public_no from orders where id=$1 and ($2::uuid is null or org_id=$2)",[id,org]);
+  const positions=(await db.query(`select e.id,e.position,e.in_scope,l.id line_id,s.title,st.code service,w.code item_code
+    from expected_items e join order_lines l on l.id=e.order_line_id join service_offers s on s.id=l.offer_id
+    join service_types st on st.id=s.service_type_id
+    left join order_line_item_links a on a.expected_item_id=e.id and a.unlinked_at is null
+    left join warehouse_items w on w.id=a.item_id and w.org_id=l.org_id
+    where l.order_id=$1 order by l.id,e.position`,[id])).rows;
+  const proposals=(await db.query(`select s.id,s.revision,s.reason,s.adjustment_cents,s.accepted_at,
+    s.previous_snapshot->'positions' previous_positions,s.proposed_snapshot->'positions' proposed_positions,
+    case when s.accepted_at is not null then 'accepted'
+      when $2='awaiting_samples' and s.previous_snapshot->>'order_revision'=$3::text then 'pending' else 'stale' end state,
+    (select jsonb_build_object('id',k.id,'state',k.state) from tickets k
+      where k.order_id=s.order_id and k.category='payment_refund' and k.details->>'scope_revision_id'=s.id::text
+      order by k.created_at desc limit 1) refund_case
+    from scope_revisions s where s.order_id=$1 order by s.revision desc`,[id,order.state,order.revision])).rows;
+  return {order,positions,proposals};
 }
 export async function acceptScope(db:DB,actor:Actor,id:string,rev:number) {
   const org=organization(actor);

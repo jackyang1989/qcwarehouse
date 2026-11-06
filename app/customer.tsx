@@ -1,140 +1,287 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { Action, checked, Empty, ErrorBlock, Field, Form, Panel, Photo, request, Select, stamp, Table, Tag, text, useLoad, usd, type Row } from "./ui";
+import { ScopeReview } from "./scope-review";
+import { ReportShares } from "./report-sharing";
+import { RecentUpdates } from "./notifications";
+import { PlatformIcon } from "./chrome";
+import { CategoryTiles } from "./category-coverage";
+import { useSearchParams } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { customerDestination, legalPages, orderSections, type OrderSection, servicePages } from "../packages/core/portal-routes";
+import { Action, checked, Empty, ErrorBlock, Field, Form, Panel, Photo, request, RequestError, Select, stamp, Table, Tabs, Tag, text, useLoad, usd, type Row } from "./ui";
 
 const acknowledged={scope_notice:"I understand which checks are included.",samples_not_batch:"These samples do not represent an entire production batch.",seller_refund_is_mine:"I handle any refund request directly with my seller.",no_certification:"The report is an inspection record and does not provide certification.",restricted_items:"My items comply with the restricted items policy."};
-const states:Record<string,string>={draft:"Draft",awaiting_payment:"Awaiting payment",awaiting_samples:"Awaiting items",queued:"Ready for inspection",inspecting:"Inspection underway",qa_review:"Under review",report_ready:"Report ready",action_pending:"Awaiting disposition",cancelled:"Cancelled",closed:"Closed",on_hold:"On hold"};
+const states:Record<string,string>={checked_in:"Received at warehouse",draft:"Draft",awaiting_payment:"Awaiting payment",awaiting_samples:"Awaiting items",queued:"Ready for inspection",inspecting:"Inspection underway",qa_review:"Under review",report_ready:"Report ready",action_pending:"Awaiting disposition",cancelled:"Cancelled",closed:"Closed",on_hold:"On hold"};
 const label=(state:string)=>states[state]??state.replaceAll("_"," ");
+const orderNext:Record<string,string>={
+  draft:"Review the inspection scope and calculate a quote.",
+  awaiting_payment:"Review or resume the inspection payment.",
+  awaiting_samples:"Add the seller’s tracking number. Inspection starts after all commissioned items are received and identified.",
+  queued:"The items are ready and the order is waiting for an inspector.",
+  inspecting:"The warehouse is checking the commissioned items.",
+  qa_review:"The report is undergoing independent review.",
+  report_ready:"Review the published report, then choose what happens to each item.",
+  action_pending:"Review your warehouse items and outstanding handling instructions.",
+  on_hold:"Review any open support cases for this order.",
+  cancelled:"Inspection has ended. Any items still held by the warehouse remain available for handling instructions.",
+};
 
-export function Login({staff=false}:{staff?:boolean}) {
-  const {data}=useLoad("/auth/providers");
-  const [challenge,setChallenge]=useState<Row>(),[email,setEmail]=useState("");
-  const [query,setQuery]=useState<URLSearchParams>();
-  useEffect(()=>setQuery(new URLSearchParams(location.search)),[]);
-  async function after(v:Row) {
-    if(v.kind==="staff") {
-      const {actor}=await request("/me");
-      const admin=actor.roles.some((r:string)=>["super_admin","support","finance","template_admin"].includes(r));
-      const warehouse=actor.roles.some((r:string)=>["receiver","warehouse_admin","inspector","reviewer"].includes(r));
-      location.assign(admin && !(staff && warehouse && !location.pathname.startsWith("/admin"))?"/admin":"/wh");
-      return;
-    }
-    location.assign(v.state==="onboarding"?"/onboarding":"/account");
-  }
-  return <div className="narrow panel"><p className="eyebrow">{staff?"QCW STAFF":"QCW CUSTOMER ACCOUNT"}</p><h1>{staff?"员工登录":"Sign in or register"}</h1>
-    {query?.get("oauth")&&<ErrorBlock error={query.get("oauth")==="link_required"?"This identity needs linking from your existing account.":"Provider sign-in was not completed. Try again or use email."}/>}
-    {query?.has("verify")&&<div className="notice">Verify your email address to finish connecting your Microsoft or Google account.</div>}
-    {!staff&&<div className="actions">
-      {data?.google&&<a className="button" href="/api/v1/auth/google/start">Continue with Google</a>}
-      {data?.microsoft&&<a className="button" href="/api/v1/auth/microsoft/start">Continue with Microsoft</a>}
-    </div>}
-    {staff&&!data?.demo?<Form label="登录" run={async f=>after(await request("/staff/auth/login","POST",{email:text(f,"email"),password:text(f,"password"),otp:text(f,"otp")}))}>
-      <Field label="邮箱" name="email" type="email"/><Field label="密码" name="password" type="password"/><Field label="验证器动态码" name="otp"/>
-    </Form>:!challenge?<Form label={staff?"获取验证码":"Email me a verification code"} run={async f=>{
-      const e=text(f,"email");setEmail(e);setChallenge(await request("/auth/otp/request","POST",{email:e}));
-    }}><Field label={staff?"员工邮箱":"Email address"} name="email" type="email" value={email}/></Form>:
-      <><p>{email}</p>{challenge.demo_code&&<div className="notice">Local verification code <strong className="code">{challenge.demo_code}</strong></div>}
-      <Form label={staff?"验证并登录":"Verify email"} run={async f=>after(await request("/auth/otp/verify","POST",{challenge_id:challenge.challenge_id,code:text(f,"code")}))}>
-        <Field label="Verification code / 验证码" name="code" value={challenge.demo_code}/></Form>
-      <button type="button" onClick={()=>setChallenge(undefined)}>Change email</button></>}
-    {data?.demo&&<p className="small muted">{staff?"测试员工邮箱：receiving、inspector、reviewer、admin，后缀 @qcw.test。":"Local demo: use an email ending in @qcw.test."}</p>}
-  </div>;
-}
-export function Onboarding() {
-  const {data,error}=useLoad("/public/terms");
-  const terms=data?.terms.filter((t:Row)=>["terms","privacy"].includes(t.kind))??[];
-  return <div className="narrow panel"><h1>Activate your receiving address</h1><p>Review the account terms to get your permanent receiving code.</p>
-    {error&&<ErrorBlock error={error}/>}
-    {terms.length===2&&<Form label="Create my account" run={async f=>{
-      if(!checked(f,"accept")) throw new Error("Accept both policies to continue.");
-      await request("/auth/registration/complete","POST",{terms_version_ids:terms.map((t:Row)=>t.id)});
-      location.assign("/account");
-    }}>
-      {terms.map((t:Row)=><details key={t.id}><summary>{t.kind==="terms"?"Terms of service":"Privacy notice"} · {t.version}</summary><p>{t.content_md}</p></details>)}
-      <label className="check"><input type="checkbox" name="accept" required/> I accept the terms of service and privacy notice.</label>
-    </Form>}
-  </div>;
-}
-export function Catalog() {
-  const {data,error}=useLoad("/catalog");
-  const [category,setCategory]=useState("");
-  const offers:Row[]=data?.offers??[];
+const serviceDetails={
+  inspection:{title:"Product inspection",description:"Commission a check for each item you send, from one piece to a larger group. The selected template determines the checks and evidence."},
+  compare:{title:"Side-by-side sample comparison",description:"Compare two or three items of the same kind against the selected checks. Each item keeps its own results and evidence."},
+  reference_match:{title:"Reference sample comparison",description:"Compare a new item with an eligible reference sample already stored in your account. The reference must be available for the selected service."},
+};
+export function Catalog({path}:{path:string}) {
+  const {data,error,reload}=useLoad("/catalog");
+  const [category,setCategory]=useState<string>();
+  const requestedCategory=useSearchParams().get("category")??"";
+  const service=servicePages[path as keyof typeof servicePages];
+  const info=service?serviceDetails[service]:null;
+  const offers:Row[]=(data?.offers??[]).filter((offer:Row)=>!service||offer.service===service);
   const categories=new Map<string,string>(offers.map(o=>[o.category_id,o.category.en]));
-  return <><div className="page-head"><p className="eyebrow">SERVICE CATALOGUE</p><h1>Choose your inspection</h1><p className="muted">Select a product category to see the available services and quantity ranges.</p></div>
-    {error&&<ErrorBlock error={error}/>}
-    {categories.size>0&&<div className="actions" aria-label="Product categories">{[...categories].map(([id,name])=>
-      <button type="button" className={category===id?"primary":""} aria-pressed={category===id} key={id} onClick={()=>setCategory(id)}>{name}</button>)}</div>}
-    <div className="grid">{offers.filter(o=>o.category_id===category).map((o:Row)=><article className="card" key={o.offer_id}>
-      <Tag>{o.category.en}</Tag><h2>{o.title.en}</h2><p>{o.rules.minimum}–{o.rules.maximum} items · {o.rules.business_days} business days after intake</p>
-      <p><strong>{usd(o.rules.unit_cents??o.rules.package_cents)}</strong> {o.rules.unit_cents?"per item":"per group"}</p>
-      {o.rules.demo&&<p className="muted small">Development catalogue and prices</p>}
-      <Link className="button primary" href={"/orders/new?offer="+o.offer_id}>Choose service</Link>
-    </article>)}</div>{data?.offers.length===0&&<Empty>No services are available for purchase yet.</Empty>}</>;
+  const activeCategory=category??requestedCategory;
+  const selected=categories.has(activeCategory)?activeCategory:"";
+  const isCategories=path==="/categories",isPricing=path==="/pricing";
+  return <><section className="page-head public-masthead"><p className="eyebrow">{isCategories?"Category coverage":isPricing?"Pricing":"Service catalogue"}</p>
+    <h1>{info?.title??(isCategories?"Product categories":isPricing?"Inspection pricing":"Inspection services")}</h1>
+    <p className="muted">{info?.description??"Select a product category to see the available services and quantity ranges."}</p>
+    {info&&<div className="actions"><Link className="button" href="/report-guide">Explore Sample Report →</Link></div>}</section>
+    {isCategories&&<div className="catalog-coverage"><CategoryTiles offers={offers.map(offer=>({category_id:offer.category_id,category:offer.category}))}/></div>}
+    {path==="/catalog"&&<div className="land-services catalog-coverage">
+      {Object.entries(servicePages).map(([href,code])=><Link className="land-svc" href={href} key={href}><span className="symbol"><PlatformIcon name={code==="compare"?"compare":code==="inspection"?"inspection":"packages"}/></span>
+        <h3>{serviceDetails[code].title}</h3><p>{serviceDetails[code].description}</p><span className="go">View service →</span></Link>)}
+    </div>}
+    <Tabs path={path} links={[["/catalog","All services"],...Object.entries(servicePages).map(([href,code]):[string,string]=>[href,serviceDetails[code].title])]}/>
+    {error&&<><ErrorBlock error={error}/><button type="button" onClick={reload}>Try again</button></>}
+    {!data&&!error&&<p role="status">Loading services…</p>}
+    {categories.size>0&&<div className="catalog-filter"><h2>Product category</h2><div className="actions" aria-label="Product categories">{[...categories].map(([id,name])=>
+      <button type="button" className={selected===id?"primary":""} aria-pressed={selected===id} key={id} onClick={()=>setCategory(id)}>{name}</button>)}</div></div>}
+    {categories.size>0&&!selected&&<p className="muted">Select a category to see available checks and pricing.</p>}
+    {selected&&<section className="catalog-offers" aria-label={categories.get(selected)+" offers"}>
+      {offers.filter(o=>o.category_id===selected).map((o:Row)=><article className="catalog-offer" key={o.offer_id}>
+        <div><p className="eyebrow">{o.sku_code}</p><h2>{o.title.en}</h2>
+          <p>{o.rules.minimum===o.rules.maximum?o.rules.minimum:o.rules.minimum+"–"+o.rules.maximum} items · {o.rules.business_days} business days after all items are received and identified</p>
+          {o.rules.demo&&<p className="muted small">Development catalogue and prices</p>}
+        </div>
+        <div className="catalog-price"><div><strong>{usd(o.rules.unit_cents??o.rules.package_cents)}</strong><small>{o.rules.unit_cents!=null?"per item":"per group"}</small></div>
+          <Link className="button primary" href={"/orders/new?offer="+o.offer_id}>Choose service</Link>
+        </div>
+      </article>)}
+    </section>}
+    {data&&offers.length===0&&<Empty>No matching services are available for purchase yet.</Empty>}
+    <div className="catalog-support"><div><h2>Need a different scope?</h2><p className="muted">Tell us the category, quantity and checks you need.</p></div><Link className="button" href="/contact">Request a custom inspection →</Link></div></>;
 }
-export function Legal() {
-  const {data,error}=useLoad("/public/terms");
-  return <><h1>Terms & privacy</h1>{error&&<ErrorBlock error={error}/>}
-    {data?.terms.map((t:Row)=><Panel key={t.id} title={label(t.kind)}><small>{t.version}</small><p>{t.content_md}</p></Panel>)}</>;
+const legalTitles:Record<string,string>={terms:"Terms of service",privacy:"Privacy notice",restricted_items:"Restricted items",report_notice:"Report notice"};
+function PolicyLinks({policies}:{policies:Row[]}) {
+  return <ul>{policies.map(t=>{
+    const page=Object.entries(legalPages).find(([,kind])=>kind===t.kind)?.[0];
+    return page&&<li key={t.kind}><Link href={page+"?"+new URLSearchParams({version:t.version})}
+      target="_blank" rel="noreferrer">{legalTitles[t.kind]} · {t.version} <span className="muted">(new tab)</span></Link></li>;
+  })}</ul>;
+}
+export function Legal({path}:{path:string}) {
+  const kind=legalPages[path as keyof typeof legalPages];
+  const query=useSearchParams();
+  const versions=query.getAll("version");
+  const suffix=versions.length?"?"+new URLSearchParams(versions.map(v=>["version",v])):"";
+  const {data,error,reload}=useLoad("/public/terms"+(kind?"/"+kind+suffix:""));
+  const terms:Row[]=data?.terms??[];
+  return <><div className="page-head public-masthead"><p className="eyebrow">Policies</p><h1>{kind?legalTitles[kind]:"Terms & privacy"}</h1></div>
+    <Tabs path={path} links={Object.entries(legalPages).map(([href,key]):[string,string]=>[href,legalTitles[key]])}/>
+    {kind&&versions.length>0&&<p><Link href={path}>View the current version</Link></p>}
+    {error&&<><ErrorBlock error={error}/><button type="button" onClick={reload}>Try again</button></>}
+    {!data&&!error&&<p role="status">Loading policies…</p>}
+    {data&&terms.length===0&&<Empty>No current version is available.</Empty>}
+    {terms.map(t=><Panel key={t.id} title={legalTitles[t.kind]}>
+      <p className="muted">Version {t.version} · Effective <time dateTime={t.effective_at}>{t.effective_at.slice(0,10)} UTC</time></p>
+      <div className="policy-content">{t.content_md}</div>
+    </Panel>)}</>;
+}
+const customerSteps=[
+  ["Get your receiving address","Create an account and copy the shared warehouse address with your personal receiving code."],
+  ["Buy directly from the seller","Use the warehouse address at the seller’s checkout. You pay the seller and keep their purchase record."],
+  ["Register the waybill and commission your checks","Add the original seller tracking number. Choose an available service for your category. Inspection timing starts when all commissioned items have been received and identified."],
+  ["Review your report","Read the recorded checks and evidence for the items in your inspection."],
+  ["Choose where each item goes","Provide a forwarding address or the seller’s approved return address. You arrange the seller return and pay the quoted shipping. The warehouse records the actual outbound tracking number after handover."],
+];
+export function HowItWorks() {
+  return <><div className="page-head public-masthead"><p className="eyebrow">From purchase to dispatch</p><h1>How it works</h1><p className="muted">Follow your items from the seller’s shipment through inspection and warehouse handling.</p></div>
+    <ol className="process-detail">{customerSteps.map(([title,body],index)=><li className="panel" key={title}><span className="symbol">{String(index+1).padStart(2,"0")}</span><div><h2>{title}</h2><p className="muted">{body}</p></div></li>)}</ol>
+    <div className="actions"><Link className="button primary" href="/catalog">Find an inspection service</Link><Link href="/faq">Read frequently asked questions</Link></div></>;
 }
 export function NewOrder() {
   const {data,error}=useLoad("/catalog"),refs=useLoad("/me/reference-samples");
   const [lines,setLines]=useState<Row[]>([]);
   const [selected,setSelected]=useState("");
+  const [category,setCategory]=useState("");
   useEffect(()=>setSelected(new URLSearchParams(location.search).get("offer")??""),[]);
-  const offer=data?.offers.find((x:Row)=>x.offer_id===selected);
-  return <><h1>New inspection</h1><p className="muted">Add each service and quantity, then request a versioned quote.</p>
+  const offers:Row[]=data?.offers??[];
+  const offer=offers.find(x=>x.offer_id===selected);
+  const currentCategory=category||offer?.category_id||"";
+  const categories=[...new Map<string,string>(offers.map(entry=>[entry.category_id,entry.category.en]))];
+  const eligibleOffers=offers.filter(entry=>entry.category_id===currentCategory);
+  const total=lines.reduce((quantity,line)=>quantity+line.quantity,0);
+  return <><div className="page-head"><p className="eyebrow">CLIENT WORKSPACE / NEW ORDER</p><h1>New inspection</h1>
+    <p className="muted">Define the items and checks. Review the quote before submitting the order for payment.</p></div>
     {error&&<ErrorBlock error={error}/>}
-    <Panel title="Service selection">
+    <ol className="order-progress" aria-label="Inspection setup">
+      <li aria-current="step"><span>01</span>Category &amp; scope</li>
+      <li><span>02</span>Review quote</li>
+      <li><span>03</span>Payment</li>
+    </ol>
+    <div className="ops-columns">
+    <Panel title="Define the inspection">
       <Form label="Add service" run={async f=>{
         if(!offer)throw new Error("Choose a service.");
         const quantity=Number(f.get("quantity"));
-        if(quantity<offer.rules.minimum||quantity>(offer.service==="inspection"?300:offer.rules.maximum))throw new Error("Choose a quantity within the offer range.");
+        if(!Number.isInteger(quantity)||quantity<offer.rules.minimum||quantity>(offer.service==="inspection"?300:offer.rules.maximum))throw new Error("Choose a quantity within the offer range.");
         setLines(x=>[...x,{category_id:offer.category_id,offer_id:offer.offer_id,quantity,title:offer.title.en,
           options:offer.service==="reference_match"?{reference_id:text(f,"reference_id")}:{},
           attributes:{name:text(f,"item_name")}}]);
       }}>
-        <label>Category and service<select value={selected} onChange={e=>setSelected(e.target.value)} required><option value="">Choose a service</option>
-          {data?.offers.map((o:Row)=><option key={o.offer_id} value={o.offer_id}>{o.category.en} · {o.title.en}</option>)}</select></label>
+        <label>Product category<select value={currentCategory} onChange={event=>{setCategory(event.target.value);setSelected("");}} required>
+          <option value="">Choose a category</option>{categories.map(([id,name])=><option key={id} value={id}>{name}</option>)}
+        </select></label>
+        <label>Service<select value={offer?.offer_id??""} onChange={event=>setSelected(event.target.value)} required>
+          <option value="">{currentCategory?"Choose a service":"Select a category first"}</option>
+          {eligibleOffers.map(o=><option key={o.offer_id} value={o.offer_id}>{o.title.en}</option>)}</select></label>
         {offer&&<Field key={offer.offer_id} label="Actual number of items" name="quantity" type="number" min={offer.rules.minimum} max={offer.service==="inspection"?300:offer.rules.maximum} value={offer.rules.minimum}/>}
         <Field label="Product name or style" name="item_name"/>
         {offer?.service==="reference_match"&&<Select name="reference_id" label="Active reference sample" choices={(refs.data?.items??[]).filter((r:Row)=>r.state==="active").map((r:Row)=>({id:r.reference_id,label:r.item_id+" · "+stamp(r.expires_at)}))}/>}
       </Form>
-      {lines.length>0&&<><Table headers={["Service","Quantity",""]} rows={lines.map((l,i)=>[l.title,l.quantity,<button type="button" onClick={()=>setLines(xs=>xs.filter((_,n)=>n!==i))}>Remove</button>])}/>
-      <Action primary run={async()=>{const r=await request("/orders","POST",{lines:lines.map(({title,...l})=>l)});location.assign("/orders/"+r.public_no);}}>Save draft and continue</Action></>}
-    </Panel></>;
+    </Panel>
+    <Panel title="Inspection summary">
+      {lines.length?<><p className="muted">{lines.length} {lines.length===1?"service":"services"} · {total} {total===1?"item":"items"}</p>
+        <ul className="draft-lines">{lines.map((line,index)=><li key={index}><div><strong>{line.title}</strong><small>{line.attributes.name} · {line.quantity} {line.quantity===1?"item":"items"}</small></div>
+          <button type="button" aria-label={"Remove "+line.title} onClick={()=>setLines(items=>items.filter((_,position)=>position!==index))}>Remove</button>
+        </li>)}</ul>
+        <Action primary run={async()=>{const r=await request("/orders","POST",{lines:lines.map(({title,...line})=>line)});location.assign("/orders/"+r.public_no);}}>Save draft and continue</Action>
+      </>:<Empty>Add a service to start the draft. The next step shows the server-calculated quote.</Empty>}
+    </Panel>
+    </div></>;
 }
-export function OrderView({number}:{number:string}) {
+export function OrderView({number,section}:{number:string;section?:OrderSection}) {
   const lookup=useLoad("/orders/by-number/"+number);
   const id=lookup.data?.id;
   const detail=useLoad(id?"/orders/"+id:null),terms=useLoad("/public/terms");
+  const payment=useLoad(id&&(!section||section==="payment")?"/orders/"+id+"/payment":null);
+  const receiving=useLoad(section==="parcels"?"/me/receiving-address":null);
+  const carriers=useLoad(section==="parcels"?"/carriers":null);
+  const base="/orders/"+number;
+  const sectionLinks:[string,string][]=[[base,"Overview"],...Object.entries(orderSections).map(([key,title]):[string,string]=>[base+"/"+key,title])];
   const [calculatedQuote,setQuote]=useState<Row>();
+  const [checkoutNotice,setCheckoutNotice]=useState<{text:string;error?:boolean;expired?:boolean}>();
+  const [openedCase,setOpenedCase]=useState<string>();
   const o=detail.data;
   const quote=o?.manual_quote?.id?o.manual_quote:calculatedQuote;
-  return <><h1>{number}</h1>{(lookup.error||detail.error)&&<ErrorBlock error={lookup.error||detail.error}/>}
-    {o&&<><p><Tag>{label(o.state)}</Tag></p><Panel title="Inspection scope">
-      <Table headers={["Service","Position","Warehouse item","Custody"]} rows={o.items.map((i:Row)=>[i.title.en,i.position??i.quantity,i.code??"Awaiting assignment",i.custody_state??"—"])}/>
+  const paymentState=payment.data?.state;
+  const refreshPayment=()=>{detail.reload();payment.reload();};
+  useEffect(()=>{
+    if(paymentState!=="processing"&&!(checkoutNotice&&!checkoutNotice.error&&o?.state==="awaiting_payment"))return;
+    const timer=setInterval(()=>{detail.reload();payment.reload();},15000);
+    return ()=>clearInterval(timer);
+  },[paymentState,checkoutNotice,o?.state,detail.reload,payment.reload]);
+  async function continuePayment(chargeId:string,quoteRevision:number) {
+    setCheckoutNotice(undefined);
+    try {
+      const result=await request("/charges/"+chargeId+"/checkout","POST",{quote_revision:quoteRevision});
+      if(result.checkout_url) location.assign(result.checkout_url);
+      else if(result.state==="processing") setCheckoutNotice({text:"Payment is processing. Refresh this order for the confirmed status."});
+    } catch(error) {
+      setCheckoutNotice({text:error instanceof Error?error.message:"Checkout could not start.",error:true,
+        expired:error instanceof RequestError&&error.code==="QUOTE_EXPIRED"});
+    } finally {
+      refreshPayment();
+    }
+  }
+  return <><div className="page-head row"><div><Link href="/orders">← Inspection orders</Link><h1 className="order-number">{number}</h1></div>{o&&<Tag>{label(o.state)}</Tag>}</div>
+    {(lookup.error||detail.error)&&<ErrorBlock error={lookup.error||detail.error}/>}
+    {!o&&!lookup.error&&!detail.error&&<p role="status">Loading inspection order…</p>}
+    {o&&<>
+      <Tabs path={section?base+"/"+section:base} links={sectionLinks}/>
+      {section==="parcels"&&<Panel title="Register seller tracking for this order">
+        {receiving.error||carriers.error?<ErrorBlock error={receiving.error||carriers.error}/>:!receiving.data?<p role="status">Loading the receiving address…</p>:
+          <InboundParcelForm address={receiving.data.warehouse_address} carriers={carriers.data?.carriers??[]} orderId={o.id} onSave={detail.reload}/>}
+      </Panel>}
+      {(section==="dispositions"||section==="storage")&&<OrderHandling order={o} storage={section==="storage"} onSave={detail.reload}/>}
+      {!section&&orderNext[o.state]&&<div className="order-next"><div><span className="eyebrow">NEXT STEP</span><p>{orderNext[o.state]}</p></div>
+        {o.state==="awaiting_samples"&&<Link className="button" href={base+"/parcels"}>Register seller tracking</Link>}
+        {["report_ready","action_pending","cancelled"].includes(o.state)&&<Link className="button" href={base+"/dispositions"}>Open item instructions</Link>}
+      </div>}
+      {(section==="payment"||!section&&o.state==="awaiting_payment")&&<Panel title="Inspection payment">
+        {payment.error?<ErrorBlock error={payment.error}/>:!payment.data?<p role="status">Loading the current charge…</p>:<>
+          {payment.data.charge&&<p><strong>{usd(payment.data.charge.amount_cents)}</strong> · Quote {payment.data.charge.quote_revision}</p>}
+          {paymentState==="open"&&!checkoutNotice?.expired&&<Action primary run={()=>continuePayment(payment.data!.charge.id,payment.data!.charge.quote_revision)}>Resume payment</Action>}
+          {paymentState==="processing"&&<p role="status">Payment is processing. We will update the order after confirmation.</p>}
+          {(paymentState==="expired"||checkoutNotice?.expired)&&<p>The quote has expired. Review a new quote for this order.</p>}
+          {paymentState==="paid"&&<p><Tag>Payment confirmed</Tag></p>}
+          {paymentState==="not_due"&&<p>{o.state==="draft"?"Calculate and accept a quote to create the inspection charge.":"There is no payable inspection charge for this order."}</p>}
+        </>}
+        {checkoutNotice&&(checkoutNotice.error?<ErrorBlock error={checkoutNotice.text}/>:<p role="status">{checkoutNotice.text}</p>)}
+        <div className="actions"><button type="button" onClick={refreshPayment}>Refresh payment status</button>
+          <Link href={payment.data?.charge?"/account/billing#charge-"+payment.data.charge.id:"/account/billing"}>Open billing</Link></div>
+      </Panel>}
+      {(!section||section==="payment")&&<Panel title="Inspection scope">
+      <Table headers={["Service","Position","Warehouse item","Custody"]} rows={o.items.map((i:Row)=>[i.title.en,i.position??i.quantity,i.code??"Awaiting assignment",i.custody_state?label(i.custody_state):"—"])}/>
       {o.report_version&&<Link className="button primary" href={"/orders/"+number+"/report"}>Open inspection report</Link>}
-      {["draft","awaiting_payment"].includes(o.state)&&<div className="actions"><Action primary run={async()=>setQuote(await request("/orders/"+id+"/quotes","POST",{revision:o.revision}))}>Calculate quote</Action><Link href="/account/billing">Open billing</Link></div>}
+      {(o.state==="draft"||o.state==="awaiting_payment"&&(paymentState==="expired"||checkoutNotice?.expired))&&
+        <div className="actions"><Action primary run={async()=>setQuote(await request("/orders/"+id+"/quotes","POST",{revision:o.revision}))}>{o.state==="draft"?"Calculate quote":"Review a new quote"}</Action></div>}
       {o.state==="draft"&&<details className="card"><summary>Need a manual quote?</summary>
         {o.manual_quote?<p>Quote request · {o.manual_quote.state}</p>:<Form label="Request manual quote" run={async f=>{
           await request("/orders/"+id+"/manual-quote-request","POST",{revision:o.revision,reason:text(f,"reason")});detail.reload();
         }}><Field label="Describe your requirements" name="reason"/></Form>}
       </details>}
-      {quote&&<><hr className="divider"/><h3>{usd(quote.amount_cents)} · expires {stamp(quote.expires_at)}</h3>
+      {quote&&["draft","awaiting_payment"].includes(o.state)&&<><hr className="divider"/><h3>{usd(quote.amount_cents)} · expires {stamp(quote.expires_at)}</h3>
         <Table headers={["Quantity","Line amount","Business days"]} rows={quote.line_snapshot.map((l:Row)=>[l.quantity,usd(l.amount_cents),l.business_days])}/>
-        <Form label={quote.amount_cents===0?"Accept no-charge quote":"Accept quote and pay"} run={async f=>{
+        {terms.error?<><ErrorBlock error={terms.error}/><button type="button" onClick={terms.reload}>Retry loading policies</button></>:
+          !terms.data?<p role="status">Loading policies…</p>:terms.data.terms.length!==4?<Empty>Current policies are unavailable. Please try again later.</Empty>:
+          <Form label={quote.amount_cents===0?"Accept no-charge quote":"Accept quote and pay"} run={async f=>{
           const acknowledgements=Object.fromEntries(Object.keys(acknowledged).map(k=>[k,checked(f,k)]));
           const accepted=await request("/orders/"+id+"/submit","POST",{revision:o.revision,quote_id:quote.id,
             terms_version_ids:terms.data?.terms.map((t:Row)=>t.id)??[],acknowledgements});
-          await goCheckout(accepted.charge.charge_item_id,quote.revision);
+          setQuote(undefined);
+          await continuePayment(accepted.charge.charge_item_id,quote.revision);
         }}>
-          <Link href="/legal" target="_blank">Read the current terms and notices</Link>
+          <PolicyLinks policies={terms.data.terms}/>
           {Object.entries(acknowledged).map(([k,v])=><label key={k} className="check"><input required type="checkbox" name={k}/>{v}</label>)}
-        </Form></>}
-    </Panel>
-    {!["closed","cancelled","report_ready","action_pending"].includes(o.state)&&<Panel title="Order changes"><Action run={async()=>{
+        </Form>}</>}
+    </Panel>}
+    {(!section||section==="payment")&&o.consents.length>0&&<Panel title="Policies accepted for this order">
+      {o.consents.map((consent:Row)=><details key={consent.id} className="card">
+        <summary>Accepted {stamp(consent.created_at)}</summary><PolicyLinks policies={consent.policies}/>
+      </details>)}
+    </Panel>}
+    {(!section||section==="parcels")&&<Panel title="Inbound parcels">
+      <Table headers={["Seller tracking number","Carrier status","Warehouse intake"]} rows={o.parcels.map((p:Row)=>[
+        <Link className="code" href={"/parcels/"+p.id}>{p.tracking_norm}</Link>,
+        label(p.transport_state),p.warehouse_state?label(p.warehouse_state):"Awaiting physical receipt",
+      ])} empty="No seller waybills are linked to this order."/>
+      <div className="actions"><Link href="/account">View your warehouse address</Link><Link href={section?"/parcels":base+"/parcels"}>{section?"Open all parcels":"Manage linked parcels"}</Link></div>
+    </Panel>}
+    {!section&&<ScopeReview key={o.revision} orderId={id} onSave={detail.reload}/>}
+    {!section&&<Panel title="Order support">
+      <Table headers={["Case","Subject","Status"]} rows={o.cases.map((c:Row)=>[<Link className="code" href={base+"/cases/"+c.id}>{c.public_no}</Link>,c.subject,label(c.state)])} empty="No support cases are linked to this order."/>
+      <details className="card"><summary>Open a support case for this order</summary>
+        <Form key={openedCase} label="Submit support case" run={async f=>{
+          const result=await request("/me/cases","POST",{order_id:id,category:text(f,"category"),subject:text(f,"subject"),message:text(f,"message")});
+          setOpenedCase(result.public_no);
+          detail.reload();
+        }}>
+          <Select name="category" label="Issue" choices={[
+            {id:"receipt_mismatch",label:"Received items do not match"},
+            {id:"measurement_dispute",label:"Question about inspection results"},
+            {id:"return_info_incomplete",label:"Return or forwarding information"},
+            {id:"damage_or_loss",label:"Item damage or loss"},
+            {id:"payment_refund",label:"Payment or refund"},
+          ]}/>
+          <Field name="subject" label="Subject"/>
+          <label>Describe the issue<textarea name="message" required maxLength={2000}/></label>
+        </Form>
+        {openedCase&&<p role="status">Case <strong className="code">{openedCase}</strong> is open.</p>}
+      </details>
+    </Panel>}
+    {!section&&!["closed","cancelled","report_ready","action_pending"].includes(o.state)&&<Panel title="Order changes"><Action run={async()=>{
       if(!window.confirm("Cancel this inspection? Warehouse items remain available for disposition."))return;
       await request("/orders/"+id+"/cancel","POST",{revision:o.revision});detail.reload();
     }}>Cancel inspection</Action></Panel>}
@@ -153,45 +300,80 @@ export function DemoCheckout({id}:{id:string}) {
       <Action primary run={async()=>{await request("/checkout/demo/"+id,"POST",{});location.assign("/account/billing");}}>Confirm test payment</Action></>:<p>Checkout unavailable.</p>}
   </div>;
 }
-export function ReportView({number}:{number:string}) {
+export function ReportView({number,version}:{number:string;version?:number}) {
   const l=useLoad("/orders/by-number/"+number),id=l.data?.id;
-  const r=useLoad(id?"/orders/"+id+"/report":null);
-  return <><p className="eyebrow">INSPECTION EVIDENCE</p><h1>{r.data?.snapshot.report_no??"Inspection report"}</h1>
+  const base=id?"/orders/"+id+"/report":null;
+  const r=useLoad(base&&version?base+"/versions/"+version:base);
+  const viewer=useRef<HTMLDialogElement>(null);
+  const [photo,setPhoto]=useState<{id:string;label:string}>();
+  const reportPath="/orders/"+number+"/report";
+  const report=r.data;
+  function showPhoto(id:string,label:string) {
+    setPhoto({id,label});
+    viewer.current?.showModal();
+  }
+  return <>
+    <div className="page-head"><Link href={"/orders/"+number}>← Order {number}</Link>
+      <p className="eyebrow report-eyebrow">INSPECTION / EVIDENCE RECORD</p><h1 className="order-number">{report?.snapshot.report_no??"Inspection report"}</h1>
+      {report&&<p className="muted">Version {report.version} · Published {stamp(report.published_at)}</p>}
+    </div>
     {(l.error||r.error)&&<ErrorBlock error={l.error||r.error}/>}
-    {r.data&&<><div className="actions"><Tag>Version {r.data.version}</Tag><Action run={async()=>{
-      const {url}=await request("/orders/"+id+"/report/versions/"+r.data?.version+"/pdf");
-      location.assign(url);
-    }}>Download PDF</Action></div>
-      {r.data.snapshot.sections.map((s:Row)=><Panel key={s.task_id} title={s.title}>
-        <ReportSection results={s.results} grouped={["compare","reference_match"].includes(s.service)}/>
-      </Panel>)}</>}
+    {!report&&!l.error&&!r.error&&<p role="status">Loading report evidence…</p>}
+    {report&&<>
+      {report.state==="superseded"&&<div className="notice">This is a historical report. <Link href={reportPath}>View the latest published version</Link>.</div>}
+      <div className="actions">
+        <Action primary run={async()=>{
+          const {url}=await request(base+"/versions/"+report.version+"/pdf");
+          location.assign(url);
+        }}>Download version {report.version} PDF</Action>
+      </div>
+      <Panel title="Published versions">
+        <Table headers={["Version","Status","Published","Revision reason"]} rows={report.versions.map((v:Row)=>[
+          <Link aria-current={v.version===report.version?"page":undefined} href={reportPath+"/versions/"+v.version}>Version {v.version}</Link>,
+          v.state==="superseded"?"Historical":"Current",stamp(v.published_at),v.amend_reason??"—",
+        ])}/>
+      </Panel>
+      {id&&<ReportShares key={report.version} orderId={id} version={report.version}/>}
+      {report.snapshot.sections.map((s:Row)=><Panel key={s.task_id} title={s.title}>
+        <ReportSection results={s.results} grouped={["compare","reference_match"].includes(s.service)} showPhoto={showPhoto}/>
+      </Panel>)}
+    </>}
+    <dialog ref={viewer} className="evidence-dialog" aria-labelledby="report-evidence-title" onClose={()=>setPhoto(undefined)}>
+      <div className="row"><h2 id="report-evidence-title">{photo?.label??"Report evidence"}</h2><form method="dialog"><button type="submit">Close</button></form></div>
+      {photo&&<>
+        <img src={"/api/v1/media/"+photo.id} alt={photo.label}/>
+        <a href={"/api/v1/media/"+photo.id} target="_blank" rel="noreferrer">Open original photo</a>
+      </>}
+    </dialog>
   </>;
 }
-function ReportSection({results,grouped}:{results:Row[];grouped:boolean}) {
+function ReportSection({results,grouped,showPhoto}:{results:Row[];grouped:boolean;showPhoto:(id:string,label:string)=>void}) {
   const result=(x:Row)=>[x.typed_value!=null?String(x.typed_value):label(x.status.toLowerCase()),x.unit,x.reason].filter(Boolean).join(" · ");
-  const evidence=(x:Row)=>x.evidence_ids.map((m:string)=><a key={m} href={"/api/v1/media/"+m} target="_blank" rel="noreferrer">
-    <img className="thumb" src={"/api/v1/media/"+m} alt={x.label+" evidence"}/></a>);
+  const evidence=(x:Row)=>x.evidence_ids.map((m:string)=><button className="evidence-open" type="button" key={m}
+    aria-label={`View ${x.label} evidence for ${x.item}`} onClick={()=>showPhoto(m,x.label+" · "+x.item)}>
+    <img className="thumb" src={"/api/v1/media/"+m} alt="" loading="lazy"/></button>);
   if(!grouped) return <Table headers={["Item","Check","Result","Method","Evidence"]}
     rows={results.map(x=>[x.item,x.label,result(x),x.method,evidence(x)])}/>;
   const items=[...new Set(results.map(x=>String(x.item)))];
   const checks=new Map<string,Row>();
   for(const x of results) checks.set(x.item_key,x);
-  return <Table headers={["Check",...items]} rows={[...checks.values()].map(check=>[
+  return <div className="report-comparison"><Table headers={["Check",...items]} rows={[...checks.values()].map(check=>[
     <div>{check.label}<small className="muted"><br/>{check.method}</small></div>,
     ...items.map(item=>{
       const x=results.find(r=>r.item===item&&r.item_key===check.item_key);
       return x?<div>{result(x)}<div>{evidence(x)}</div></div>:"—";
     })
-  ])}/>;
+  ])}/></div>;
 }
-export function TrackView({kind,id}:{kind:"parcels"|"shipments";id:string}) {
+export function TrackView({kind,id,embedded=false}:{kind:"parcels"|"shipments";id:string;embedded?:boolean}) {
   const path=kind==="parcels"?"/me/parcels/":"/shipments/";
   const {data,error,reload}=useLoad(path+id+"/tracking?locale=en");
   const canVerify=kind==="parcels"&&data?.allowed_actions.includes("verify_tracking");
   const verificationPath=path+id+"/tracking-verification";
   const verification=useLoad(canVerify?verificationPath:null),carriers=useLoad(canVerify?"/carriers":null);
   useEffect(()=>{const timer=setInterval(reload,60000);return ()=>clearInterval(timer);},[reload]);
-  return <><h1>Tracking details</h1>{error&&<ErrorBlock error={error}/>}
+  return <>{!embedded&&<div className="page-head"><p className="eyebrow">Warehouse / Tracking</p><h1>Tracking details</h1><p className="muted">Follow carrier events and the warehouse’s own handling status.</p></div>}{error&&<ErrorBlock error={error}/>}
+    {!data&&!error&&<p role="status">Loading carrier tracking…</p>}
     {data&&<Panel title={data.carrier??"Carrier pending"}><p className="code">{data.tracking_no}</p>
       <div className="actions"><Tag>{label(data.transport_state)}</Tag><Tag>{label(data.sync_state)}</Tag>
       {data.warehouse_state&&<Tag>Warehouse · {label(data.warehouse_state)}</Tag>}<button onClick={reload}>Refresh status</button></div>
@@ -209,29 +391,63 @@ export function TrackView({kind,id}:{kind:"parcels"|"shipments";id:string}) {
   </>;
 }
 export function CustomerDesk({path}:{path:string}) {
-  const {data,error,reload}=useLoad("/me/desk"),carriers=useLoad("/carriers"),terms=useLoad("/public/terms");
+  const {data,error,reload}=useLoad("/me/desk"),carriers=useLoad("/carriers");
+  const [next,setNext]=useState<string|null>(null);
+  const [parcelOrder,setParcelOrder]=useState<string|null>(null);
+  const [orderQuery,setOrderQuery]=useState("");
+  const [orderState,setOrderState]=useState("");
+  useEffect(()=>{
+    const params=new URLSearchParams(location.search);
+    setNext(customerDestination(params.get("next")));
+    setParcelOrder(params.get("order"));
+  },[path]);
   const [batchIds,setBatchIds]=useState<string[]>([]);
-  const [action,setAction]=useState("return_to_seller");
+  useEffect(()=>{
+    if(!data||(path!=="/support"&&path!=="/account/billing"))return;
+    const id=location.hash.slice(1);
+    if(/^(case|quote|charge)-[a-f0-9-]{36}$/.test(id))document.getElementById(id)?.scrollIntoView({block:"start"});
+  },[data,path]);
   if(error)return <ErrorBlock error={error}/>;
   if(!data)return <p>Loading your account…</p>;
   const addr=data.profile.warehouse_address;
-  const isHome=path==="/account",isItems=path==="/items",isParcels=path==="/parcels",isBills=path==="/account/billing",isReports=path==="/reports",isOrders=path==="/orders",isHelp=path==="/support";
+  const isHome=path==="/account",isItems=path==="/items",isParcels=path==="/parcels",isBills=path==="/account/billing",isOrders=path==="/orders",isHelp=path==="/support";
+  const orders:Row[]=data.orders;
+  const visibleOrders=isHome?orders.slice(0,5):orders.filter(order=>
+    order.public_no.toLowerCase().includes(orderQuery.trim().toLowerCase())&&(!orderState||order.state===orderState));
   return <>
-    {isHome&&<><h1>Your workspace</h1><Panel title="Receiving address">
-      <p><Tag>Personal receiving code</Tag> <strong className="code">{data.profile.receiving_code}</strong></p>
+    {isHome&&<><div className="page-head row"><div><p className="eyebrow">CLIENT WORKSPACE</p><h1>Your inspections</h1><p className="muted">Manage your warehouse deliveries, inspection reports and item instructions.</p></div>
+      <Link className="button primary" href="/orders/new">New inspection <span aria-hidden="true">→</span></Link></div>
+      <div className="ops-columns"><Panel title="Warehouse receiving address">
+      <div className="receiving-code"><span className="eyebrow">PERSONAL RECEIVING CODE</span><strong className="code">{data.profile.receiving_code}</strong></div>
       {addr?<><p>{addr.recipient} · {addr.phone}<br/>{addr.address_zh}<br/>{addr.address_en}</p>
         <Action run={()=>navigator.clipboard.writeText([addr.recipient,addr.phone,addr.address_zh].join("\n"))}>Copy Chinese shipping address</Action></>:<Empty>The warehouse address is awaiting configuration.</Empty>}
-    </Panel><Panel title="Recent updates">{data.notices.length?<Table headers={["Update","Received"]} rows={data.notices.map((x:Row)=>[x.template.replaceAll("."," · "),stamp(x.created_at)])}/>:<Empty>No updates yet.</Empty>}</Panel></>}
-    {(isHome||isOrders)&&<Panel title="Inspection orders"><div className="actions"><Link className="button primary" href="/orders/new">New inspection</Link></div>
-      {data.orders.length?<Table headers={["Order","Status","Quote","Created"]} rows={data.orders.map((o:Row)=>[
-        <Link href={"/orders/"+o.public_no}>{o.public_no}</Link>,<Tag>{label(o.state)}</Tag>,o.price_cents===null?"—":usd(o.price_cents),stamp(o.created_at)
-      ])}/>:<Empty>Your orders will appear here.</Empty>}</Panel>}
-    {isParcels&&<><h1>Parcels</h1><Panel title="Register seller tracking">
-      {addr?<Form label="Add inbound parcel" run={async f=>{
-        const carrier=text(f,"carrier"),order=text(f,"order");
-        await request("/me/parcels","POST",{address_id:addr.id,tracking_no:text(f,"tracking"),...(carrier?{carrier_code:carrier}:{}),order_ids:order?[order]:[]});reload();
-      }}><Field name="tracking" label="Seller’s tracking number"/><Select name="carrier" label="Carrier" required={false} choices={(carriers.data?.carriers??[]).map((c:Row)=>({id:c.code,label:c.labels.en}))}/>
-      <Select name="order" label="Associate an order (optional)" required={false} choices={data.orders.map((o:Row)=>({id:o.id,label:o.public_no}))}/></Form>:<Empty>The warehouse address is awaiting configuration.</Empty>}
+      {next&&<Link className="button primary" href={next}>Continue to your selected page</Link>}
+    </Panel><RecentUpdates notices={data.notices} onRead={reload}/></div></>}
+    {isOrders&&<div className="page-head row"><div><p className="eyebrow">CLIENT WORKSPACE</p><h1>Inspection orders</h1><p className="muted">Review your orders or continue an existing draft.</p></div>
+      <Link className="button primary" href="/orders/new">New inspection <span aria-hidden="true">→</span></Link></div>}
+    {isOrders&&<div className="metric-strip" aria-label="Orders summary">
+      {[
+        ["Orders shown",orders.length],
+        ["Drafts",orders.filter(order=>order.state==="draft").length],
+        ["Checks in progress",orders.filter(order=>["queued","inspecting","qa_review"].includes(order.state)).length],
+        ["Ready to review",orders.filter(order=>["report_ready","action_pending"].includes(order.state)).length],
+      ].map(([name,value])=><div className="metric" key={name}><span>{name}</span><strong>{value}</strong></div>)}
+    </div>}
+    {(isHome||isOrders)&&<Panel title={isHome?"Recent orders":"Your orders"}>
+      {isOrders&&<div className="form inline-form">
+        <label>Order number<input type="search" value={orderQuery} onChange={event=>setOrderQuery(event.target.value)} placeholder="Find an order…"/></label>
+        <label>Status<select value={orderState} onChange={event=>setOrderState(event.target.value)}><option value="">All statuses</option>
+          {[...new Set(orders.map(order=>String(order.state)))].map(state=><option key={state} value={state}>{label(state)}</option>)}
+        </select></label>
+        <Link className="button" href="/actions">Action required</Link>
+      </div>}
+      {visibleOrders.length?<Table headers={["Order","Status","Quote","Created"]} rows={visibleOrders.map(o=>[
+        <Link className="code" href={"/orders/"+o.public_no}>{o.public_no}</Link>,<Tag>{label(o.state)}</Tag>,o.price_cents===null?"—":usd(o.price_cents),stamp(o.created_at)
+      ])}/>:<Empty>{orders.length?"No orders match your filters.":"Your orders will appear here."}</Empty>}
+      {isHome&&orders.length>0&&<Link href="/orders">View all orders →</Link>}
+    </Panel>}
+    {isParcels&&<><div className="page-head"><p className="eyebrow">Warehouse deliveries</p><h1>Parcels</h1><p className="muted">Register the seller’s tracking number and follow incoming and outbound shipments.</p></div><Panel title="Register seller tracking">
+      <InboundParcelForm address={addr} carriers={carriers.data?.carriers??[]} orders={data.orders} preferredOrder={parcelOrder} onSave={reload}/>
       <Table headers={["Inbound tracking","Warehouse status","Carrier status"]} rows={data.advices.map((a:Row)=>[
         <Link href={"/parcels/"+a.id}>{a.tracking_norm}</Link>,label(a.warehouse_state??"awaiting_warehouse"),label(a.transport_state)
       ])}/>
@@ -248,7 +464,7 @@ export function CustomerDesk({path}:{path:string}) {
         <Link href={"/shipments/"+s.id}>{s.tracking_norm}</Link>,label(s.action),stamp(s.shipped_at)
       ])}/>
     </Panel></>}
-    {isItems&&<><h1>Warehouse items</h1><Panel title="Your items">
+    {isItems&&<><div className="page-head"><p className="eyebrow">Inventory &amp; handling</p><h1>Warehouse items</h1><p className="muted">Review what the warehouse is holding and submit item handling instructions.</p></div><Panel title="Your items">
       <Table headers={["Item","Custody","Storage through","Instructions"]} rows={data.items.map((w:Row)=>[
         w.code,label(w.custody_state),stamp(w.storage_until),w.instructions.map((i:string)=><label key={i} className="small"><input type="checkbox" checked={batchIds.includes(i)} onChange={e=>setBatchIds(xs=>e.target.checked?[...xs,i]:xs.filter(x=>x!==i))}/> Select for shipping</label>)
       ])}/>
@@ -256,38 +472,205 @@ export function CustomerDesk({path}:{path:string}) {
       {!!batchIds.length&&<Action primary run={async()=>{const b=await request("/dispatch-batches","POST",{disposition_ids:batchIds});await request("/dispatch-batches/"+b.batch_id+"/confirm","POST",{revision:b.revision});setBatchIds([]);reload();}}>Confirm selected items for quoting</Action>}
       {data.batches.map((b:Row)=><div key={b.id} className="notice"><Action run={async()=>{await request("/dispatch-batches/"+b.id+"/confirm","POST",{revision:b.revision});reload();}}>Confirm draft batch</Action></div>)}
     </Panel><Panel title="Request handling for an item">
-      <Form label="Save handling instruction" run={async f=>{
-        const id=text(f,"item"),termsId=terms.data?.terms.find((t:Row)=>t.kind==="terms")?.id;
-        if(!checked(f,"agree"))throw new Error("Confirm the selected instruction.");
-        const destination=action==="retain"?undefined:{recipient:text(f,"recipient"),phone:text(f,"phone"),address:text(f,"address"),
-          ...(action==="to_forwarder"?{member_code:text(f,"member_code")}:{})};
-        await request("/me/items/"+id+"/dispositions","POST",{action,terms_version_id:termsId,...(destination?{destination}:{}),
-          ...(action==="return_to_seller"?{return_info:{requested_from_seller:true,customer_pays_shipping:true}}:{})});
-        reload();
-      }}>
-        <Select name="item" label="Item" choices={data.items.filter((w:Row)=>["stored","received"].includes(w.custody_state)).map((w:Row)=>({id:w.item_id,label:w.code}))}/>
-        <label>Requested action<select value={action} onChange={e=>setAction(e.target.value)}>
-          <option value="return_to_seller">Return to seller</option><option value="to_forwarder">Send to freight forwarder</option>
-          <option value="to_domestic_address">Send to a domestic address</option><option value="retain">Extend storage</option></select></label>
-        {action!=="retain"&&<><Field name="recipient" label="Recipient"/><Field name="phone" label="Destination phone"/>
-          <label>{action==="return_to_seller"?"Return address supplied by your seller":"Destination address"}<textarea name="address" required/></label></>}
-        {action==="to_forwarder"&&<Field name="member_code" label="Forwarder member code"/>}
-        <label className="check"><input name="agree" required type="checkbox"/>{action==="return_to_seller"?"I have arranged the return with my seller and will pay the return shipping fee.":"I authorize this request subject to the current terms and quote."}</label>
-      </Form>
+      <ItemInstructionForm items={data.items.filter((w:Row)=>["stored","received"].includes(w.custody_state))} onSave={reload}/>
     </Panel></>}
-    {isBills&&<><h1>Billing</h1><Panel title="Quotes awaiting your approval">
-      <Table headers={["Purpose","Amount","Expires",""]} rows={data.quotes.map((q:Row)=>[label(q.purpose),usd(q.amount_cents),stamp(q.expires_at),
-        <Action primary run={async()=>{const c=await request("/quotes/"+q.id+"/accept","POST",{revision:q.revision});await goCheckout(c.charge_item_id,q.revision);}}>Accept and pay</Action>
-      ])}/>{!data.quotes.length&&<Empty>No new quotes.</Empty>}
+    {isBills&&<><div className="page-head"><p className="eyebrow">Account services</p><h1>Billing</h1><p className="muted">Review shipping quotes, charges and refunds for your inspections.</p></div><Panel title="Quotes awaiting your approval">
+      {data.quotes.map((quote:Row)=><FulfillmentQuote key={quote.id} quote={quote}/>)}
+      {!data.quotes.length&&<Empty>No new quotes.</Empty>}
     </Panel><Panel title="Charges and refunds">
-      <Table headers={["Purpose","Charge","Refunded","State",""]} rows={data.bills.map((b:Row)=>[label(b.purpose),usd(b.amount_cents),usd(b.refunded_cents),<Tag>{label(b.state)}</Tag>,
+      <Table headers={["Purpose","Charge","Refunded","State",""]} rows={data.bills.map((b:Row)=>[<span id={"charge-"+b.charge_item_id}>{label(b.purpose)}</span>,usd(b.amount_cents),usd(b.refunded_cents),<Tag>{label(b.state)}</Tag>,
         b.state==="open"?<Action run={()=>goCheckout(b.charge_item_id,b.quote_revision)}>Pay</Action>:null
       ])}/>
     </Panel></>}
-    {isReports&&<><h1>Reports</h1><Panel title="Published inspections"><Table headers={["Report","Order","Version"]} rows={data.reports.map((r:Row)=>[
-      <Link href={"/orders/"+r.order_no+"/report"}>{r.public_no}</Link>,r.order_no,r.published_version])}/></Panel></>}
-    {isHelp&&<><h1>Support</h1><Panel title="Open a case"><Form label="Send case" run={async f=>{await request("/me/cases","POST",{subject:text(f,"subject"),message:text(f,"message")});reload();}}>
+    {isHelp&&<><div className="page-head"><p className="eyebrow">Account services</p><h1>Support</h1><p className="muted">Open a case or check the warehouse team’s reply.</p></div><Panel title="Open a case"><Form label="Send case" run={async f=>{await request("/me/cases","POST",{subject:text(f,"subject"),message:text(f,"message")});reload();}}>
       <Field name="subject" label="Subject"/><label>Message<textarea name="message" required/></label>
-      </Form><Table headers={["Case","Subject","Status"]} rows={data.tickets.map((t:Row)=>[t.public_no,t.subject,label(t.state)])}/></Panel></>}
+      </Form><Table headers={["Case","Subject","Status"]} rows={data.tickets.map((t:Row)=>[<Link className="code" href={"/support/cases/"+t.id}>{t.public_no}</Link>,t.subject,label(t.state)])}/></Panel></>}
+  </>;
+}
+
+function FulfillmentQuote({quote,onUpdate}:{quote:Row;onUpdate?:()=>void}) {
+  const shipping=quote.purpose==="dispatch";
+  const {snapshot}=quote;
+  const purpose=shipping?({return_to_seller:"Return to seller",to_forwarder:"Send to freight forwarder",to_domestic_address:"Domestic delivery"} as Record<string,string>)[quote.action]:"Extend storage";
+  return <article id={"quote-"+quote.id} className="card fulfillment-quote">
+    <div className="row"><div><h3>{purpose}</h3><small>Quote {quote.revision} · expires {stamp(quote.expires_at)}</small></div>
+      <strong>{usd(quote.amount_cents)}</strong></div>
+    {shipping?<>
+      <p><strong>Destination</strong> · {snapshot.destination.recipient} · {snapshot.destination.address}
+        {snapshot.destination.member_code&&<> · Member {snapshot.destination.member_code}</>}</p>
+      <Table headers={["Parcel","Warehouse item codes","Weight","Shipping"]} rows={snapshot.parcels.map((parcel:Row,i:number)=>[
+        i+1,<span className="code">{parcel.item_ids.map((id:string)=>quote.item_codes?.[id]??id).join(", ")}</span>,
+        parcel.weight_g+" g",usd(parcel.amount_cents),
+      ])}/>
+      <p>Handling · {usd(snapshot.handling_cents)}</p>
+    </>:<p>{snapshot.days} additional days · <span className="code">{Object.values(quote.item_codes).join(", ")}</span></p>}
+    {(quote.state===undefined||quote.state==="open")&&<Action primary run={async()=>{
+      const charge=await request("/quotes/"+quote.id+"/accept","POST",{revision:quote.revision});
+      try {await goCheckout(charge.charge_item_id,quote.revision);} finally {onUpdate?.();}
+    }}>Accept and pay</Action>}
+    {quote.state==="accepted"&&quote.charge_id&&<Action primary run={()=>goCheckout(quote.charge_id,quote.revision)}>Resume payment</Action>}
+    {quote.state==="processing"&&<p role="status">Payment is processing.</p>}
+    {quote.state==="paid"&&<Tag>Payment confirmed</Tag>}
+    {quote.state==="expired"&&<p className="notice">This quote has expired. Review the latest quote from your order when the warehouse issues it.</p>}
+    {quote.state==="inactive"&&<Empty>This quote is closed.</Empty>}
+  </article>;
+}
+
+const actionTitles:Record<string,string>={
+  draft:"Continue inspection draft",awaiting_payment:"Review inspection payment",awaiting_samples:"Register seller tracking",
+  return_to_seller:"Review seller return quote",to_forwarder:"Review forwarding quote",to_domestic_address:"Review domestic shipping quote",
+  retain:"Review storage extension",needs_carrier:"Confirm parcel carrier",needs_verification:"Verify parcel tracking",waiting_customer:"Review support case",
+  dispatch:"Review shipping payment",storage:"Review storage payment",
+};
+export function CustomerActions() {
+  const {data,error,reload}=useLoad("/actions");
+  return <>
+    <div className="page-head row"><div><p className="eyebrow">CLIENT WORKSPACE / ACTIONS</p><h1>Action required</h1>
+      <p className="muted">Continue work that needs your input. Quotes with deadlines are shown first.</p></div>
+      <button type="button" onClick={reload}>Refresh actions</button></div>
+    {error&&<ErrorBlock error={error}/>}
+    {!data&&!error&&<p role="status">Loading actions…</p>}
+    {data&&!error&&<Panel title="Your next actions"><Table headers={["Action","Reference","Due",""]} rows={data.rows.map((row:Row)=>{
+      const href=row.kind==="order"?"/orders/"+row.reference+(row.state==="awaiting_payment"?"/payment":row.state==="awaiting_samples"?"/parcels":""):row.kind==="parcel"?"/parcels/"+row.id:
+        row.kind==="quote"||row.kind==="charge"?"/account/billing#"+row.kind+"-"+row.id:
+        row.kind==="scope"?"/orders/"+row.reference+"#scope-"+row.id:"/support/cases/"+row.id;
+      return [row.kind==="scope"?"Review inspection scope":actionTitles[row.state],row.reference?<span className="code">{row.reference}</span>:"—",stamp(row.due_at),<Link href={href}>Open</Link>];
+    })} empty="You’re all caught up. New actions will appear here when an order, parcel, quote or case needs your input."/></Panel>}
+  </>;
+}
+
+function InboundParcelForm({address,carriers,orderId,orders=[],preferredOrder,onSave}:{
+  address:Row|null;carriers:Row[];orderId?:string;orders?:Row[];preferredOrder?:string|null;onSave:()=>void;
+}) {
+  const [saved,setSaved]=useState<string>();
+  if(!address)return <Empty>The warehouse address is awaiting configuration.</Empty>;
+  return <>
+    <Form key={saved} label="Add inbound parcel" run={async f=>{
+      const carrier=text(f,"carrier"),order=orderId??text(f,"order");
+      const tracking=text(f,"tracking");
+      await request("/me/parcels","POST",{address_id:address.id,tracking_no:tracking,
+        ...(carrier?{carrier_code:carrier}:{}),order_ids:order?[order]:[]});
+      setSaved(tracking);onSave();
+    }}><Field name="tracking" label="Seller’s tracking number"/>
+      <Select name="carrier" label="Carrier" required={false} choices={carriers.map(c=>({id:c.code,label:c.labels.en}))}/>
+      {!orderId&&<Select key={preferredOrder} name="order" label="Associate an order (optional)" required={false}
+        value={orders.some(o=>o.id===preferredOrder)?preferredOrder??undefined:undefined}
+        choices={orders.map(o=>({id:o.id,label:o.public_no}))}/>}
+    </Form>
+    {saved&&<p className="notice" role="status">Registered seller tracking <strong className="code">{saved}</strong>.</p>}
+  </>;
+}
+
+function ItemInstructionForm({items,orderId,storage=false,onSave}:{
+  items:Row[];orderId?:string;storage?:boolean;onSave:()=>void;
+}) {
+  const terms=useLoad("/public/terms");
+  const [action,setAction]=useState(storage?"retain":"return_to_seller");
+  const [saved,setSaved]=useState<string>();
+  const currentAction=storage?"retain":action;
+  const termsId=terms.data?.terms.find((t:Row)=>t.kind==="terms")?.id;
+  if(!items.length)return <Empty>No items are available for a new instruction.</Empty>;
+  if(terms.error)return <ErrorBlock error={terms.error}/>;
+  if(!termsId)return <p role="status">Waiting for the current service terms.</p>;
+  return <>
+    <Form key={saved} label={storage?"Request storage extension":"Save handling instruction"} run={async f=>{
+      const itemId=text(f,"item");
+      const item=items.find(row=>row.item_id===itemId);
+      if(!item||!checked(f,"agree"))throw new Error("Confirm the selected item and instruction.");
+      const destination=currentAction==="retain"?undefined:{recipient:text(f,"recipient"),phone:text(f,"phone"),address:text(f,"address"),
+        ...(currentAction==="to_forwarder"?{member_code:text(f,"member_code")}:{})};
+      const deadline=text(f,"deadline");
+      const result=await request(orderId?"/orders/"+orderId+"/dispositions":"/me/items/"+itemId+"/dispositions","POST",{
+        ...(orderId?{item_id:itemId}:{}),action:currentAction,terms_version_id:termsId,...(destination?{destination}:{}),
+        ...(currentAction==="return_to_seller"?{return_info:{requested_from_seller:true,customer_pays_shipping:true,
+          ...(deadline?{deadline:new Date(deadline).toISOString()}:{})}}:{}),
+      });
+      setSaved(result.id);onSave();
+    }}>
+      <Select name="item" label="Item" choices={items.map(item=>({id:item.item_id,label:item.code}))}/>
+      {!storage&&<label>Requested action<select value={action} onChange={e=>setAction(e.target.value)}>
+        <option value="return_to_seller">Return to seller</option><option value="to_forwarder">Send to freight forwarder</option>
+        <option value="to_domestic_address">Send to a domestic address</option><option value="retain">Extend storage</option></select></label>}
+      {currentAction!=="retain"&&<><Field name="recipient" label="Recipient"/><Field name="phone" label="Destination phone"/>
+        <label>{currentAction==="return_to_seller"?"Return address supplied by your seller":"Destination address"}<textarea name="address" required/></label></>}
+      {currentAction==="to_forwarder"&&<Field name="member_code" label="Forwarder member code"/>}
+      {currentAction==="return_to_seller"&&<Field name="deadline" label="Seller’s return deadline (your local time)" type="datetime-local" required={false}/>}
+      <label className="check"><input name="agree" required type="checkbox"/>{currentAction==="return_to_seller"?
+        "I have arranged the return with my seller and will pay the return shipping fee.":"I authorize this request subject to the current terms and quote."}</label>
+    </Form>
+    {saved&&<p className="notice" role="status">Your instruction was recorded.</p>}
+  </>;
+}
+
+function OrderHandling({order,storage,onSave}:{order:Row;storage:boolean;onSave:()=>void}) {
+  const [selected,setSelected]=useState<string[]>([]);
+  const items:Row[]=order.items.filter((item:Row)=>item.item_id);
+  const allowed=["report_ready","action_pending","cancelled","closed"].includes(order.state);
+  const eligible=allowed?items.filter(item=>!item.instruction&&["stored","received"].includes(item.custody_state)):[];
+  const awaiting=items.filter(item=>item.instruction?.awaiting_batch);
+  const selection=selected.filter(id=>awaiting.some(item=>item.instruction.id===id));
+  return <>
+    <Panel title={storage?"Storage by item":"Instructions by item"}>
+      <Table headers={["Item","Warehouse status","Storage through","Paid through","Active instruction"]} rows={items.map(item=>[
+        <span className="code">{item.code}</span>,label(item.custody_state),stamp(item.storage_until),stamp(item.paid_storage_until),
+        item.instruction?<><Tag>{label(item.instruction.action)}</Tag>{!storage&&item.instruction.awaiting_batch&&
+          <label className="small"><input type="checkbox" checked={selection.includes(item.instruction.id)} onChange={e=>
+            setSelected(current=>e.target.checked?[...current,item.instruction.id]:current.filter(id=>id!==item.instruction.id))}/> Select for shipping</label>}</>:"—",
+      ])} empty="No warehouse items are linked to this inspection."/>
+      {!storage&&selection.length>0&&<Action primary run={async()=>{
+        const batch=await request("/dispatch-batches","POST",{disposition_ids:selection});
+        setSelected([]);onSave();
+        await request("/dispatch-batches/"+batch.batch_id+"/confirm","POST",{revision:batch.revision});
+        onSave();
+      }}>Confirm selected items for quoting</Action>}
+      <p><Link href={storage?"/orders/"+order.public_no+"/dispositions":"/account/billing"}>{storage?"Review other handling options":"Open shipping and storage quotes"}</Link></p>
+      {!storage&&<p className="muted">Use the account’s warehouse items page to combine eligible items across your orders or recover a draft batch.</p>}
+    </Panel>
+    <Panel title={storage?"Storage quotes":"Shipping and storage quotes"}>
+      <Table headers={["Action","Quote version","Amount","Status","Expires"]} rows={order.quotes.filter((q:Row)=>!storage||q.purpose==="storage").map((q:Row)=>[
+        label(q.action),<Link href={"/orders/"+order.public_no+"/quotes/"+q.id}>Version {q.revision}</Link>,usd(q.amount_cents),
+        <Tag>{label(q.state)}</Tag>,stamp(q.expires_at),
+      ])} empty="No fulfillment quotes are linked to this inspection."/>
+    </Panel>
+    <Panel title={storage?"Request more storage time":"Give the warehouse an instruction"}>
+      {!allowed?<Empty>Item handling becomes available after the inspection is complete or cancelled.</Empty>:
+        <ItemInstructionForm key={String(storage)} items={eligible} orderId={order.id} storage={storage} onSave={onSave}/>}
+    </Panel>
+    {!storage&&<Panel title="Parcels handed over to a carrier">
+      <Table headers={["Handling","Actual tracking number","Warehouse handover"]} rows={order.shipments.map((shipment:Row)=>[
+        label(shipment.action),<Link className="code" href={"/orders/"+order.public_no+"/shipments/"+shipment.id}>{shipment.tracking_norm}</Link>,stamp(shipment.shipped_at),
+      ])} empty="The warehouse has not handed over any parcels linked to this order."/>
+    </Panel>}
+  </>;
+}
+
+export function OrderFulfillment({order,id,kind}:{order:string;id:string;kind:"quotes"|"shipments"}) {
+  const lookup=useLoad("/orders/by-number/"+order);
+  const record=useLoad(lookup.data?"/orders/"+lookup.data.id+"/"+kind+"/"+id:null);
+  const data=record.data;
+  const error=lookup.error||record.error;
+  const destination=data?.destination_snapshot;
+  return <>
+    <div className="page-head"><Link href={"/orders/"+order+"/dispositions"}>← Order item instructions</Link>
+      <p className="eyebrow report-eyebrow">CLIENT WORKSPACE / FULFILLMENT</p>
+      <h1>{kind==="quotes"?"Fulfillment quote":"Shipment details"}</h1><p className="code">{order}</p></div>
+    {error&&<ErrorBlock error={error}/>}
+    {!data&&!error&&<p role="status">Loading the order record…</p>}
+    {data&&kind==="quotes"&&<FulfillmentQuote quote={data} onUpdate={record.reload}/>}
+    {data&&kind==="shipments"&&<>
+      <Panel title="Warehouse handover">
+        <dl className="location-facts">
+          <div><dt>Handling</dt><dd>{label(data.action)}</dd></div>
+          <div><dt>Tracking number</dt><dd className="code">{data.tracking_norm}</dd></div>
+          <div><dt>Handed to carrier</dt><dd>{stamp(data.shipped_at)}</dd></div>
+          <div><dt>Recorded weight</dt><dd>{data.weight_g} g</dd></div>
+          <div><dt>Destination</dt><dd>{destination.recipient} · {destination.address}{destination.member_code?" · "+destination.member_code:""}</dd></div>
+        </dl>
+        <Table headers={["Item code","Returned to warehouse"]} rows={(data.items??[]).map((item:Row)=>[
+          <span className="code">{item.code}</span>,stamp(item.returned_at),
+        ])}/>
+      </Panel>
+      <TrackView kind="shipments" id={id} embedded/>
+    </>}
   </>;
 }

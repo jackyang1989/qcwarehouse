@@ -23,7 +23,7 @@ npm run db:demo
 npm run dev
 ```
 
-在另一个终端运行 `npm run worker` 处理 PDF、物流回调和站内通知。浏览器打开 `http://localhost:3000`。客户从 `/login` 注册，仓库从 `/wh` 进入，管理后台在 `/admin`。本地演示客户使用新的 `@qcw.test` 邮箱。员工用 `receiving@qcw.test`、`inspector@qcw.test`、`reviewer@qcw.test`、`admin@qcw.test` 登录。验证码在本地页面显示。演示仓址与运价是测试数据，付款通过本地模拟确认。
+在另一个终端运行 `npm run worker` 处理 PDF、物流回调和站内通知。浏览器打开 `http://localhost:3000`。客户从 `/login` 注册，员工从 `/staff/login` 登录。仓库 `/wh` 和后台 `/admin` 直链也会转入员工登录，登录后按角色恢复原页面。本地演示客户使用新的 `@qcw.test` 邮箱。员工用 `receiving@qcw.test`、`inspector@qcw.test`、`reviewer@qcw.test`、`admin@qcw.test` 登录。验证码在本地页面显示。演示仓址与运价是测试数据，付款通过本地模拟确认。
 
 ## 重跑验证
 
@@ -35,6 +35,8 @@ docker compose exec -T db createdb -U qcwarehouse qcw_test
 ```
 
 在 `.env` 设置 `TEST_DATABASE_URL=postgres://qcwarehouse:qcwarehouse@localhost:5432/qcw_test`，运行 `npm run test:integration`。测试用独立数据库，自动迁移并写入演示数据。箱包和家居模板仅在测试数据库激活。数据库关系用例须在已迁移、未写入演示数据的空库执行 `psql -v ON_ERROR_STOP=1 -f docs/contracts/verify.sql`。
+
+集成测试对核心 OpenAPI 逐操作校验成功响应和覆盖到的错误响应。新增核心操作时须有可执行的成功用例。仓库的 [Core contract 检查](.github/workflows/core-contract.yml) 在 main 更新或 PR 时使用临时 PostgreSQL 实例执行同一套校验。
 
 ## 外部服务联调
 
@@ -53,6 +55,7 @@ docker compose exec -T db createdb -U qcwarehouse qcw_test
 
 ## 集成和发布状态
 
-- 核心迁移、37 个交易接口入口和本地集成测试已落盘。自动测试覆盖三品类履约、30 件逐件加 3 件对比任务、未认领件人工核验、物流回调、越权与重复动作、人工报价。
+- 001–007 迁移、42 个核心交易操作和本地集成测试已落盘。28 项集成测试覆盖三品类履约、30 件逐件加 3 件对比、入仓认领、物流、报价、范围变更、发运、报告修订与失败恢复、工单、通知、指定版本分享及审计。
 - Google、Microsoft、Postmark、Stripe 和快递100的配置见 [环境变量示例](.env.example)。当前邮件适配覆盖验证码，物流双语分别使用英、中文快照。真实凭证、完整英文轨迹样本、承运商覆盖及实际回调仍待独立联调。
 - 生产门禁仍按 PRD §17 与规格 §23。任务台账保留账号安全与恢复、邮件退信、物流纠错、异常履约和实仓验收的未完工作。开发仓址、收费与政策均需换为正式发布版本。
+- 指定版本分享默认关闭。上线验收须验证 CDN、反向代理及监控的分享访问令牌脱敏。应用错误日志已裁剪令牌，Next.js 开发访问日志忽略分享页及证据接口。

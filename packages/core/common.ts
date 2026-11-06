@@ -30,7 +30,7 @@ export function revision(actual: number, expected: number) {
 export async function lock(db: DB, key: string) {
   await db.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [key]);
 }
-export async function audit(db: DB, actor: Actor | null, action: string, entity: string, id: string, after: object = {}) {
+export async function audit(db: DB, actor: Actor | null, action: string, entity: string, id: string|null, after: object = {}) {
   await db.query("insert into audit_events(actor_type,actor_id,action,entity_type,entity_id,after) values($1,$2,$3,$4,$5,$6)", [actor?.kind ?? "system", actor?.id ?? null, action, entity, id, after]);
 }
 export async function event(db: DB, type: string, payload: object) {

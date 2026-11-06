@@ -3,6 +3,7 @@ import type { DB } from "../db";
 import { currentTerms } from "./auth";
 import { audit, event, guard, lock, one, organization, revision, role, uuid, type Actor } from "./common";
 import { validCarrier, waybill } from "./intake";
+import { requireSpace } from "./storage";
 
 type Destination={recipient:string;phone:string;address:string;member_code?:string};
 type InstructionInput={action:string;item_id?:string;destination?:Destination;return_info?:object;terms_version_id:string};
@@ -26,8 +27,8 @@ export async function instruct(db:DB,actor:Actor,itemId:string,input:Instruction
     guard(!info.deadline || new Date(info.deadline)>new Date(),"RETURN_EXPIRED","The seller's return deadline has passed.");
   }
   const out=await one(db,`insert into disposition_requests(org_id,item_id,action,destination,return_info,authorization_snapshot,state,created_by)
-    values($1,$2,$3,$4,$5,$6,'requested',$7) returning id,item_id,state,revision`,[org,itemId,input.action,input.destination??null,
-    input.return_info??null,{terms_version_id:input.terms_version_id,authorized_at:new Date().toISOString()},actor.id]);
+    values($1,$2,$3,$4,$5,jsonb_build_object('terms_version_id',$6::uuid,'authorized_at',now()),'requested',$7)
+    returning id,item_id,state,revision`,[org,itemId,input.action,input.destination??null,input.return_info??null,input.terms_version_id,actor.id]);
   await audit(db,actor,"authorize_disposition","disposition_requests",out.id);
   return out;
 }
@@ -68,7 +69,10 @@ function sameItems(a:string[],b:string[]) {
 export async function quoteBatch(db:DB,actor:Actor,id:string,rev:number,rateId:string,parcels:ParcelPlan[]) {
   role(actor,"warehouse_admin");
   const b=await lockBatch(db,id);
-  revision(b.revision,rev);guard(b.state==="confirmed","BATCH_UNAVAILABLE","Confirm the batch first.");
+  revision(b.revision,rev);
+  const expired=b.state==="quoted"&&(await one(db,`select accepted_at is null and expires_at<=now() renewable
+    from dispatch_quote_versions where batch_id=$1 order by revision desc limit 1`,[id])).renewable;
+  guard(b.state==="confirmed"||expired,"BATCH_UNAVAILABLE","Quote a confirmed batch or replace an expired, unaccepted quote.");
   const items=(await db.query("select item_id from dispatch_batch_items where batch_id=$1 and released_at is null",[id])).rows.map(r=>r.item_id);
   guard(parcels.length<=50 && sameItems(parcels.flatMap(p=>p.item_ids),items),"PACK_MISMATCH","The quote must cover the exact authorized items.");
   const rate=await one(db,"select * from shipping_rate_versions where id=$1 and effective_at<=now()",[rateId]);
@@ -121,11 +125,12 @@ export async function storageQuote(db:DB,actor:Actor,id:string) {
   await audit(db,actor,"quote_storage","disposition_requests",id);
   return q;
 }
+export const effectiveDispatchCharge=`c.voided_at is null and (c.free_authorization is not null or exists(select 1 from payments p
+    where p.id=c.applied_payment_id and p.state='succeeded' and not exists(select 1 from payment_disputes d where d.payment_id=p.id)
+    and not exists(select 1 from refunds r where r.payment_id=p.id and r.state in ('approved','succeeded'))))`;
 async function paidBatch(db:DB,b:{id:string}) {
   return one(db,`select q.*,c.id charge_id from dispatch_quote_versions q join charge_items c on c.dispatch_quote_id=q.id
-    where q.batch_id=$1 and c.voided_at is null and (c.free_authorization is not null or exists(select 1 from payments p
-    where p.id=c.applied_payment_id and p.state='succeeded' and not exists(select 1 from payment_disputes d where d.payment_id=p.id)
-    and not exists(select 1 from refunds r where r.payment_id=p.id and r.state in ('approved','succeeded'))))
+    where q.batch_id=$1 and ${effectiveDispatchCharge}
     order by q.revision desc limit 1`,[b.id]);
 }
 async function shipEvidence(db:DB,actor:Actor,shipmentId:string,org:string,ids:string[]) {
@@ -188,8 +193,8 @@ export async function handover(db:DB,actor:Actor,id:string,input:{revision:numbe
   if(!(await db.query("select 1 from dispatch_batch_items where batch_id=$1 and released_at is null",[b.id])).rowCount)
     await db.query("update dispatch_batches set state='completed',revision=revision+1 where id=$1",[b.id]);
   const dir=b.action==="return_to_seller"?"outbound_return":b.action==="to_forwarder"?"outbound_forward":"outbound_domestic";
-  const t=await one<{id:string}>(db,`insert into tracking_records(org_id,direction,shipment_id,carrier_code,tracking_norm,generation,transport_state,sync_state,next_query_at)
-    values($1,$2,$3,$4,$5,1,'unknown','pending',now()) returning id`,[b.org_id,dir,id,carrier,tracking]);
+  const t=await one<{id:string}>(db,`insert into tracking_records(org_id,direction,shipment_id,carrier_code,tracking_norm,generation,transport_state,sync_state,next_query_at,batch_id)
+    values($1,$2,$3,$4,$5,1,'unknown','pending',now(),$6) returning id`,[b.org_id,dir,id,carrier,tracking,b.id]);
   await audit(db,actor,"handover","shipments",id,{tracking_id:t.id});
   await event(db,"shipment.handed_over",{shipment_id:id,tracking_id:t.id});
   return {shipment_id:id,tracking_id:t.id,state:"shipped"};
@@ -207,7 +212,7 @@ export async function receiveReturn(db:DB,actor:Actor,id:string,input:{revision:
   if(fresh.length) {
     revision(sh.revision,input.revision);
     guard(fresh.every(r=>r.custody_state==="outbound"),"ITEM_UNAVAILABLE","An item already has a different custody record.");
-    await one(db,"select id from storage_locations where id=$1 and active",[input.location_id]);
+    await requireSpace(db,input.location_id,fresh.length);
     await shipEvidence(db,actor,id,b.org_id,input.evidence_ids);
     for(const item of fresh) {
       await db.query("insert into shipment_return_items values($1,$2,$3,$4,$5,$6)",[id,item.item_id,input.received_at,actor.id,input.location_id,input.evidence_ids]);

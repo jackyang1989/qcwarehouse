@@ -4,6 +4,7 @@ import { pool, transaction, type DB } from "../db";
 import { encryptSecret, decryptSecret } from "./auth";
 import { trackingSettings } from "./integrations";
 import { validCarrier } from "./intake";
+import { staffAccess } from "./staff-access";
 import { audit, guard, hash, isDemo, lock, one, organization, revision, role, type Actor } from "./common";
 
 const md5=(s:string)=>createHash("md5").update(s).digest("hex").toUpperCase();
@@ -93,10 +94,11 @@ export async function providerCallback(db:DB,token:string,raw:string) {
   return {result:true,returnCode:"200",message:"成功"};
 }
 export async function consumeTrackingCallback(db:DB) {
-  const row=(await db.query(`select i.*,s.tracker_id,t.closed_at from tracking_inbox i join tracking_subscriptions s on s.id=i.subscription_id
-    join tracking_records t on t.id=s.tracker_id where i.processed_at is null order by i.received_at limit 1 for update of i skip locked`)).rows[0];
+  const row=(await db.query(`select i.*,s.tracker_id from tracking_inbox i join tracking_subscriptions s on s.id=i.subscription_id
+    where i.processed_at is null order by i.received_at limit 1 for update of i skip locked`)).rows[0];
   if(!row) return false;
-  if(!row.closed_at) {
+  const tracker=await one(db,"select closed_at from tracking_records where id=$1 for update",[row.tracker_id]);
+  if(!tracker.closed_at) {
     try {
       const payload=JSON.parse(decryptSecret(row.encrypted_payload));
       if(payload.lastResult?.data) await storeSnapshot(db,row.tracker_id,"zh-CN","kuaidi100_push",payload.lastResult);
@@ -146,6 +148,11 @@ export async function syncTrackingOnce() {
     const param=JSON.stringify({com:t.provider_code,num:t.tracking_norm,lang:locale==="en"?"en":"zh",resultv2:"4",...(t.phone_rule?.required?{phone}:{})});
     const response=await postForm("https://poll.kuaidi100.com/poll/query.do",{customer,param,sign:md5(param+key+customer)});
     await transaction(async db=>{
+      const current=await one(db,"select closed_at from tracking_records where id=$1 for update",[t.id]);
+      if(current.closed_at) {
+        await db.query("update tracking_query_attempts set completed_at=now(),outcome='superseded' where id=$1",[attempt]);
+        return;
+      }
       if(Array.isArray(response.data) && String(response.status)==="200") {
         await storeSnapshot(db,t.id,locale,"kuaidi100_query",response);
         await db.query("update tracking_query_attempts set completed_at=now(),outcome='ok' where id=$1",[attempt]);
@@ -210,7 +217,7 @@ export async function subscribeTrackingOnce() {
   return true;
 }
 export async function trackingAdmin(db:DB,actor:Actor) {
-  role(actor,"warehouse_admin","receiver","support","super_admin");
+  role(actor,...staffAccess.tracking);
   return (await db.query(`select t.id,t.direction,t.tracking_norm,t.transport_state,t.sync_state,t.package_id,t.shipment_id,
     t.last_success_at,(select s.events_json from tracking_snapshots s where s.tracker_id=t.id and s.locale='zh-CN'
     order by s.latest_event_at desc nulls last,s.fetched_at desc limit 1) events from tracking_records t where t.closed_at is null

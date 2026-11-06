@@ -149,6 +149,58 @@ paths:
                     $ref: '#/components/schemas/Line'
                   minItems: 1
               additionalProperties: false
+  /orders/{id}/payment:
+    get:
+      operationId: orderPayment
+      summary: 按原订单读取当前检查收费及可恢复付款状态
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        in: path
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Current inspection payment
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [state, charge]
+                properties:
+                  state:
+                    enum: [not_due, open, processing, expired, paid]
+                  charge:
+                    oneOf:
+                    - type: 'null'
+                    - type: object
+                      required: [id, amount_cents, quote_revision, expires_at]
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        amount_cents:
+                          type: integer
+                          minimum: 0
+                        quote_revision:
+                          type: integer
+                          minimum: 1
+                        expires_at:
+                          type: string
+                          format: date-time
+                      additionalProperties: false
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - customer
   /orders/{id}/quotes:
     post:
       operationId: quoteOrder
@@ -869,6 +921,67 @@ paths:
                   type: integer
                   minimum: 1
               additionalProperties: false
+  /staff/reports/{id}/reject:
+    post:
+      operationId: returnReport
+      summary: 独立复核员按版本退回首份未发布报告并记录修改原因
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        required: true
+        in: path
+        schema:
+          type: string
+          format: uuid
+      - name: Idempotency-Key
+        required: true
+        in: header
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, reason]
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                reason:
+                  type: string
+                  minLength: 4
+                  maxLength: 1200
+              additionalProperties: false
+      responses:
+        '200':
+          description: Returned to inspection
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, version, state]
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  version:
+                    type: integer
+                    minimum: 1
+                  state:
+                    const: draft
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-roles:
+      - reviewer
   /staff/reports/{id}/approve:
     post:
       operationId: approveReport
@@ -903,6 +1016,7 @@ paths:
                 $ref: '#/components/schemas/Error'
       x-roles:
       - reviewer
+      - super_admin
       requestBody:
         required: true
         content:
@@ -1993,12 +2107,16 @@ paths:
                 required:
                 - scope_revision_id
                 - adjustment_cents
+                - revision
                 properties:
                   scope_revision_id:
                     type: string
                     format: uuid
                   adjustment_cents:
                     type: integer
+                  revision:
+                    type: integer
+                    minimum: 1
                 additionalProperties: false
         default:
           description: See stable HTTP error codes in §7.2
@@ -2009,6 +2127,7 @@ paths:
       x-roles:
       - customer
       - support
+      - super_admin
       requestBody:
         required: true
         content:
@@ -2287,6 +2406,238 @@ paths:
                       business_days:
                         type: integer
                         minimum: 1
+  /staff/reports/{id}/amend:
+    post:
+      operationId: amendReport
+      summary: 以当前发布版本建立唯一修订草稿
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      x-roles:
+      - reviewer
+      - warehouse_admin
+      - super_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - base_version
+              - reason
+              properties:
+                base_version:
+                  type: integer
+                  minimum: 1
+                reason:
+                  type: string
+                  minLength: 4
+                  maxLength: 1000
+              additionalProperties: false
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - id
+                - version
+                - state
+                - revision
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  version:
+                    type: integer
+                    minimum: 1
+                  state:
+                    const: draft
+                  revision:
+                    type: integer
+                    minimum: 1
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /staff/reports/{id}:
+    patch:
+      operationId: editReportRevision
+      summary: 作者按原检查模板编辑修订内容
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      x-roles:
+      - reviewer
+      - warehouse_admin
+      - super_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              - changes
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                changes:
+                  type: array
+                  minItems: 1
+                  maxItems: 300
+                  items:
+                    type: object
+                    required:
+                    - section
+                    - result
+                    - status
+                    - typed_value
+                    - reason
+                    properties:
+                      section:
+                        type: integer
+                        minimum: 0
+                      result:
+                        type: integer
+                        minimum: 0
+                      status:
+                        enum:
+                        - RECORDED
+                        - OBSERVED_ISSUE
+                        - NOT_OBSERVED
+                        - NOT_TESTED
+                        - NOT_APPLICABLE
+                      typed_value:
+                        type:
+                        - number
+                        - boolean
+                        - string
+                        - 'null'
+                      reason:
+                        type: string
+                        maxLength: 2000
+                    additionalProperties: false
+              additionalProperties: false
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - id
+                - revision
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  revision:
+                    type: integer
+                    minimum: 1
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /staff/reports/{id}/submit-revision:
+    post:
+      operationId: submitReportRevision
+      summary: 作者提交修订供独立复核
+      security:
+      - cookieSession: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          format: uuid
+      x-roles:
+      - reviewer
+      - warehouse_admin
+      - super_admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - revision
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+              additionalProperties: false
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - id
+                - revision
+                - state
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  revision:
+                    type: integer
+                    minimum: 1
+                  state:
+                    const: submitted
+                additionalProperties: false
+        default:
+          description: See stable HTTP error codes in §7.2
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 components:
   schemas:
     Error:
@@ -2696,11 +3047,15 @@ components:
           - type: object
             additionalProperties: false
             required:
+            - id
             - recipient
             - phone
             - address_zh
             - address_en
             properties:
+              id:
+                type: string
+                format: uuid
               recipient:
                 type: string
                 minLength: 1

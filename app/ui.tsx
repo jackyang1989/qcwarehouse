@@ -4,13 +4,16 @@ import Link from "next/link";
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 
 export type Row=Record<string,any>;
-export async function request(path:string,method="GET",body?:unknown) {
+export class RequestError extends Error {
+  constructor(message:string,public code?:string) { super(message); }
+}
+export async function request(path:string,method="GET",body?:unknown,idempotencyKey?:string) {
   const form=body instanceof FormData;
   const r=await fetch("/api/v1"+path,{method,cache:"no-store",headers:method==="GET"?{}:{
-    ...(!form?{"content-type":"application/json"}:{}),"Idempotency-Key":crypto.randomUUID(),
+    ...(!form?{"content-type":"application/json"}:{}),"Idempotency-Key":idempotencyKey??crypto.randomUUID(),
   },...(body!==undefined?{body:form?body:JSON.stringify(body)}:{})});
   const data=await r.json();
-  if(!r.ok) throw new Error(data.error?.message??"Request failed.");
+  if(!r.ok) throw new RequestError(data.error?.message??"Request failed.",data.error?.code);
   return data;
 }
 export async function upload(file:FormDataEntryValue|null,kind:string):Promise<string> {
@@ -24,17 +27,19 @@ export const stamp=(t?:string)=>t?new Date(t).toLocaleString():"—";
 export const text=(f:FormData,k:string)=>String(f.get(k)??"").trim();
 export const checked=(f:FormData,k:string)=>f.get(k)==="on";
 export function useLoad(path:string|null) {
-  const [data,set]=useState<Row>();
-  const [error,err]=useState("");
+  const [result,setResult]=useState<{path:string;data?:Row;error:string}>();
   const [version,tick]=useState(0);
   useEffect(()=>{
     if(!path)return;
     let active=true;
-    request(path).then(x=>{if(active){set(x);err("");}}).catch(e=>{if(active)err(e.message);});
+    request(path).then(data=>{if(active)setResult({path,data,error:""});}).catch(e=>{
+      if(active)setResult(previous=>({path,data:previous?.path===path?previous.data:undefined,error:e.message}));
+    });
     return ()=>{active=false;};
   },[path,version]);
   const reload=useCallback(()=>tick(x=>x+1),[]);
-  return {data,error,reload};
+  const current=result?.path===path?result:undefined;
+  return {data:current?.data,error:current?.error??"",reload};
 }
 export function Action({children,run,primary=false,disabled=false}:{children:ReactNode;run:()=>Promise<unknown>;primary?:boolean;disabled?:boolean}) {
   const [busy,set]=useState(false),[error,err]=useState("");
@@ -63,14 +68,14 @@ export function Select({name,label,choices,required=true,value}:{name:string;lab
 export function Photo({name="photo",label="照片 / Photo"}:{name?:string;label?:string}) {
   return <label>{label}<input type="file" accept="image/jpeg,image/png,image/webp,image/heic" name={name} required/></label>;
 }
-export function Panel({title,children}:{title:string;children:ReactNode}) {return <section className="panel"><h2>{title}</h2>{children}</section>;}
+export function Panel({title,children,id}:{title:string;children:ReactNode;id?:string}) {return <section id={id} className="panel"><h2>{title}</h2>{children}</section>;}
 export function Empty({children}:{children:ReactNode}) {return <p className="muted">{children}</p>;}
 export function Tag({children}:{children:ReactNode}) {return <span className="tag">{children}</span>;}
 export function ErrorBlock({error}:{error:string}) {return <div className="notice error" role="alert">{error}</div>;}
 export function Tabs({links,path}:{links:[string,string][];path:string}) {return <nav className="tabs">{links.map(([to,label])=><Link aria-current={to===path?"page":undefined} href={to} key={to}>{label}</Link>)}</nav>;}
-export function Table({headers,rows}:{headers:string[];rows:ReactNode[][]}) {
-  if(!rows.length)return null;
-  return <div className="table-wrap"><table><thead><tr>{headers.map(h=><th key={h}>{h}</th>)}</tr></thead>
+export function Table({headers,rows,empty}:{headers:string[];rows:ReactNode[][];empty?:string}) {
+  if(!rows.length)return empty?<Empty>{empty}</Empty>:null;
+  return <div className="table-wrap" tabIndex={0}><table><thead><tr>{headers.map((h,i)=><th scope="col" key={i}>{h}</th>)}</tr></thead>
     <tbody>{rows.map((r,i)=><tr key={i}>{r.map((cell,n)=><td key={n}>{cell}</td>)}</tr>)}</tbody></table></div>;
 }
 export function NextAction({title,children}:{title:string;children:ReactNode}) {

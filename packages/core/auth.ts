@@ -16,6 +16,9 @@ function pepper() {
 export function reportDownloadSignature(actorId:string,reportId:string,expires:number) {
   return createHmac("sha256",pepper()).update(`report-download:${actorId}:${reportId}:${expires}`).digest("base64url");
 }
+export function reportShareToken(actorId:string,orderId:string,version:number,key:string) {
+  return createHmac("sha256",pepper()).update(`report-share:${actorId}:${orderId}:${version}:${key}`).digest("base64url");
+}
 export function verifyReportDownload(actorId:string,reportId:string,expiry:string,signature:string) {
   const expires=Number(expiry);
   guard(Number.isSafeInteger(expires) && expires>Date.now() && /^[A-Za-z0-9_-]{43}$/.test(signature)
@@ -28,8 +31,10 @@ export function cookie(name: string, value: string, age: number) {
 export function getCookie(request: Request, key: string) {
   return request.headers.get("cookie")?.split(";").map(s => s.trim()).find(s => s.startsWith(key + "="))?.slice(key.length + 1) ?? "";
 }
-export async function actorFrom(request: Request): Promise<Actor | null> {
-  const sid = getCookie(request,"session");
+export function actorFrom(request:Request) {
+  return actorForSession(getCookie(request,"session"));
+}
+export async function actorForSession(sid:string|undefined):Promise<Actor|null> {
   if (!sid) return null;
   const actor = (await pool.query<Actor>(`
     select u.id,s.kind,case when s.kind='customer' then p.org_id end as org,
@@ -38,6 +43,13 @@ export async function actorFrom(request: Request): Promise<Actor | null> {
     where s.token_hash=$1 and s.revoked_at is null and s.expires_at>now() and s.auth_version=u.auth_version and u.status='active'
   `, [hash(sid)])).rows[0];
   return actor ?? null;
+}
+export async function requireStaffMfa(db:DB,actor:Actor,sessionHash:string,maxAgeMinutes=10) {
+  const verified=(await db.query(`select s.id from sessions s join users u on u.id=s.user_id where s.token_hash=$1
+    and s.user_id=$2 and s.kind='staff' and s.revoked_at is null and s.expires_at>now()
+    and s.auth_version=u.auth_version and u.status='active'
+    and s.mfa_at>now()-make_interval(mins=>$3)`,[sessionHash,actor.id,maxAgeMinutes])).rowCount;
+  guard(verified,"STAFF_REAUTH_REQUIRED","Sign in with your staff second factor again before continuing.",403);
 }
 async function session(db: DB, userId: string, kind: Actor["kind"], mfa = false) {
   const secret = token();
@@ -74,7 +86,7 @@ async function signInIdentity(db: DB, identity: Identity, browser: string, allow
   if (account) {
     requireActiveIdentity(account);
     guard(!account.staff || (allowDemoStaff && isDemo() && email.endsWith("@qcw.test")), "STAFF_LOGIN_REQUIRED", "Use the staff sign-in page.",403);
-    return { state: "signed_in", secret: await session(db,account.id,account.staff ? "staff" : "customer", !!account.staff), kind: account.staff ? "staff" : "customer" };
+    return { state: "signed_in" as const, secret: await session(db,account.id,account.staff ? "staff" : "customer", !!account.staff), kind: account.staff ? "staff" : "customer" };
   }
   // Provider email is never used to attach a new identity to an existing account.
   const existing = (await db.query("select 1 from user_emails where normalized_email=$1 and login_enabled",[email])).rowCount;
@@ -82,7 +94,7 @@ async function signInIdentity(db: DB, identity: Identity, browser: string, allow
   const secret = token();
   await db.query(`insert into pending_registrations(token_hash,email,provider,issuer,subject,browser_hash,expires_at)
     values($1,$2,$3,$4,$5,$6,now()+interval '20 minutes')`,[hash(secret),email,provider,issuer,subject,hash(browser)]);
-  return {state:"onboarding",secret,kind:"customer"};
+  return {state:"onboarding" as const,secret,kind:"customer"};
 }
 export async function startOtp(email: string, browser: string, verifiedIdentity?: Identity) {
   const normalized = email.trim().toLowerCase();
@@ -90,7 +102,7 @@ export async function startOtp(email: string, browser: string, verifiedIdentity?
   const challengeId = uuid();
   const demo = isDemo() && normalized.endsWith("@qcw.test");
   const mail = postmarkSettings();
-  guard(demo || !isDemo() && mail.token && mail.from && !mail.testToken,"EMAIL_UNAVAILABLE","Email verification is unavailable.",503);
+  guard(demo || mail.enabled,"EMAIL_UNAVAILABLE","Email verification is unavailable.",503);
   await transaction(async (db) => {
     await lock(db,"otp:" + normalized);
     const recent = await one<{count:number}>(db,`select count(*)::int count from verification_challenges
@@ -144,8 +156,17 @@ export async function verifyOtp(challengeId: string, otp: string, browser: strin
   return result;
 }
 export async function currentTerms(db: DB, kinds: string[]) {
-  return (await db.query<{id:string;kind:string;version:string;content_md:string}>(`select distinct on(kind) id,kind,version,content_md
+  return (await db.query<{id:string;kind:string;version:string;content_md:string;effective_at:Date}>(`select distinct on(kind) id,kind,version,content_md,effective_at
     from terms_versions where kind=any($1) and effective_at<=now() order by kind,effective_at desc,id`,[kinds])).rows;
+}
+export async function publicPolicy(db:DB,kind:string,version:string|null) {
+  if(version===null) {
+    const [current]=await currentTerms(db,[kind]);
+    guard(current,"NOT_FOUND","No current version of this policy is available.",404);
+    return current;
+  }
+  return one(db,`select id,kind,version,content_md,effective_at from terms_versions
+    where kind=$1 and version=$2 and effective_at<=now()`,[kind,version]);
 }
 export function requireTerms(actual: {id:string}[], submitted: string[], count: number) {
   guard(actual.length===count && submitted.length===count && actual.every(t=>submitted.includes(t.id)),"TERMS_CHANGED","Review the current terms before continuing.");
@@ -212,11 +233,11 @@ async function providerConfig(provider:OidcProvider) {
   const config=await oidc.discovery(new URL(issuer),clientId,clientSecret);
   return {config,callback};
 }
-export async function startProvider(provider:OidcProvider,browser:string) {
+export async function startProvider(provider:OidcProvider,browser:string,returnPath:string|null) {
   const {config,callback}=await providerConfig(provider);
   const verifier=oidc.randomPKCECodeVerifier(),state=oidc.randomState(),nonce=oidc.randomNonce();
-  await pool.query(`insert into auth_transactions(state_digest,provider,intent,browser_binding_hash,nonce_digest,verifier_ciphertext,expires_at)
-    values($1,$2,'signin',$3,$4,$5,now()+interval '10 minutes')`,[hash(state),provider,hash(browser),hash(nonce),seal(JSON.stringify({verifier,nonce}))]);
+  await pool.query(`insert into auth_transactions(state_digest,provider,intent,browser_binding_hash,nonce_digest,verifier_ciphertext,return_path,expires_at)
+    values($1,$2,'signin',$3,$4,$5,$6,now()+interval '10 minutes')`,[hash(state),provider,hash(browser),hash(nonce),seal(JSON.stringify({verifier,nonce})),returnPath]);
   return oidc.buildAuthorizationUrl(config,{
     redirect_uri:callback,scope:"openid email profile",
     state,nonce,code_challenge:await oidc.calculatePKCECodeChallenge(verifier),code_challenge_method:"S256",
@@ -224,10 +245,21 @@ export async function startProvider(provider:OidcProvider,browser:string) {
 }
 export async function finishProvider(provider:OidcProvider,url:URL,browser:string) {
   const state=url.searchParams.get("state") ?? "";
-  const tx=await one(pool as unknown as DB,`update auth_transactions set consumed_at=now() where state_digest=$1 and provider=$2
-    and browser_binding_hash=$3 and consumed_at is null and expires_at>now() returning verifier_ciphertext`,[hash(state),provider,hash(browser)]);
-  if(url.searchParams.has("error")) return {state:"cancelled",secret:"",kind:"customer"};
-  const {verifier,nonce}=JSON.parse(unseal(tx.verifier_ciphertext));
+  const tx=await one<{verifier_ciphertext:Buffer;return_path:string|null}>(pool as unknown as DB,`update auth_transactions set consumed_at=now()
+    where state_digest=$1 and provider=$2 and intent='signin' and browser_binding_hash=$3 and consumed_at is null and expires_at>now()
+    returning verifier_ciphertext,return_path`,[hash(state),provider,hash(browser)]);
+  const next=tx.return_path;
+  if(url.searchParams.has("error")) return {state:"cancelled" as const,next};
+  try {
+    const result=await verifyProviderIdentity(provider,url,browser,state,tx.verifier_ciphertext);
+    return {...result,next};
+  } catch(error) {
+    return {state:error instanceof Problem&&error.code==="IDENTITY_LINK_REQUIRED"?"link_required" as const:"failed" as const,next};
+  }
+}
+
+async function verifyProviderIdentity(provider:OidcProvider,url:URL,browser:string,state:string,encrypted:Buffer) {
+  const {verifier,nonce}=JSON.parse(unseal(encrypted));
   const {config,callback}=await providerConfig(provider);
   const redirect=new URL(callback+url.search);
   const result=await oidc.authorizationCodeGrant(config,redirect,{pkceCodeVerifier:verifier,expectedState:state,expectedNonce:nonce,idTokenExpected:true});
@@ -246,7 +278,7 @@ export async function finishProvider(provider:OidcProvider,url:URL,browser:strin
   const linked=(await pool.query("select 1 from auth_identities where provider=$1 and issuer=$2 and subject=$3 and status='active'",[provider,claims.iss,claims.sub])).rowCount;
   if (linked) return transaction(db=>signInIdentity(db,identity,browser));
   const pending=seal(JSON.stringify({identity,browserHash:hash(browser),expires:Date.now()+900000})).toString("base64url");
-  return {state:"verify_email",secret:pending,kind:"customer"};
+  return {state:"verify_email" as const,secret:pending,kind:"customer"};
 }
 export function pendingProvider(value:string,email:string,browser:string): Identity | undefined {
   if (!value) return undefined;

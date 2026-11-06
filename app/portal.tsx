@@ -1,49 +1,110 @@
 "use client";
 
 import Link from "next/link";
-import { Catalog, CustomerDesk, DemoCheckout, Legal, Login, NewOrder, Onboarding, OrderView, ReportView, TrackView } from "./customer";
-import { AdminDesk, LogisticsDesk, TaskView, WarehouseDesk } from "./staff";
-import { Action, Tabs, request, useLoad } from "./ui";
+import { Catalog, CustomerActions, CustomerDesk, DemoCheckout, HowItWorks, Legal, NewOrder, OrderFulfillment, OrderView, ReportView, TrackView } from "./customer";
+import { AdminDesk, LogisticsConfiguration, LogisticsDesk, StaffOrder, TaskView, WarehouseDesk, WarehouseDispatchBatch, WarehouseItemView, WarehousePackageView, WarehouseScan } from "./staff";
+import { Action, request } from "./ui";
+import { Brand, PublicHeader, SiteFooter, WorkspaceNavigation } from "./chrome";
+import { FAQ } from "./faq";
+import { PublicInquiry } from "./public-inquiry";
+import { ReportGuide } from "./report-guide";
+import { StorageLocations, StorageMove } from "./storage-desk";
+import { CustomerCase, StaffTicket, StaffTicketQueue } from "./ticket-desk";
+import { ReportDesk, StaffReport } from "./report-desk";
+import { OperationsDesk } from "./operations-desk";
+import { PublishedReports } from "./report-sharing";
+import { AuditDesk } from "./audit-desk";
+import { NotificationInbox } from "./notifications";
 
-const customer:[string,string][]=[["/account","Account"],["/orders","Orders"],["/parcels","Parcels"],["/items","Items"],["/reports","Reports"],["/account/billing","Billing"],["/support","Support"]];
-const warehouse:[string,string][]=[["/wh","概览"],["/wh/intake","收货"],["/wh/inspection","质检与复核"],["/wh/dispatch","出库"],["/wh/logistics","物流"]];
-const admin:[string,string][]=[["/admin","概览"],["/admin/orders","订单及工单"],["/admin/finance","财务"],["/admin/settings","仓址及模板"]];
-export function Portal({path}:{path:string}) {
-  const auth=useLoad("/me");
-  const a=auth.data?.actor;
-  const isStaff=path==="/wh"||path.startsWith("/wh/")||path==="/admin"||path.startsWith("/admin/")||path==="/staff/login";
-  const isAdmin=path==="/admin"||path.startsWith("/admin/");
-  const isCatalog=["/catalog","/categories","/pricing"].includes(path)||path.startsWith("/services/");
-  const isLegal=path==="/legal"||path.startsWith("/legal/");
-  const publicPage=isCatalog||isLegal||["/login","/signup","/onboarding","/staff/login"].includes(path);
+import { canOpenStaffPage, customerDestination, customerTabs, staffHome, staffTabs, withDestination, type PortalRoute } from "../packages/core/portal-routes";
+
+import type { Actor } from "../packages/core/common";
+
+export function Portal({path,target,route,actor:a}:{path:string;target:string;route:PortalRoute;actor:Actor|null}) {
+  const isStaff=route.area==="warehouse"||route.area==="admin";
+  const publicPage=route.area==="public";
+  const warehouseLinks=a?.kind==="staff"?staffTabs("warehouse",a.roles):[];
+  const adminLinks=a?.kind==="staff"?staffTabs("admin",a.roles):[];
+  const links=route.area==="warehouse"?warehouseLinks:route.area==="admin"?adminLinks:a?.kind==="customer"?customerTabs:[];
   let content;
-  if(isCatalog) content=<Catalog/>;
-  else if(isLegal) content=<Legal/>;
-  else if(path==="/onboarding") content=<Onboarding/>;
-  else if(["/login","/signup"].includes(path)) content=<Login/>;
-  else if(path==="/staff/login") content=<Login staff/>;
-  else if(!a) content=auth.error?<Login staff={isStaff}/>:<p>Loading / 加载中…</p>;
-  else if(isStaff && a.kind!=="staff") content=<p>请使用员工账号登录。</p>;
-  else if(isStaff && path.includes("/logistics")) content=<LogisticsDesk/>;
-  else if(isAdmin) content=<AdminDesk path={path} actor={a}/>;
-  else if(isStaff && path.startsWith("/wh/task/")) content=<TaskView id={path.split("/")[3]} actor={a}/>;
-  else if(isStaff) content=<WarehouseDesk path={path} actor={a}/>;
-  else if(a.kind!=="customer") content=<p><Link href="/wh">打开仓库工作台</Link> · <Link href="/admin">打开管理后台</Link></p>;
-  else if(path==="/orders/new") content=<NewOrder/>;
-  else if(/^\/orders\/QW-[A-F0-9]+\/report$/.test(path)) content=<ReportView number={path.split("/")[2]}/>;
-  else if(/^\/orders\/QW-[A-F0-9]+$/.test(path)) content=<OrderView number={path.split("/")[2]}/>;
-  else if(path.startsWith("/checkout/demo/")) content=<DemoCheckout id={path.split("/")[3]}/>;
-  else if(path.startsWith("/parcels/")||path.startsWith("/shipments/")) content=<TrackView kind={path.startsWith("/parcels/")?"parcels":"shipments"} id={path.split("/")[2]}/>;
-  else if(customer.some(([href])=>href===path)) content=<CustomerDesk path={path}/>;
-  else content=<><h1>Page not available</h1><Link href="/account">Back to account</Link></>;
-  return <>
-    <header className="top"><Link className="wordmark" href="/"><span className="mark">QC</span> Warehouse</Link><nav>
-      {a?.kind==="staff"?<><Link href="/wh">仓库</Link><Link href="/admin">后台</Link></>:<><Link href="/catalog">Services</Link><Link href="/account">Account</Link></>}
-      {a?<Action run={async()=>{await request("/auth/logout","POST",{});location.assign("/login");}}>{isStaff?"退出":"Sign out"}</Action>:<Link href="/login">Sign in</Link>}
-    </nav></header>
-    <main className="shell" lang={isStaff?"zh-CN":"en"}>
-      {a&&!publicPage&&<Tabs links={isAdmin?admin:isStaff?warehouse:customer} path={path}/>}
-      {content}
-    </main>
+  if(route.view==="catalog") content=<Catalog path={path}/>;
+  else if(route.view==="how-it-works") content=<HowItWorks/>;
+  else if(route.view==="faq") content=<FAQ/>;
+  else if(route.view==="public-inquiry") content=<PublicInquiry/>;
+  else if(route.view==="report-guide") content=<ReportGuide/>;
+  else if(route.view==="legal") content=<Legal path={path}/>;
+  else if(!a) content=null;
+  else if(isStaff && a.kind!=="staff") content=<section className="panel narrow"><h1>需要员工权限</h1><p>请使用已分配权限的员工账号登录。</p>
+    <Link className="button primary" href={withDestination("/staff/login",target)}>前往员工登录</Link></section>;
+  else if(isStaff&&!canOpenStaffPage(path,route,a.roles)) content=<section className="panel"><h1>当前账号无权访问</h1>
+    <p>请联系管理员确认当前岗位的权限。</p>{staffHome(a.roles)&&<Link className="button" href={staffHome(a.roles)!}>返回工作区</Link>}</section>;
+  else if(route.view==="logistics") content=<LogisticsDesk/>;
+  else if(route.view==="logistics-configuration") content=<LogisticsConfiguration/>;
+  else if(route.view==="warehouse-scan") content=<WarehouseScan/>;
+  else if(route.view==="warehouse-item") content=<WarehouseItemView code={route.id}/>;
+  else if(route.view==="warehouse-package") content=<WarehousePackageView code={route.id}/>;
+  else if(route.view==="dispatch-batch") content=<WarehouseDispatchBatch key={route.id} id={route.id}/>;
+  else if(route.view==="report-desk") content=<ReportDesk/>;
+  else if(route.view==="staff-report") content=<StaffReport key={route.id} id={route.id} actor={a}/>;
+  else if(route.view==="operations") content=<OperationsDesk/>;
+  else if(path==="/admin/audit") content=<AuditDesk/>;
+  else if(route.view==="storage-move") content=<StorageMove/>;
+  else if(route.view==="storage-locations") content=<StorageLocations warehouseLinks={warehouseLinks}/>;
+  else if(route.view==="admin") content=<AdminDesk path={path} actor={a}/>;
+  else if(route.view==="staff-tickets") content=<StaffTicketQueue/>;
+  else if(route.view==="staff-ticket") content=<StaffTicket key={route.id} id={route.id} actor={a}/>;
+  else if(route.view==="staff-order") content=<StaffOrder key={route.id} number={route.id}/>;
+  else if(route.view==="task") content=<TaskView id={route.id} actor={a}/>;
+  else if(route.view==="warehouse") content=<WarehouseDesk path={path} actor={a}/>;
+  else if(a.kind!=="customer") content=<section className="panel narrow"><h1>Customer account required</h1>
+    <p>Use your customer account to open the customer workspace.</p>
+    <Link className="button primary" href={withDestination("/login",customerDestination(target))}>Sign in as a customer</Link></section>;
+  else if(route.view==="new-order") content=<NewOrder/>;
+  else if(route.view==="customer-actions") content=<CustomerActions/>;
+  else if(route.view==="customer-case") content=<CustomerCase key={route.recordId??route.id} id={route.recordId??route.id} order={route.recordId?route.id:undefined}/>;
+  else if((route.view==="order-quote"||route.view==="order-shipment")&&route.recordId) content=<OrderFulfillment key={route.recordId} order={route.id} id={route.recordId} kind={route.view==="order-quote"?"quotes":"shipments"}/>;
+  else if(route.view==="report") content=<ReportView key={route.id} number={route.id} version={route.version}/>;
+  else if(path==="/reports") content=<PublishedReports/>;
+  else if(path==="/account/notifications") content=<NotificationInbox/>;
+  else if(route.view==="order") content=<OrderView key={route.id} number={route.id} section={route.section}/>;
+  else if(route.view==="demo") content=<DemoCheckout id={route.id}/>;
+  else if(route.view==="parcel"||route.view==="shipment") content=<TrackView kind={route.view==="parcel"?"parcels":"shipments"} id={route.id}/>;
+  else content=<CustomerDesk path={path}/>;
+  const locale=isStaff?"zh-CN":"en";
+  const signOut=a?<Action run={async()=>{await request("/auth/logout","POST",{});location.assign(a.kind==="staff"?"/staff/login":"/login");}}>{a.kind==="staff"?"退出登录":"Sign out"}</Action>:undefined;
+  const homeLink=a?.kind==="customer"?"/account":a?staffHome(a.roles):undefined;
+  if(publicPage||!a||links.length===0) return <>
+    <PublicHeader path={path} accountHref={homeLink} staff={a?.kind==="staff"} accountAction={signOut}/>
+    <main className={`public-shell view-${route.view}`} id="main-content" lang={locale}>{content}</main>
+    <SiteFooter/>
   </>;
+
+  const section=route.area==="admin"?"运营后台":route.area==="warehouse"?"仓库工作台":"Client workspace";
+  const currentLink=links.find(([href])=>href===path);
+  const parentLink=links.filter(([href])=>href!=="/wh"&&href!=="/admin"&&path.startsWith(href+"/")).sort(([left],[right])=>right.length-left.length)[0];
+  return <div className={`workspace workspace-${route.area}`} lang={locale}>
+    <a className="skip-link" href="#main-content">{isStaff?"跳至主要内容":"Skip to main content"}</a>
+    <header className="workspace-top">
+      <div className="workspace-brand"><Brand/><span className="workspace-context">{section}</span></div>
+      <nav aria-label={isStaff?"员工导航":"Account navigation"}>
+        {a.kind==="staff"?<>
+          {route.area!=="warehouse"&&warehouseLinks[0]&&<Link href={warehouseLinks[0][0]}>仓库工作台</Link>}
+          {route.area!=="admin"&&adminLinks[0]&&<Link href={adminLinks[0][0]}>运营后台</Link>}
+        </>:<Link href="/catalog">Services</Link>}
+        {signOut}
+      </nav>
+    </header>
+    <div className="workspace-layout">
+      <WorkspaceNavigation area={route.area as "admin"|"warehouse"|"customer"} title={section} links={links} path={path}/>
+      <main className={`workspace-main view-${route.view}`} id="main-content" tabIndex={-1}>
+        <nav className="breadcrumb" aria-label={isStaff?"当前位置":"Breadcrumb"}>
+          <Link href="/">{isStaff?"官网":"QCWarehouse"}</Link><span aria-hidden="true">›</span>
+          {links[0][0]===path?<strong>{section}</strong>:<><Link href={links[0][0]}>{section}</Link>
+            {(currentLink||parentLink)&&<><span aria-hidden="true">›</span>{currentLink?<strong>{currentLink[1]}</strong>:<Link href={parentLink[0]}>{parentLink[1]}</Link>}</>}
+          </>}
+        </nav>
+        {content}
+      </main>
+    </div>
+  </div>;
 }

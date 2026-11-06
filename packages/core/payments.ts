@@ -1,9 +1,26 @@
 import Stripe from "stripe";
 import type { DB } from "../db";
-import { appOrigin } from "./auth";
+import { appOrigin, requireStaffMfa } from "./auth";
 import { audit, event, guard, hash, isDemo, lock, one, organization, role, uuid, type Actor } from "./common";
 import { stripeSettings } from "./integrations";
 import { activatePaidOrder } from "./orders";
+const refundApprovalMfaMinutes=15;
+
+export async function orderPayment(db:DB,actor:Actor,id:string) {
+  const row=await one(db,`select o.state order_state,c.id,c.amount_cents,q.revision quote_revision,q.expires_at,
+    c.applied_payment_id,c.free_authorization,q.expires_at>now() quote_valid,
+    exists(select 1 from payments p where p.charge_item_id=c.id and p.state='processing') processing,
+    exists(select 1 from payments p where p.charge_item_id=c.id and p.state='requires_payment' and p.provider_ref is not null) remote_attempt
+    from orders o left join inspection_quotes q on q.order_id=o.id and q.id::text=o.submission_snapshot->>'quote_id'
+    left join charge_items c on c.inspection_quote_id=q.id and c.org_id=o.org_id and c.voided_at is null
+    where o.id=$1 and o.org_id=$2`,[id,organization(actor)]);
+  if(!row.id) return {state:"not_due",charge:null};
+  const charge={id:row.id,amount_cents:row.amount_cents,quote_revision:row.quote_revision,expires_at:row.expires_at};
+  if(row.applied_payment_id || row.free_authorization) return {state:"paid",charge};
+  if(row.order_state!=="awaiting_payment") return {state:"not_due",charge:null};
+  if(row.processing) return {state:"processing",charge};
+  return {state:row.quote_valid||row.remote_attempt?"open":"expired",charge};
+}
 
 function stripe() {
   const {key,mode,webhook,liveEnabled}=stripeSettings();
@@ -161,11 +178,25 @@ export async function stripeEvent(db:DB,e:Stripe.Event) {
   await db.query("update payment_events set processed_at=now() where provider='stripe' and event_id=$1",[e.id]);
   return {received:true};
 }
+const refundableStates=["succeeded","partially_refunded"];
+const committedRefunds=`select coalesce(sum(r.amount_cents),0)::int from refunds r
+  where r.payment_id=p.id and r.state in ('approved','succeeded')`;
+export async function orderRefundPayments(db:DB,actor:Actor,number:string) {
+  role(actor,"support","super_admin");
+  const order=await one(db,"select id,public_no from orders where public_no=$1",[number]);
+  const rows=(await db.query(`select p.id,p.amount_cents,p.state,p.created_at,p.amount_cents-(${committedRefunds}) refundable_cents
+    from inspection_quotes q join charge_items c on c.inspection_quote_id=q.id join payments p on p.charge_item_id=c.id
+    where q.order_id=$1 and p.state=any($2::text[]) order by p.created_at desc`,[order.id,refundableStates])).rows;
+  return {order,rows};
+}
 export async function refundRequest(db:DB,actor:Actor,pid:string,cents:number,reason:string,orderId?:string) {
   role(actor,"support","super_admin");
-  const p=await one(db,`select p.*,c.org_id,c.inspection_quote_id from payments p join charge_items c on c.id=p.charge_item_id where p.id=$1`,[pid]);
+  const first=await one(db,`select c.org_id from payments p join charge_items c on c.id=p.charge_item_id where p.id=$1`,[pid]);
+  await lock(db,"org:"+first.org_id);
+  const p=await one(db,`select p.id,p.state,c.inspection_quote_id,p.amount_cents-(${committedRefunds}) refundable_cents
+    from payments p join charge_items c on c.id=p.charge_item_id where p.id=$1 for update of p`,[pid]);
   if(orderId) await one(db,`select id from inspection_quotes where id=$1 and order_id=$2`,[p.inspection_quote_id,orderId]);
-  guard(["succeeded","partially_refunded"].includes(p.state) && cents>0 && cents<=p.amount_cents,"REFUND_NOT_ALLOWED","Refund exceeds the paid amount.");
+  guard(refundableStates.includes(p.state) && cents>0 && cents<=p.refundable_cents,"REFUND_NOT_ALLOWED","Refund exceeds the available paid balance.");
   const r=await one(db,`insert into refunds(id,payment_id,source,amount_cents,reason,requested_by) values($1,$2,'platform',$3,$4,$5)
     returning id as refund_id,state`,[uuid(),pid,cents,reason,actor.id]);
   await audit(db,actor,"request_refund","refunds",r.refund_id);
@@ -173,14 +204,13 @@ export async function refundRequest(db:DB,actor:Actor,pid:string,cents:number,re
 }
 export async function refundApprove(db:DB,actor:Actor,id:string,rev:number,sessionHash:string) {
   role(actor,"super_admin");
-  await one(db,`select id from sessions where token_hash=$1 and user_id=$2 and revoked_at is null and mfa_at>now()-interval '15 minutes'`,[sessionHash,actor.id]);
+  await requireStaffMfa(db,actor,sessionHash,refundApprovalMfaMinutes);
   const first=await one(db,`select c.org_id from refunds r join payments p on p.id=r.payment_id join charge_items c on c.id=p.charge_item_id where r.id=$1`,[id]);
   await lock(db,"org:"+first.org_id);
   const r=await one(db,"select * from refunds where id=$1 for update",[id]);
   guard(r.revision===rev && r.state==="requested" && r.requested_by!==actor.id,"REFUND_NOT_ALLOWED","An independent approval and current request are required.");
-  const p=await one(db,"select * from payments where id=$1 for update",[r.payment_id]);
-  const total=await one<{n:number}>(db,`select coalesce(sum(amount_cents),0)::int n from refunds where payment_id=$1 and state in ('approved','succeeded')`,[p.id]);
-  guard(total.n+r.amount_cents<=p.amount_cents && ["succeeded","partially_refunded"].includes(p.state),"REFUND_NOT_ALLOWED","The refundable balance has changed.");
+  const p=await one(db,`select p.state,p.amount_cents-(${committedRefunds}) refundable_cents from payments p where p.id=$1 for update`,[r.payment_id]);
+  guard(r.amount_cents<=p.refundable_cents && refundableStates.includes(p.state),"REFUND_NOT_ALLOWED","The refundable balance has changed.");
   await db.query("update refunds set state='approved',approved_by=$2,revision=revision+1 where id=$1",[id,actor.id]);
   await event(db,"refund.approved",{refund_id:id});
   await audit(db,actor,"approve_refund","refunds",id);

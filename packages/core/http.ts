@@ -5,17 +5,25 @@ import addFormats from "ajv-formats";
 import { parse } from "yaml";
 import { z } from "zod";
 import { transaction, pool, type DB } from "../db";
-import { actorFrom, appOrigin, completeRegistration, cookie, currentTerms, finishProvider, getCookie, pendingProvider, staffSignIn, startOtp, startProvider, verifyOtp, reportDownloadSignature, verifyReportDownload } from "./auth";
+import { actorFrom, appOrigin, completeRegistration, cookie, currentTerms, finishProvider, getCookie, pendingProvider, publicPolicy, staffSignIn, startOtp, startProvider, verifyOtp, reportDownloadSignature, reportShareToken, verifyReportDownload } from "./auth";
 import { Problem, guard, hash, idempotent, isDemo, one, organization, role, uuid, type Actor } from "./common";
-import { integrationPreflight } from "./integrations";
+import { integrationPreflight, signInMethods } from "./integrations";
+import { failedJobs, retryFailedJob } from "./worker";
 import { catalog, issueManualQuote, orderDetail, quoteOrder, requestManualQuote, saveOrder, submitOrder } from "./orders";
-import { advise, assign, checkIn, decideIntakeClaim, intakeItems, lookup, requestIntakeClaim, savePhoto } from "./intake";
-import { approveReport, readReport, recordResults, startTask, submitReport, submitTask, taskDetail } from "./inspection";
+import { advise, assign, checkIn, decideIntakeClaim, intakeItems, lookup, requestIntakeClaim, savePhoto, waybill } from "./intake";
+import { amendReport, amendReportInput, approveReport, editReportRevision, readReport, recordResults, reportDesk, returnReport, revisionChanges, staffReport, startTask, submitReport, submitReportRevision, submitTask, taskDetail } from "./inspection";
 import { acceptQuote, confirmBatch, handover, instruct, packShipment, planBatch, quoteBatch, receiveReturn, storageQuote } from "./dispatch";
-import { checkout, demoPay, refundApprove, refundRequest, stripeEvent, verifyStripe } from "./payments";
+import { checkout, demoPay, orderPayment, orderRefundPayments, refundApprove, refundRequest, stripeEvent, verifyStripe } from "./payments";
 import { providerCallback, tracking, trackingAdmin, verificationState, verifyTracking } from "./logistics";
-import { adminDesk, bills, customerDesk, items, readOrderByPublicNumber, warehouseDesk } from "./reads";
-import { acceptScope, cancelOrder, moveItem, newTemplate, publishTemplate, reportIssue, scopeProposal, setAddress, staffSchemas } from "./operations";
+import { adminDesk, bills, customerActions, customerDesk, customerNotifications, dispatchQueueStates, items, markNotificationRead, readOrderByPublicNumber, searchStaffOrders, staffOrderDetail, staffOrderFilters, warehouseDesk, warehouseDispatchBatch, warehouseDispatchQueue, warehouseItem, warehousePackage } from "./reads";
+import { staffAccess } from "./staff-access";
+import { customerDestination, withDestination } from "./portal-routes";
+import { orderFulfillmentRecord } from "./fulfillment-reads";
+import { canReadCasePhoto, caseDetail, createPublicInquiry, customerTicketMessage, inquiryCategories, publicInquiry, replyToCase, staffTicketEvent, staffTicketQueue, writeStaffTicket } from "./tickets";
+import { createLocations, locationBatchSchema, locationMaster, setLocationActive, storageMovementDesk } from "./storage";
+import { acceptScope, cancelOrder, moveItem, newTemplate, orderCaseCategory, publishTemplate, reportIssue, scopeProposal, scopeReview, setAddress, staffSchemas } from "./operations";
+import { createReportShare, listPublishedReports, listReportShares, readSharedPhoto, readSharedReport, reportSharingEnabled, revokeReportShare, shareInput, shareTokenPattern } from "./report-shares";
+import { auditFilters, readAudit } from "./audit-read";
 
 type ContractOperation={
   operationId:string; "x-roles":string[];
@@ -43,6 +51,13 @@ const idSchema=z.string().uuid();
 const revSchema=z.number().int().positive();
 const emailSchema=z.email().max(254).transform(v=>v.toLowerCase());
 const photoKinds=z.enum(["intake_outer","intake_open","label_photo","shot","dispatch","attachment"]);
+const publicShareRoute=new RegExp("^/public/report-shares/("+shareTokenPattern+")(?:/photos/(\\d{1,6})/(\\d{1,6})/(\\d{1,6}))?$");
+function privateShareResponse(response:Response) {
+  response.headers.set("cache-control","private, no-store");
+  response.headers.set("referrer-policy","no-referrer");
+  response.headers.set("x-robots-tag","noindex, nofollow");
+  return response;
+}
 function json(value:unknown,status=200,cookies:string[] = []) {
   const headers=new Headers({"cache-control":"no-store"});
   for(const c of cookies) headers.append("set-cookie",c);
@@ -78,6 +93,8 @@ function binary(file:{data:Buffer;mime:string}) {
 }
 async function photoRead(db:DB,actor:Actor,id:string) {
   const m=await one(db,"select * from media_assets where id=$1 and status='ready'",[id]);
+  if(m.kind==="attachment"&&await canReadCasePhoto(db,actor,id))
+    return binary(await one<{data:Buffer;mime:string}>(db,"select data,mime from private_files where key=$1",[m.object_key]));
   if(actor.kind==="customer") {
     const org=organization(actor);
     guard(m.org_id===org && m.result_id,"NOT_FOUND","Photo not found.",404);
@@ -94,7 +111,8 @@ async function photoRead(db:DB,actor:Actor,id:string) {
         and coalesce(t.carrier_code,k.details->>'carrier_code')=k.details->>'carrier_code'
         where t.package_id=$1 and t.closed_at is null and t.org_id is null
         and k.category='identity_unclear' and k.state='open' and k.details ? 'proof_id'`,[m.package_id])).rowCount;
-    guard(claimProof || claimOuter || m.uploaded_by===actor.id || actor.roles.includes("warehouse_admin") && m.kind!=="attachment" ||
+    guard(claimProof || claimOuter || m.uploaded_by===actor.id || actor.roles.includes("super_admin") && m.kind!=="attachment" ||
+      actor.roles.includes("warehouse_admin") && m.kind!=="attachment" ||
       (actor.roles.includes("reviewer") && m.task_id),"NOT_FOUND","Photo not found.",404);
   }
   return binary(await one<{data:Buffer;mime:string}>(db,"select data,mime from private_files where key=$1",[m.object_key]));
@@ -102,6 +120,37 @@ async function photoRead(db:DB,actor:Actor,id:string) {
 async function extras(req:Request,path:string,actor:Actor|null):Promise<Response|null> {
   const method=req.method;
   const url=new URL(req.url);
+  const share=publicShareRoute.exec(path);
+  if(method==="GET"&&share) {
+    const response=await transaction(async db=>share[2]===undefined?json(await readSharedReport(db,share[1])):
+      binary(await readSharedPhoto(db,share[1],Number(share[2]),Number(share[3]),Number(share[4]))));
+    return privateShareResponse(response);
+  }
+  const versionShares=path.match(/^\/orders\/([a-f0-9-]{36})\/report\/versions\/(\d+)\/shares$/i);
+  if(versionShares&&(method==="GET"||method==="POST")) {
+    const customer=actorRequired(actor);
+    organization(customer);
+    const orderId=idSchema.parse(versionShares[1]);
+    const version=z.coerce.number().int().min(1).max(2147483647).parse(versionShares[2]);
+    if(method==="GET")return json(await transaction(db=>listReportShares(db,customer,orderId,version)));
+    csrf(req);
+    guard(reportSharingEnabled(),"REPORT_SHARING_DISABLED","Report sharing is currently unavailable.",403);
+    const key=idSchema.parse(req.headers.get("idempotency-key"));
+    const {days}=shareInput.parse(await input(req));
+    const token=reportShareToken(customer.id,orderId,version,key);
+    const receipt=await transaction(db=>idempotent(db,customer.id+":report-share:"+orderId+":"+version,key,{days},
+      ()=>createReportShare(db,customer,orderId,version,days,token)));
+    return json({...receipt,url:appOrigin()+"/r/"+token},201);
+  }
+  const revokeShare=path.match(/^\/me\/report-shares\/([a-f0-9-]{36})$/i);
+  if(method==="DELETE"&&revokeShare)return extraWrite(req,path,actor,z.object({}).strict(),
+    (db,customer)=>revokeReportShare(db,customer,idSchema.parse(revokeShare[1])));
+  if(method==="GET"&&path==="/me/reports") {
+    const reference=z.string().trim().toUpperCase().pipe(z.string().regex(/^(QW|R)-[A-F0-9]{1,64}$/)).optional()
+      .parse(url.searchParams.get("reference")||undefined)??null;
+    const version=z.coerce.number().int().min(1).max(2147483647).optional().parse(url.searchParams.get("version")||undefined)??null;
+    return json(await transaction(db=>listPublishedReports(db,actorRequired(actor),reference,version)));
+  }
   if(method==="GET" && path==="/health") {
     await pool.query("select 1");
     return json({status:"ok"});
@@ -109,12 +158,29 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   if(method==="GET" && path==="/catalog") return json({offers:await transaction(catalog)});
   if(method==="GET" && path==="/carriers") return json({carriers:(await pool.query("select code,labels from carriers where enabled order by code")).rows});
   if(method==="GET" && path==="/public/terms") return json({terms:await transaction(db=>currentTerms(db,["terms","privacy","restricted_items","report_notice"]))});
-  if(method==="GET" && path==="/auth/providers") {
-    const cfg=integrationPreflight();
-    return json({google:cfg.google.configured,microsoft:cfg.microsoft.configured,demo:cfg.demo});
+  const policy=path.match(/^\/public\/terms\/(terms|privacy|restricted_items|report_notice)$/);
+  if(method==="GET"&&policy) {
+    const versions=url.searchParams.getAll("version");
+    guard(versions.length<=1&&versions[0]!=="","INVALID_REQUEST","Provide one policy version.",422);
+    return json({terms:[await transaction(db=>publicPolicy(db,policy[1],versions[0]??null))]});
   }
+  if(method==="GET" && path==="/public/inquiry-categories") {
+    const browser=idSchema.safeParse(getCookie(req,"qcw_browser")).data??uuid();
+    return json({categories:await transaction(inquiryCategories)},200,[cookie("qcw_browser",browser,3600)]);
+  }
+  if(method==="POST" && path==="/public/inquiries") {
+    csrf(req);
+    const data=publicInquiry.parse(await input(req));
+    const key=idSchema.parse(req.headers.get("idempotency-key"));
+    const customer=actor?.kind==="customer"?actor:null;
+    const browser=idSchema.safeParse(getCookie(req,"qcw_browser")).data??uuid();
+    const scope="public-inquiry:"+(customer?.org??hash(data.email));
+    const result=await transaction(db=>idempotent(db,scope,key,data,()=>createPublicInquiry(db,customer,browser,data)));
+    return json(result,201,[cookie("qcw_browser",browser,3600)]);
+  }
+  if(method==="GET" && path==="/auth/providers") return json(signInMethods());
   if(method==="GET" && path==="/staff/admin/tracking/health") {
-    role(actorRequired(actor),"super_admin");
+    role(actorRequired(actor),...staffAccess.trackingConfiguration);
     return json({check:"local_configuration_only",...integrationPreflight().kuaidi100});
   }
   const oid=path.match(/^\/auth\/(google|microsoft)\/(start|callback)$/);
@@ -122,14 +188,19 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
     const browser=browserKey(req);
     const provider=oid[1]==="google"?"google":"microsoft";
     const clear=cookie("qcw_provider","",0);
+    const next=oid[2]==="start"?customerDestination(url.searchParams.get("next")):null;
     try {
-      if(oid[2]==="start") return redirect(await startProvider(provider,browser),[cookie("qcw_browser",browser,3600),clear]);
+      if(oid[2]==="start") return redirect(await startProvider(provider,browser,next),[cookie("qcw_browser",browser,3600),clear]);
       const result=await finishProvider(provider,url,browser);
-      if(result.state==="cancelled") return redirect("/login?oauth=cancelled",[clear]);
-      if(result.state==="verify_email") return redirect("/login?verify=1",[cookie("qcw_provider",result.secret,900)]);
-      return redirect(result.state==="onboarding"?"/onboarding":"/account",authResult(result));
-    } catch (e) {
-      return redirect("/login?oauth="+(e instanceof Problem&&e.code==="IDENTITY_LINK_REQUIRED"?"link_required":"failed"),[clear]);
+      const destination=customerDestination(result.next);
+      if(!("secret" in result)) {
+        return redirect(withDestination("/login?oauth="+result.state,destination),[clear]);
+      }
+      if(result.state==="verify_email") return redirect(withDestination("/login?verify=1",destination),[cookie("qcw_provider",result.secret,900)]);
+      if(result.state==="onboarding") return redirect(withDestination("/onboarding",destination),authResult(result));
+      return redirect(destination??"/account",authResult(result));
+    } catch {
+      return redirect(withDestination("/login?oauth=failed",next),[clear]);
     }
   }
   if(method==="POST" && path==="/auth/otp/request") {
@@ -176,29 +247,128 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   }
   if(method==="GET" && path==="/me") return json({actor:actorRequired(actor)});
   if(method==="GET" && path==="/me/desk") return json(await transaction(db=>customerDesk(db,actorRequired(actor))));
+  if(method==="GET"&&path==="/me/notifications") {
+    const unread=z.enum(["1","0"]).nullable().parse(url.searchParams.get("unread"))==="1";
+    const before=idSchema.nullable().parse(url.searchParams.get("before"));
+    return json(await transaction(db=>customerNotifications(db,actorRequired(actor),unread,before)));
+  }
+  const readNotice=path.match(/^\/me\/notifications\/([a-f0-9-]{36})\/read$/i);
+  if(method==="POST"&&readNotice)return extraWrite(req,path,actor,z.object({}).strict(),
+    (db,a)=>markNotificationRead(db,a,idSchema.parse(readNotice[1])));
+  if(method==="GET" && path==="/actions") return json(await transaction(db=>customerActions(db,actorRequired(actor))));
+  const caseRoute=path.match(/^\/cases\/([a-f0-9-]{36})(\/messages)?$/i);
+  if(caseRoute&&method==="GET"&&!caseRoute[2]) {
+    const customer=actorRequired(actor);organization(customer);
+    const order=z.string().regex(/^QW-[A-F0-9]+$/).nullable().parse(url.searchParams.get("order"));
+    return json(await transaction(db=>caseDetail(db,customer,idSchema.parse(caseRoute[1]),order)));
+  }
+  if(caseRoute&&method==="POST"&&caseRoute[2]&&req.headers.get("content-type")?.startsWith("multipart/form-data")) {
+    csrf(req);
+    const customer=actorRequired(actor);organization(customer);
+    const id=idSchema.parse(caseRoute[1]),key=idSchema.parse(req.headers.get("idempotency-key"));
+    guard(Number(req.headers.get("content-length")??0)<=8_100_000,"BODY_TOO_LARGE","Photo is too large.",413);
+    const form=await req.formData(),file=form.get("photo");
+    guard(file instanceof File&&file.size>0&&file.size<=8_000_000,"FILE_INVALID","Choose a photo up to 8 MB.",422);
+    const input=customerTicketMessage.parse({revision:Number(form.get("revision")),body:form.get("body")});
+    const bytes=Buffer.from(await file.arrayBuffer());
+    return json(await transaction(db=>idempotent(db,customer.id+":"+path,key,{...input,photo:hash(bytes)},
+      ()=>replyToCase(db,customer,id,input,bytes))));
+  }
+  if(caseRoute&&method==="POST"&&caseRoute[2]) return extraWrite(req,path,actor,customerTicketMessage,
+    (db,a,b)=>replyToCase(db,a,idSchema.parse(caseRoute[1]),b));
+  if(method==="GET"&&path==="/staff/tickets") {
+    const state=z.enum(["open","waiting_customer","waiting_internal","resolved","closed"]).nullable().parse(url.searchParams.get("state"));
+    const reference=z.string().trim().toUpperCase().pipe(z.string().regex(/^[A-Z][A-Z0-9-]{1,63}$/)).nullable().parse(url.searchParams.get("reference"));
+    return json(await transaction(db=>staffTicketQueue(db,actorRequired(actor),state,reference)));
+  }
+  const ticketRoute=path.match(/^\/staff\/tickets\/([a-f0-9-]{36})(\/events)?$/i);
+  if(ticketRoute&&method==="GET"&&!ticketRoute[2]) {
+    const staff=actorRequired(actor);role(staff,...staffAccess.orders);
+    return json(await transaction(db=>caseDetail(db,staff,idSchema.parse(ticketRoute[1]),null)));
+  }
+  if(ticketRoute&&method==="POST"&&ticketRoute[2]) return extraWrite(req,path,actor,staffTicketEvent,
+    (db,a,b)=>writeStaffTicket(db,a,idSchema.parse(ticketRoute[1]),b));
   if(method==="GET" && path==="/me/receiving-address") {
     const a=actorRequired(actor);organization(a);
     const {receiving}=await import("./auth");
     return json(await transaction(db=>receiving(db,a.id)));
   }
   if(method==="GET" && path==="/staff/desk") return json(await transaction(db=>warehouseDesk(db,actorRequired(actor))));
+  if(method==="GET"&&path==="/staff/reports") {
+    const order=z.string().regex(/^QW-[A-F0-9]+$/).nullable().parse(url.searchParams.get("order"));
+    return json(await transaction(db=>reportDesk(db,actorRequired(actor),order)));
+  }
+  const revisionRoute=path.match(/^\/staff\/reports\/([a-f0-9-]{36})(?:\/(amend|submit-revision))?$/i);
+  if(revisionRoute) {
+    const id=idSchema.parse(revisionRoute[1]);
+    if(method==="GET"&&!revisionRoute[2])return json(await transaction(db=>staffReport(db,actorRequired(actor),id)));
+  }
+  const batchDetail=path.match(/^\/staff\/dispatch-batches\/([a-f0-9-]{36})$/i);
+  if(method==="GET"&&batchDetail) return json(await transaction(db=>warehouseDispatchBatch(db,actorRequired(actor),idSchema.parse(batchDetail[1]))));
+  if(method==="GET"&&path==="/staff/dispatch-batches") {
+    const state=z.enum(dispatchQueueStates).parse(url.searchParams.get("state"));
+    const raw=url.searchParams.get("reference")?.trim();
+    const reference=raw?idSchema.safeParse(raw).success?raw.toLowerCase():waybill(raw):null;
+    return json(await transaction(db=>warehouseDispatchQueue(db,actorRequired(actor),state,reference)));
+  }
+  if(method==="GET" && path==="/staff/storage") return json(await transaction(db=>storageMovementDesk(db,actorRequired(actor))));
+  if(path==="/staff/admin/storage/locations") {
+    if(method==="GET") return json(await transaction(db=>locationMaster(db,actorRequired(actor))));
+    if(method==="POST") return extraWrite(req,path,actor,locationBatchSchema,createLocations);
+  }
+  const locationState=path.match(/^\/staff\/admin\/storage\/locations\/([a-f0-9-]{36})\/state$/i);
+  if(method==="POST"&&locationState) return extraWrite(req,path,actor,z.object({active:z.boolean()}),
+    (db,a,b)=>setLocationActive(db,a,idSchema.parse(locationState[1]),b.active));
+  if(method==="GET" && path==="/staff/items/by-code") {
+    const code=z.string().trim().min(1).max(100).parse(url.searchParams.get("code"));
+    return json(await transaction(db=>warehouseItem(db,actorRequired(actor),code)));
+  }
+  const packageDetail=path.match(/^\/staff\/packages\/([a-f0-9-]{36})$/i);
+  if(method==="GET" && packageDetail) return json(await transaction(db=>warehousePackage(db,actorRequired(actor),idSchema.parse(packageDetail[1]))));
+  const packageCode=path.match(/^\/staff\/packages\/by-code\/(P-[A-Z0-9-]{1,64})$/);
+  if(method==="GET"&&packageCode) return json(await transaction(db=>warehousePackage(db,actorRequired(actor),packageCode[1],true)));
   if(method==="GET" && path==="/staff/admin/desk") return json(await transaction(db=>adminDesk(db,actorRequired(actor))));
+  if(method==="GET"&&path==="/staff/audit") {
+    const filters=auditFilters.parse(Object.fromEntries([...url.searchParams].filter(([,value])=>value!=="")));
+    return json(await transaction(db=>readAudit(db,actorRequired(actor),filters)));
+  }
+  if(method==="GET"&&path==="/staff/admin/jobs") return json(await transaction(db=>failedJobs(db,actorRequired(actor))));
+  const retryJob=path.match(/^\/staff\/admin\/jobs\/([0-9]+)\/retry$/);
+  if(method==="POST"&&retryJob) {
+    const id=z.string().regex(/^[1-9][0-9]{0,18}$/).refine(v=>BigInt(v)<=9223372036854775807n).parse(retryJob[1]);
+    return extraWrite(req,path,actor,z.object({attempts:z.number().int().positive(),reason:z.string().trim().min(4).max(1000)}).strict(),
+      (db,a,b)=>retryFailedJob(db,a,id,b.attempts,b.reason,hash(getCookie(req,"session"))));
+  }
+  if(method==="GET"&&path==="/staff/orders") {
+    const filters=staffOrderFilters.parse(Object.fromEntries([...url.searchParams].filter(([,value])=>value!=="")));
+    return json(await transaction(db=>searchStaffOrders(db,actorRequired(actor),filters)));
+  }
+  const staffOrder=path.match(/^\/staff\/orders\/by-number\/(QW-[A-F0-9]+)$/);
+  if(method==="GET"&&staffOrder) return json(await transaction(db=>staffOrderDetail(db,actorRequired(actor),staffOrder[1])));
+  const refundOptions=path.match(/^\/staff\/orders\/by-number\/(QW-[A-F0-9]+)\/refund-options$/);
+  if(method==="GET"&&refundOptions) return json(await transaction(db=>orderRefundPayments(db,actorRequired(actor),refundOptions[1])));
   if(method==="GET" && path==="/staff/tracking") return json({rows:await transaction(db=>trackingAdmin(db,actorRequired(actor)))});
   const byNo=path.match(/^\/orders\/by-number\/(QW-[A-F0-9]+)$/);
   if(method==="GET" && byNo) return json(await transaction(db=>readOrderByPublicNumber(db,actorRequired(actor),byNo[1])));
   const order=path.match(/^\/orders\/([a-f0-9-]{36})$/i);
   if(method==="GET" && order) return json(await transaction(db=>orderDetail(db,actorRequired(actor),idSchema.parse(order[1]))));
+  const scopes=path.match(/^\/orders\/([a-f0-9-]{36})\/scope-revisions$/i);
+  if(method==="GET"&&scopes)return json(await transaction(db=>scopeReview(db,actorRequired(actor),idSchema.parse(scopes[1]))));
+  const fulfillment=path.match(/^\/orders\/([a-f0-9-]{36})\/(quotes|shipments)\/([a-f0-9-]{36})$/i);
+  if(method==="GET"&&fulfillment) return json(await transaction(db=>orderFulfillmentRecord(db,actorRequired(actor),
+    idSchema.parse(fulfillment[1]),fulfillment[2].toLowerCase() as "quotes"|"shipments",idSchema.parse(fulfillment[3]))));
   const task=path.match(/^\/staff\/inspection-tasks\/([a-f0-9-]{36})$/i);
   if(method==="GET" && task) return json(await transaction(db=>taskDetail(db,actorRequired(actor),idSchema.parse(task[1]))));
   const report=path.match(/^\/orders\/([a-f0-9-]{36})\/report(?:\/versions\/(\d+)(\/file)?)?$/i);
   if(method==="GET" && report) return transaction(async db=>{
     const a=actorRequired(actor);
-    const r=await readReport(db,a,idSchema.parse(report[1]),report[2]?Number(report[2]):undefined);
+    const version=report[2]?z.coerce.number().int().min(1).max(2147483647).parse(report[2]):undefined;
+    const r=await readReport(db,a,idSchema.parse(report[1]),version);
     if(report[3]) {
       verifyReportDownload(a.id,r.id,url.searchParams.get("expires")??"",url.searchParams.get("sig")??"");
       return binary(await one<{data:Buffer;mime:string}>(db,"select data,mime from private_files where key=$1",[r.pdf_key]));
     }
-    return json({id:r.id,version:r.version,state:r.state,snapshot:r.snapshot,published_at:r.published_at});
+    return json({id:r.id,version:r.version,state:r.state,snapshot:r.snapshot,published_at:r.published_at,amend_reason:r.amend_reason,versions:r.versions});
   });
   const media=path.match(/^\/media\/([a-f0-9-]{36})$/i);
   if(method==="GET" && media) return transaction(db=>photoRead(db,actorRequired(actor),idSchema.parse(media[1])));
@@ -237,8 +407,8 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   if(method==="POST" && manual) return extraWrite(req,path,actor,z.object({revision:revSchema,reason:z.string().trim().min(4).max(1200)}),
     (db,a,b)=>requestManualQuote(db,a,idSchema.parse(manual[1]),b.revision,b.reason));
   if(method==="POST" && path==="/me/cases") {
-    const b=z.object({subject:z.string().trim().min(2).max(150),message:z.string().trim().min(2).max(2000),order_id:idSchema.optional()});
-    return extraWrite(req,path,actor,b,(db,a,v)=>reportIssue(db,a,v.subject,v.message,v.order_id));
+    const b=z.object({subject:z.string().trim().min(2).max(150),message:z.string().trim().min(2).max(2000),order_id:idSchema.optional(),category:orderCaseCategory.optional()});
+    return extraWrite(req,path,actor,b,(db,a,v)=>reportIssue(db,a,v.subject,v.message,v.order_id,v.category));
   }
   if(method==="POST" && path==="/staff/admin/warehouse-addresses")
     return extraWrite(req,path,actor,staffSchemas.address,setAddress);
@@ -270,6 +440,7 @@ async function dispatch(db:DB,actor:Actor,id:string,op:string,b:Record<string,an
     case "quoteOrder": return quoteOrder(db,actor,id,b.revision);
     case "issueManualQuote": return issueManualQuote(db,actor,id,b as Parameters<typeof issueManualQuote>[3]);
     case "submitOrder": return submitOrder(db,actor,id,b as Parameters<typeof submitOrder>[3]);
+    case "orderPayment": return orderPayment(db,actor,id);
     case "checkout": return checkout(db,actor,id,b.quote_revision);
     case "adviseParcel": return advise(db,actor,b as Parameters<typeof advise>[2]);
     case "lookupParcel": return lookup(db,actor,b as Parameters<typeof lookup>[2]);
@@ -281,6 +452,7 @@ async function dispatch(db:DB,actor:Actor,id:string,op:string,b:Record<string,an
     case "submitTask": return submitTask(db,actor,id,b.revision);
     case "submitReport": return submitReport(db,actor,id,b.revision,b.task_ids);
     case "approveReport": return approveReport(db,actor,id,b.revision,b.checklist);
+    case "returnReport": return returnReport(db,actor,id,b.revision,b.reason);
     case "instruct": return instruct(db,actor,b.item_id,b as Parameters<typeof instruct>[3],id);
     case "instructWithoutOrder": return instruct(db,actor,id,b as Parameters<typeof instruct>[3]);
     case "planBatch": return planBatch(db,actor,b.disposition_ids);
@@ -304,6 +476,9 @@ async function dispatch(db:DB,actor:Actor,id:string,op:string,b:Record<string,an
     case "approveRefund": return refundApprove(db,actor,id,b.revision,hash(getCookie(req,"session")));
     case "proposeScope": return scopeProposal(db,actor,id,b as Parameters<typeof scopeProposal>[3]);
     case "acceptScope": return acceptScope(db,actor,id,b.revision);
+    case "amendReport": return amendReport(db,actor,id,amendReportInput.parse(b));
+    case "editReportRevision": return editReportRevision(db,actor,id,revisionChanges.parse(b));
+    case "submitReportRevision": return submitReportRevision(db,actor,id,b.revision);
     case "reportPDF": {
       const n=Number(new URL(req.url).pathname.match(/\/versions\/(\d+)\/pdf$/)?.[1]);
       const r=await readReport(db,actor,id,n);
@@ -347,12 +522,16 @@ export async function handle(req:Request,path:string) {
       return key?idempotent(db,a.id+":"+req.method+":"+path,key,data,run):run();
     }),status);
   } catch(e) {
-    if(e instanceof Problem) return json({error:{code:e.code,message:e.message}},e.status);
+    if(e instanceof Problem) {
+      const response=json({error:{code:e.code,message:e.message}},e.status);
+      return path.startsWith("/public/report-shares/")?privateShareResponse(response):response;
+    }
     if(e instanceof z.ZodError) return json({error:{code:"INVALID_REQUEST",message:e.issues.map(x=>x.path.join(".")+": "+x.message).join("; ")}},422);
     if(e instanceof Error && "code" in e && ["23505","23514","23503"].includes(String(e.code))) {
       return json({error:{code:"RECORD_CONFLICT",message:"This operation conflicts with an existing record or state."}},409);
     }
-    console.error("QC Warehouse request failed",req.method,path,e instanceof Error?{name:e.name,code:"code" in e?e.code:undefined}:undefined);
+    const logPath=path.startsWith("/public/report-shares/")?"/public/report-shares/{token}":path;
+    console.error("QC Warehouse request failed",req.method,logPath,e instanceof Error?{name:e.name,code:"code" in e?e.code:undefined}:undefined);
     return json({error:{code:"SERVER_ERROR",message:"The operation failed. Retry or contact support."}},500);
   }
 }

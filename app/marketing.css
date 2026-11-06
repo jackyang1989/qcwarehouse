@@ -1,0 +1,117 @@
+.marketing { background: var(--white); }
+.marketing-hero {
+  min-height: 565px;
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  background: #14233b;
+  color: var(--white);
+}
+.marketing-hero::before, .marketing-hero::after { content: ""; position: absolute; inset: 0; }
+.marketing-hero::before { left: 42%; z-index: -2; background: url("/brand/inspection-hero.webp") center / cover no-repeat; }
+.marketing-hero::after { z-index: -1; background: linear-gradient(90deg,#131f35 0%,#182b4ae8 41%,#1b2d48b8 62%,#101c32a6 100%); }
+.hero-inner { width: min(100%, 1280px); margin-inline: auto; padding: 58px 48px 76px; }
+.hero-inner > p:not(.hero-kicker) { max-width: 605px; color: #d3deef; line-height: 1.75; }
+.hero-kicker { display: flex; align-items: center; gap: 10px; color: #c2d5f8; text-transform: uppercase; font-size: .72rem; letter-spacing: .17em; font-weight: 790; }
+.hero-kicker::before { content: ""; width: 20px; height: 2px; background: #7b9ff5; }
+.marketing-hero h1 { margin: 24px 0 20px; font-size: clamp(2.65rem,4.25vw,3.65rem); font-weight: 790; letter-spacing: -.051em; line-height: 1.08; }
+.hero-buttons { display: flex; flex-wrap: wrap; gap: 12px; margin: 26px 0 28px; }
+.hero-buttons .button, .land-cta .button { min-height: 47px; padding-inline: 20px; }
+.hero-secondary { color: var(--white); border-color: #a4b7d7; background: #ffffff0d; }
+.hero-secondary:hover { background: #ffffff26; }
+.hero-trust { display: flex; flex-wrap: wrap; gap: 8px 23px; color: #d0ddf2; margin: 0; padding: 0; list-style: none; font-size: .77rem; }
+.hero-trust li { display: flex; align-items: center; gap: 8px; }
+.hero-trust li span { display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid #a9bad9; border-radius: 50%; }
+.infra-strip {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(4,minmax(0,1fr));
+  width: min(calc(100% - 56px), 1280px);
+  margin: -32px auto 0;
+  list-style: none;
+  padding: 13px 0;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--white);
+  box-shadow: 0 14px 42px #091b3323;
+}
+.infra-item { display: flex; align-items: center; gap: 14px; padding: 20px 22px; }
+.infra-item + .infra-item { border-left: 1px solid #e6edf4; }
+.infra-item strong, .infra-item small { display: block; line-height: 1.45; }
+.infra-item strong { font-size: .85rem; }
+.infra-item small { font-size: .73rem; margin-top: 4px; }
+.symbol { display: grid; flex: none; place-items: center; width: 45px; height: 45px; border-radius: 11px; color: var(--accent); background: var(--accent-surface); }
+.land-section { width: min(100%,1280px); margin-inline: auto; padding: 60px 26px 14px; }
+.land-section:last-of-type { padding-bottom: 40px; }
+.land-heading { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 23px; }
+.land-heading .eyebrow { margin: 0 0 10px; }
+.land-heading h2, .land-cta h2 { margin: 0; font-size: clamp(1.5rem,2.3vw,2rem); font-weight: 770; letter-spacing: -.038em; }
+.land-heading p:not(.eyebrow) { max-width: 570px; margin: 8px 0 0; color: var(--muted); font-size: .89rem; }
+.land-services, .land-process, .land-categories { display: grid; gap: 15px; }
+.land-services { grid-template-columns: repeat(3,minmax(0,1fr)); }
+.land-svc { display: flex; min-height: 204px; flex-direction: column; align-items: start; padding: 24px; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 25px #102d4610; color: var(--ink); }
+.land-svc:hover { border-color: #8ea6ea; text-decoration: none; }
+.land-svc .symbol { width: 48px; height: 48px; margin-bottom: 16px; }
+.land-svc h3 { margin: 0 0 7px; font-size: 1.06rem; letter-spacing: -.02em; }
+.land-svc p { flex: 1; color: var(--muted); font-size: .85rem; }
+.land-svc .go { color: var(--accent); font-size: .83rem; font-weight: 710; }
+.land-process { grid-template-columns: repeat(5,minmax(0,1fr)); margin: 0; padding: 0; list-style: none; }
+.land-step { min-height: 146px; padding: 20px 16px; border: 1px solid var(--line); border-radius: 11px; background: var(--paper); }
+.step-index { display: flex; align-items: center; gap: 8px; color: #536fa4; font-size: .75rem; font-weight: 790; }
+.step-index svg { color: var(--accent); }
+.land-step h3 { margin: 13px 0 5px; font-size: .9rem; }
+.land-step p { margin: 0; color: var(--muted); font-size: .79rem; }
+.land-categories { grid-template-columns: repeat(5,minmax(0,1fr)); }
+.land-category { display: flex; flex-direction: column; justify-content: flex-end; align-items: start; gap: 6px; min-height: 172px; padding: 16px; overflow: hidden; border: 1px solid var(--line); border-radius: 11px; color: var(--white); background: linear-gradient(0deg,#0d1c31f5,#0d1c311a 87%),var(--category-photo) center / cover no-repeat #526174; }
+.land-category:hover { text-decoration: none; box-shadow: inset 0 0 0 2px #b4c6f3; }
+.land-category span { border-radius: 4px; padding: 3px 6px; background: #e3e8f0; color: #334257; font-size: .68rem; font-weight: 760; }
+.land-category .available { background: #e9f4ff; color: #1e4f85; }
+.land-report { display: grid; grid-template-columns: minmax(0,1.4fr) minmax(0,.75fr); align-items: center; gap: 30px; }
+.report-artifact { min-width: 0; margin: 0; border: 1px solid var(--line); border-radius: 13px; padding: 18px; background: var(--white); box-shadow: 0 13px 32px #0f28441c; }
+.report-ribbon { display: flex; align-items: center; justify-content: space-between; gap: 7px; padding: 12px 14px; border-radius: 7px; background: #172b48; color: var(--white); font-size: .75rem; }
+.report-ribbon span { text-align: right; font-size: .67rem; text-transform: uppercase; }
+.proof-data { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; margin-block: 13px; }
+.proof-data div { border: 1px solid var(--line); border-radius: 7px; background: var(--paper); padding: 10px; }
+.proof-data dt { margin-bottom: 5px; font-size: .77rem; font-weight: 730; }
+.proof-data dd, .report-artifact figcaption { margin: 0; color: var(--muted); font-size: .72rem; }
+.report-artifact .table-wrap { border: 0; }
+.report-artifact table { min-width: 380px; }
+.report-artifact th, .report-artifact td { background: transparent; font-size: .72rem; padding: 8px; }
+.land-report h3 { font-size: clamp(1.45rem,2.4vw,1.83rem); line-height: 1.18; letter-spacing: -.035em; }
+.land-report p, .proof-list { font-size: .9rem; color: var(--muted); }
+.proof-list { list-style: none; padding: 0; margin-bottom: 22px; }
+.proof-list li { margin: 8px 0; }
+.proof-list li::before { content: "✓"; color: #117455; font-weight: 800; margin-right: 9px; }
+.land-cta { margin-top: 74px; padding: 40px 0; background: linear-gradient(100deg,#15243e,#27486e); color: var(--white); }
+.land-cta .inner { width: min(100%,1280px); padding: 0 26px; margin: auto; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.land-cta p { color: #d3deef; margin: 8px 0 0; }
+.report-guide-diagram { max-width: 660px; margin-top: 24px; }
+
+@media (max-width: 1040px) {
+  .marketing-hero { min-height: 508px; }
+  .marketing-hero::before { left: 28%; }
+  .infra-strip { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .infra-item:nth-child(3) { border-left: 0; }
+  .land-process, .land-categories { grid-template-columns: repeat(3,minmax(0,1fr)); }
+}
+@media (max-width: 760px) {
+  .marketing-hero { min-height: 440px; }
+  .marketing-hero::before { left: 0; background-position: 62% center; }
+  .marketing-hero::after { background: linear-gradient(90deg,#13233cf0,#172941ad); }
+  .hero-inner { padding: 42px 22px 48px; }
+  .marketing-hero h1 { font-size: clamp(2rem,8vw,3.1rem); }
+  .infra-strip { width: calc(100% - 28px); margin-top: -13px; padding: 0; }
+  .infra-item { padding: 12px; gap: 9px; }
+  .infra-item:nth-child(n+3) { border-top: 1px solid var(--line); }
+  .infra-item .symbol { width: 32px; height: 32px; }
+  .land-section { padding: 42px 16px 10px; }
+  .land-heading { flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+  .land-services, .land-report { grid-template-columns: minmax(0,1fr); }
+  .land-svc { min-height: auto; }
+  .land-process, .land-categories { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .land-category { min-height: 145px; }
+  .land-cta { margin-top: 42px; }
+  .land-cta .inner { padding-inline: 16px; flex-wrap: wrap; }
+}

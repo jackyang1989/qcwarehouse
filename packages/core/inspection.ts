@@ -1,9 +1,11 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import sharp from "sharp";
+import { z } from "zod";
 import type { DB } from "../db";
 import { audit, code, event, guard, hash, lock, one, organization, revision, role, uuid, type Actor } from "./common";
 import { attachEvidence } from "./intake";
 import { templateSchema } from "./orders";
+import { staffAccess } from "./staff-access";
 
 type ResultInput={item_key:string;component:string;attempt:number;status:string;method:string;is_final:boolean;typed_value?:unknown;unit?:string;reason?:string;evidence_ids?:string[];details?:object};
 async function lockedTask(db:DB,id:string) {
@@ -28,7 +30,11 @@ async function components(db:DB,t:{group_id?:string}) {
 export async function taskDetail(db:DB,actor:Actor,id:string) {
   role(actor,"inspector","reviewer","warehouse_admin");
   const t=await one(db,`select t.id,t.state,t.revision,t.assignee_id,t.group_id,t.template_version_id,v.content,
-    o.public_no,o.id order_id,o.revision order_revision,w.code item_code
+    o.public_no,o.id order_id,o.revision order_revision,w.code item_code,
+    case when o.state='inspecting' then (select ae.after->>'reason' from reports r
+      join report_versions rv on rv.report_id=r.id and rv.state='draft'
+      join audit_events ae on ae.entity_id=rv.id and ae.entity_type='report_versions' and ae.action='return_report'
+      where r.order_id=o.id order by rv.version desc limit 1) end review_feedback
     from inspection_tasks t join template_versions v on v.id=t.template_version_id join order_lines l on l.id=t.order_line_id
     join orders o on o.id=l.order_id left join order_line_item_links a on a.id=t.assignment_id
     left join warehouse_items w on w.id=a.item_id where t.id=$1`,[id]);
@@ -132,25 +138,145 @@ export async function submitReport(db:DB,actor:Actor,id:string,rev:number,ids:st
   await audit(db,actor,"submit_report","report_versions",v.id);
   return v;
 }
-export async function approveReport(db:DB,actor:Actor,id:string,rev:number,checklist:string[]) {
-  role(actor,"reviewer");
+async function reviewTarget(db:DB,actor:Actor,id:string,rev:number) {
+  role(actor,"reviewer","super_admin");
   const first=await one(db,`select o.org_id from report_versions v join reports r on r.id=v.report_id join orders o on o.id=r.order_id where v.id=$1`,[id]);
   await lock(db,"org:"+first.org_id);
-  const v=await one(db,`select v.*,o.state order_state from report_versions v join reports r on r.id=v.report_id
-    join orders o on o.id=r.order_id where v.id=$1 for update of v,o`,[id]);
+  const v=await one(db,`select v.*,o.id order_id,o.state order_state,r.published_version from report_versions v join reports r on r.id=v.report_id
+    join orders o on o.id=r.order_id where v.id=$1 for update of v,r,o`,[id]);
   revision(v.revision,rev);
-  guard(v.state==="submitted" && v.order_state==="qa_review" && checklist.includes("reviewed_en") && checklist.includes("evidence_checked"),
-    "REPORT_UNAVAILABLE","Confirm the English text and inspect the evidence before approval.");
+  guard(v.state==="submitted"&&(v.snapshot.amends_version?v.snapshot.amends_version===v.published_version:v.order_state==="qa_review"),
+    "REPORT_UNAVAILABLE","This report is not waiting for review.");
   guard(v.created_by!==actor.id && v.snapshot.sections.every((s:{inspector_id:string})=>s.inspector_id!==actor.id),
     "SELF_REVIEW_FORBIDDEN","The reviewer must be independent.");
+  return v;
+}
+export async function approveReport(db:DB,actor:Actor,id:string,rev:number,checklist:string[]) {
+  const v=await reviewTarget(db,actor,id,rev);
+  guard(checklist.includes("reviewed_en")&&checklist.includes("evidence_checked"),
+    "REPORT_UNAVAILABLE","Confirm the English text and inspect the evidence before approval.");
   await db.query("update report_versions set state='qa_approved',reviewed_by=$2,reviewed_at=now(),revision=revision+1 where id=$1",[id,actor.id]);
   await event(db,"report.render",{version_id:id});
   await audit(db,actor,"approve_report","report_versions",id);
   return {id,version:v.version,state:"qa_approved"};
 }
+export async function returnReport(db:DB,actor:Actor,id:string,rev:number,reason:string) {
+  const v=await reviewTarget(db,actor,id,rev);
+  const message=reason.trim();
+  guard(message.length>=4,"RETURN_REASON_REQUIRED","Describe the corrections the inspector needs to make.",422);
+  if(v.snapshot.amends_version) {
+    await db.query("update report_versions set state='draft',reviewed_by=null,reviewed_at=null,revision=revision+1 where id=$1",[id]);
+    await audit(db,actor,"return_report","report_versions",id,{reason:message});
+    return {id,version:v.version,state:"draft"};
+  }
+  guard(v.published_version===null,"REPORT_REVISION_REQUIRED","Use the revision workflow for a published report.");
+  const taskIds=v.snapshot.sections.map((section:{task_id:string})=>section.task_id);
+  const updated=await db.query(`update inspection_tasks t set state='IN_PROGRESS',revision=t.revision+1
+    from order_lines l where l.id=t.order_line_id and l.order_id=$1 and t.id=any($2::uuid[]) and t.state='SUBMITTED'`,
+    [v.order_id,taskIds]);
+  guard(taskIds.length>0&&updated.rowCount===taskIds.length,"REPORT_UNAVAILABLE","The submitted tasks have changed. Reload the review.");
+  await db.query("update report_versions set state='draft',reviewed_by=$2,reviewed_at=now(),revision=revision+1 where id=$1",[id,actor.id]);
+  await db.query("update orders set state='inspecting',revision=revision+1 where id=$1",[v.order_id]);
+  await audit(db,actor,"return_report","report_versions",id,{reason:message,task_count:taskIds.length});
+  return {id,version:v.version,state:"draft"};
+}
+export const amendReportInput=z.object({base_version:z.number().int().positive(),reason:z.string().trim().min(4).max(1000)}).strict();
+export const revisionChanges=z.object({
+  revision:z.number().int().positive(),
+  changes:z.array(z.object({
+    section:z.number().int().nonnegative(),result:z.number().int().nonnegative(),
+    status:z.enum(["RECORDED","OBSERVED_ISSUE","NOT_OBSERVED","NOT_TESTED","NOT_APPLICABLE"]),
+    typed_value:z.union([z.number().finite(),z.boolean(),z.string().max(2000),z.null()]),
+    reason:z.string().trim().max(2000),
+  }).strict()).min(1).max(300),
+}).strict();
+async function revisionTarget(db:DB,actor:Actor,id:string) {
+  role(actor,...staffAccess.reportEditing);
+  const first=await one(db,`select o.org_id from report_versions v join reports r on r.id=v.report_id
+    join orders o on o.id=r.order_id where v.id=$1`,[id]);
+  await lock(db,"org:"+first.org_id);
+  return one(db,`select v.*,r.order_id,r.published_version,o.state order_state from report_versions v
+    join reports r on r.id=v.report_id join orders o on o.id=r.order_id where v.id=$1 for update of v,r,o`,[id]);
+}
+export async function reportDesk(db:DB,actor:Actor,order:string|null) {
+  role(actor,...staffAccess.reportEditing);
+  const {rows}=await db.query(`select v.id,v.report_id,v.version,v.state,v.revision,v.amend_reason,v.created_by,
+    v.created_at,o.public_no,r.published_version,v.snapshot->>'amends_version' amends_version
+    from report_versions v join reports r on r.id=v.report_id join orders o on o.id=r.order_id
+    where ($1::text is null or o.public_no=$1) and (v.state in ('submitted','qa_approved','published')
+      or v.state='draft' and v.snapshot ? 'amends_version')
+    order by v.created_at desc,v.id limit 100`,[order]);
+  return {rows};
+}
+export async function staffReport(db:DB,actor:Actor,id:string) {
+  role(actor,...staffAccess.reportEditing);
+  const version=await one(db,`select v.id,v.report_id,v.version,v.state,v.revision,v.snapshot,v.amend_reason,v.created_by,v.published_at,
+    r.published_version,o.public_no,
+    (select ae.after->>'reason' from audit_events ae where ae.entity_id=v.id and ae.entity_type='report_versions'
+      and ae.action='return_report' order by ae.at desc,ae.id desc limit 1) review_feedback,
+    base.snapshot base_snapshot
+    from report_versions v join reports r on r.id=v.report_id join orders o on o.id=r.order_id
+    left join report_versions base on base.report_id=r.id and base.version=(v.snapshot->>'amends_version')::int
+    where v.id=$1`,[id]);
+  const templates=(await db.query("select id,content from template_versions where id=any($1::uuid[])",
+    [version.snapshot.sections.map((section:{template_version_id:string})=>section.template_version_id)])).rows;
+  return {...version,field_types:Object.fromEntries(templates.map(t=>[t.id,
+    Object.fromEntries(templateSchema.parse(t.content).checks.map(c=>[c.key,c.type]))]))};
+}
+export async function amendReport(db:DB,actor:Actor,id:string,input:z.infer<typeof amendReportInput>) {
+  role(actor,...staffAccess.reportEditing);
+  const initial=await one(db,"select org_id from orders where id=(select order_id from reports where id=$1)",[id]);
+  await lock(db,"org:"+initial.org_id);
+  const current=await one(db,`select v.* from reports r join report_versions v on v.report_id=r.id
+    and v.version=r.published_version where r.id=$1 and v.state='published' for update of r,v`,[id]);
+  guard(current.version===input.base_version,"VERSION_CONFLICT","Review the latest published report.");
+  guard(!(await db.query(`select 1 from report_versions where report_id=$1 and state in ('draft','submitted','qa_approved')
+    and snapshot ? 'amends_version'`,[id])).rowCount,"AMENDMENT_PENDING","This report already has a pending amendment.");
+  const next=await one<{n:number}>(db,"select max(version)::int+1 n from report_versions where report_id=$1",[id]);
+  const draft=await one(db,`insert into report_versions(id,report_id,version,state,snapshot,created_by,amend_reason)
+    values($1,$2,$3,'draft',$4,$5,$6) returning id,version,state,revision`,
+    [uuid(),id,next.n,{...current.snapshot,amends_version:current.version},actor.id,input.reason]);
+  await audit(db,actor,"amend_report","report_versions",draft.id,{base_version:current.version});
+  return draft;
+}
+export async function editReportRevision(db:DB,actor:Actor,id:string,input:z.infer<typeof revisionChanges>) {
+  const v=await revisionTarget(db,actor,id);
+  revision(v.revision,input.revision);
+  guard(v.state==="draft"&&v.snapshot.amends_version&&v.created_by===actor.id,"REPORT_UNAVAILABLE","Only the amendment author can edit this draft.");
+  guard(v.published_version===v.snapshot.amends_version,"VERSION_CONFLICT","The published report has changed.");
+  const changed=new Set<string>();
+  for(const edit of input.changes) {
+    const key=edit.section+":"+edit.result;
+    guard(!changed.has(key),"RESULT_INVALID","Save each result once per request.",422);changed.add(key);
+    const section=v.snapshot.sections[edit.section],result=section?.results[edit.result];
+    guard(result,"RESULT_INVALID","Select a result in this report.",422);
+    const template=await one(db,"select content from template_versions where id=$1",[section.template_version_id]);
+    const check=templateSchema.parse(template.content).checks.find(c=>c.key===result.item_key);
+    guard(check,"RESULT_INVALID","The checkpoint is missing from its original template.",422);
+    guard(edit.status!=="RECORDED"||typeof edit.typed_value===check.type,"RESULT_INVALID","Use the checkpoint's configured value type.",422);
+    guard(!["NOT_TESTED","NOT_APPLICABLE","OBSERVED_ISSUE"].includes(edit.status)||edit.reason.length>=2,
+      "RESULT_INVALID","Explain the observed issue or missing result.",422);
+    guard(edit.status!=="OBSERVED_ISSUE"||result.evidence_ids.length>0,"EVIDENCE_REQUIRED","An observed issue requires supporting evidence.",422);
+    Object.assign(result,{status:edit.status,typed_value:edit.status==="RECORDED"?edit.typed_value:null,reason:edit.reason||null});
+  }
+  await db.query("update report_versions set snapshot=$2,revision=revision+1 where id=$1",[id,v.snapshot]);
+  await audit(db,actor,"edit_report_revision","report_versions",id,{count:input.changes.length});
+  return {id,revision:v.revision+1};
+}
+export async function submitReportRevision(db:DB,actor:Actor,id:string,rev:number) {
+  const v=await revisionTarget(db,actor,id);
+  revision(v.revision,rev);
+  guard(v.state==="draft"&&v.snapshot.amends_version&&v.created_by===actor.id,"REPORT_UNAVAILABLE","Only the amendment author can submit this draft.");
+  guard(v.published_version===v.snapshot.amends_version,"VERSION_CONFLICT","The published report has changed.");
+  const base=await one(db,"select snapshot from report_versions where report_id=$1 and version=$2",[v.report_id,v.snapshot.amends_version]);
+  guard(JSON.stringify(base.snapshot.sections)!==JSON.stringify(v.snapshot.sections),"AMENDMENT_UNCHANGED","Save the report corrections before submitting.");
+  await db.query("update report_versions set state='submitted',revision=revision+1 where id=$1",[id]);
+  await audit(db,actor,"submit_revision","report_versions",id);
+  return {id,revision:v.revision+1,state:"submitted"};
+}
 type ReportResult={item:string;label:string;status:string;typed_value:unknown;unit:string|null;reason:string|null;method:string;evidence_ids:string[]};
 type Snapshot={order_no:string;report_no:string;quote_id:string;sections:{title:string;service:string;results:ReportResult[]}[]};
-async function renderPDF(db:DB,org:string,snapshot:Snapshot,version:number) {
+async function renderPDF(db:DB,org:string,snapshot:Snapshot,version:number,amendReason?:string) {
   const doc=await PDFDocument.create(),font=await doc.embedFont(StandardFonts.Helvetica),bold=await doc.embedFont(StandardFonts.HelveticaBold);
   doc.setTitle(`QC Warehouse ${snapshot.report_no}`);
   let page=doc.addPage([595,842]),y=790;
@@ -180,6 +306,7 @@ async function renderPDF(db:DB,org:string,snapshot:Snapshot,version:number) {
   }
   print("QC WAREHOUSE | INSPECTION REPORT",19,true);
   print(`${snapshot.report_no}   Version ${version}   Order ${snapshot.order_no}`,12);
+  if(amendReason)print("Amendment: "+amendReason);
   print("Results relate to the inspected items and scope shown below.");y-=12;
   for(const s of snapshot.sections) {
     print(s.title,13,true);
@@ -196,26 +323,33 @@ export async function publishReport(db:DB,id:string) {
   await lock(db,"org:"+first.org_id);
   const v=await one(db,`select v.*,o.id order_id,o.state order_state,o.submission_snapshot, r.published_version
     from report_versions v join reports r on r.id=v.report_id join orders o on o.id=r.order_id where v.id=$1 for update of v,r,o`,[id]);
-  if(v.state!=="qa_approved" || v.order_state==="cancelled" || v.snapshot.quote_id!==v.submission_snapshot?.quote_id) return;
-  guard(v.order_state==="qa_review" && !(await db.query("select 1 from order_blocks where order_id=$1 and resolved_at is null",[v.order_id])).rowCount,
+  if(v.state!=="qa_approved")return;
+  const amendment=v.snapshot.amends_version!==undefined;
+  if(amendment)guard(v.snapshot.amends_version===v.published_version,"VERSION_CONFLICT","The published report has changed.");
+  else if(v.order_state==="cancelled"||v.snapshot.quote_id!==v.submission_snapshot?.quote_id)return;
+  guard((amendment||v.order_state==="qa_review") && !(await db.query("select 1 from order_blocks where order_id=$1 and resolved_at is null",[v.order_id])).rowCount,
     "REPORT_BLOCKED","Report is temporarily blocked.");
-  const bytes=await renderPDF(db,first.org_id,v.snapshot,v.version);
+  const bytes=await renderPDF(db,first.org_id,v.snapshot,v.version,v.amend_reason);
   const key="reports/"+id+".pdf";
   await db.query("insert into private_files(key,data,mime) values($1,$2,'application/pdf')",[key,bytes]);
   if(v.published_version) await db.query("update report_versions set state='superseded' where report_id=$1 and version=$2 and state='published'",[v.report_id,v.published_version]);
   await db.query(`update report_versions set state='published',pdf_key=$2,pdf_sha256=$3,renderer_version='pdf-lib-v2',published_at=now(),revision=revision+1 where id=$1`,[id,key,hash(bytes)]);
   await db.query("update reports set published_version=$2,current_version=$2 where id=$1",[v.report_id,v.version]);
-  await db.query(`update inspection_tasks t set state='QA_APPROVED',revision=t.revision+1 from order_lines l
-    where t.order_line_id=l.id and l.order_id=$1 and t.state='SUBMITTED'`,[v.order_id]);
-  await db.query(`update reference_reservations r set released_at=now() from inspection_groups g,order_lines l
-    where r.group_id=g.id and g.order_line_id=l.id and l.order_id=$1 and r.released_at is null`,[v.order_id]);
-  await db.query("update orders set state='report_ready',report_published_at=now(),revision=revision+1 where id=$1",[v.order_id]);
+  if(!amendment) {
+    await db.query(`update inspection_tasks t set state='QA_APPROVED',revision=t.revision+1 from order_lines l
+      where t.order_line_id=l.id and l.order_id=$1 and t.state='SUBMITTED'`,[v.order_id]);
+    await db.query(`update reference_reservations r set released_at=now() from inspection_groups g,order_lines l
+      where r.group_id=g.id and g.order_line_id=l.id and l.order_id=$1 and r.released_at is null`,[v.order_id]);
+    await db.query("update orders set state='report_ready',report_published_at=now(),revision=revision+1 where id=$1",[v.order_id]);
+  }
   await audit(db,null,"publish_report","report_versions",id);
-  await event(db,"report.published",{order_id:v.order_id,version:v.version});
+  await event(db,amendment?"report.amended":"report.published",{order_id:v.order_id,version:v.version});
 }
 export async function readReport(db:DB,actor:Actor,orderId:string,version?:number) {
   const org=organization(actor);
-  return one(db,`select v.id,v.version,v.state,v.snapshot,v.published_at,v.pdf_key
+  return one(db,`select v.id,v.version,v.state,v.snapshot,v.published_at,v.pdf_key,v.amend_reason,
+    (select jsonb_agg(jsonb_build_object('version',h.version,'state',h.state,'published_at',h.published_at,'amend_reason',h.amend_reason)
+      order by h.version desc) from report_versions h where h.report_id=r.id and h.state in ('published','superseded')) versions
     from orders o join reports r on r.order_id=o.id join report_versions v on v.report_id=r.id
     where o.id=$1 and o.org_id=$2 and v.version=coalesce($3,r.published_version) and v.state in ('published','superseded')`,[orderId,org,version??null]);
 }

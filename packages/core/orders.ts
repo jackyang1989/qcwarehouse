@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { DB } from "../db";
 import { currentTerms, requireTerms } from "./auth";
 import { audit, code, event, guard, isDemo, lock, one, organization, revision, role, uuid, type Actor } from "./common";
+import { orderQuotes, orderShipments } from "./fulfillment-reads";
 
 export const checkSchema = z.object({
   key:z.string().min(1).max(80), label:z.string().min(1).max(120), zh:z.string().min(1).max(120),
@@ -245,7 +246,11 @@ export async function readyOrder(db:DB,id:string) {
 }
 export async function orderDetail(db:DB,actor:Actor,id:string) {
   const order=await ownOrder(db,actor,id);
-  const rows=(await db.query(`select e.id,e.position,l.id as order_line_id,l.quantity,so.title, w.id item_id,w.code,w.custody_state
+  const rows=(await db.query(`select e.id,e.position,l.id as order_line_id,l.quantity,so.title, w.id item_id,w.code,w.custody_state,w.storage_until,
+    (select max(p.ends_at) from storage_periods p where p.item_id=w.id) paid_storage_until,
+    (select jsonb_build_object('id',d.id,'action',d.action,'state',d.state,
+      'awaiting_batch',d.action<>'retain' and not exists(select 1 from dispatch_batch_items bi where bi.disposition_id=d.id and bi.released_at is null))
+      from disposition_requests d where d.item_id=w.id and d.org_id=w.org_id and d.state not in ('completed','cancelled')) instruction
     from order_lines l join service_offers so on so.id=l.offer_id left join expected_items e on e.order_line_id=l.id and e.in_scope
     left join order_line_item_links a on a.expected_item_id=e.id and a.unlinked_at is null
     left join warehouse_items w on w.id=a.item_id where l.order_id=$1 order by l.id,e.position`,[id])).rows;
@@ -253,6 +258,19 @@ export async function orderDetail(db:DB,actor:Actor,id:string) {
   const manual=(await db.query(`select r.state,q.id,q.order_id,q.revision,q.amount_cents,q.expires_at,q.line_snapshot
     from manual_quote_requests r left join inspection_quotes q on q.id=r.accepted_quote_id and q.expires_at>now()
     and q.accepted_at is null where r.order_id=$1 and r.revision=$2`,[id,order.revision])).rows[0];
+  const parcels=(await db.query(`select ao.advice_id id,t.tracking_norm,t.transport_state,p.state warehouse_state
+    from advice_orders ao join tracking_records t on t.advice_id=ao.advice_id and t.org_id=ao.org_id and t.closed_at is null
+    left join packages p on p.id=t.package_id and p.org_id=ao.org_id
+    where ao.order_id=$1 and ao.org_id=$2 order by t.tracking_norm`,[id,order.org_id])).rows;
+  const cases=(await db.query(`select id,public_no,subject,state from tickets
+    where order_id=$1 and org_id=$2 order by created_at desc limit 50`,[id,order.org_id])).rows;
+  const consents=(await db.query(`select c.id,c.created_at,
+    jsonb_agg(jsonb_build_object('kind',t.kind,'version',t.version) order by t.kind) policies
+    from consents c join terms_versions t on t.id=any(c.terms_version_ids)
+    where c.order_id=$1 group by c.id order by c.created_at desc,c.id`,[id])).rows;
+  const shipments=await orderShipments(db,id,order.org_id);
+  const quotes=(await orderQuotes(db,id,order.org_id)).map(({id,revision,purpose,action,state,amount_cents,expires_at})=>
+    ({id,revision,purpose,action,state,amount_cents,expires_at}));
   return {...orderDTO(order as Parameters<typeof orderDTO>[0]),price_cents:order.price_cents,items:rows,
-    report_version:report?.published_version??null,manual_quote:manual??null};
+    report_version:report?.published_version??null,manual_quote:manual??null,parcels,cases,shipments,quotes,consents};
 }

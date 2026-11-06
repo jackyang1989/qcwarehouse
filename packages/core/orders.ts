@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { DB } from "../db";
-import { currentTerms, requireTerms } from "./auth";
+import { currentTerms, requireCustomerActive, requireTerms } from "./auth";
 import { audit, code, event, guard, isDemo, lock, one, organization, revision, role, uuid, type Actor } from "./common";
 import { orderQuotes, orderShipments } from "./fulfillment-reads";
 
@@ -201,6 +201,7 @@ export async function issueManualQuote(db:DB,actor:Actor,id:string,input:ManualQ
   return quote;
 }
 export async function submitOrder(db:DB,actor:Actor,id:string,input:{revision:number;quote_id:string;terms_version_ids:string[];acknowledgements:object}) {
+  await requireCustomerActive(db,actor);
   const order=await ownOrder(db,actor,id,true);
   revision(order.revision,input.revision);
   guard(order.state==="draft" || order.state==="awaiting_payment","ORDER_NOT_EDITABLE","Order is already in fulfillment.");

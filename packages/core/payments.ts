@@ -1,6 +1,6 @@
 import Stripe from "stripe";
 import { pool, type DB } from "../db";
-import { appOrigin, requireStaffMfa } from "./auth";
+import { appOrigin, requireCustomerActive, requireStaffMfa } from "./auth";
 import { audit, code, event, guard, hash, isDemo, lock, one, organization, role, uuid, type Actor } from "./common";
 import { stripeSettings } from "./integrations";
 import { activatePaidOrder } from "./orders";
@@ -49,6 +49,7 @@ async function attempt(db:DB,id:string,amount:number) {
     values($1::uuid,$2,'stripe',$3,'requires_payment',($1::uuid)::text) returning *`,[pid,id,amount]);
 }
 export async function checkout(db:DB,actor:Actor,id:string,rev:number) {
+  await requireCustomerActive(db,actor);
   const org=organization(actor);
   const fee=await verifyCharge(db,id,org,rev);
   if(fee.applied_payment_id || fee.free_authorization) return {state:"paid",charge_item_id:id};
@@ -93,6 +94,7 @@ async function applyPayment(db:DB,pid:string,providerRef:string,details:object) 
       [uuid(),code("PAY-"),charge.org_id,orderId,"Reconcile late or duplicate payment",{payment_id:pid}]);
     return;
   }
+  let confirmedOrderId:string|null=null;
   if(charge.purpose==="inspection") {
     const order=await one(db,`select o.* from orders o join inspection_quotes q on q.order_id=o.id where q.id=$1 for update of o`,[charge.inspection_quote_id]);
     const heldForPayment=order.state==="on_hold" && order.held_from_state==="awaiting_payment" && order.submission_snapshot?.quote_id===charge.inspection_quote_id;
@@ -101,6 +103,7 @@ async function applyPayment(db:DB,pid:string,providerRef:string,details:object) 
         [uuid(),code("PAY-"),charge.org_id,order.id,"Reconcile payment against order status",{payment_id:pid}]);
       return;
     }
+    confirmedOrderId=order.id;
     if(!heldForPayment) await activatePaidOrder(db,order.id);
   } else if(charge.purpose==="dispatch") {
     await db.query(`update dispatch_batches b set state='paid',revision=b.revision+1 from dispatch_quote_versions q
@@ -115,7 +118,7 @@ async function applyPayment(db:DB,pid:string,providerRef:string,details:object) 
   }
   await db.query("update charge_items set applied_payment_id=$2 where id=$1",[charge.id,pid]);
   await audit(db,null,"payment_confirmed","charge_items",charge.id);
-  await event(db,"payment.confirmed",{charge_id:charge.id});
+  await event(db,"payment.confirmed",{charge_id:charge.id,...(confirmedOrderId?{order_id:confirmedOrderId}:{})});
 }
 export async function demoPay(db:DB,actor:Actor,id:string) {
   guard(isDemo(),"NOT_FOUND","Checkout not found.",404);

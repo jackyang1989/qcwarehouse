@@ -5,7 +5,7 @@ import addFormats from "ajv-formats";
 import { parse } from "yaml";
 import { z } from "zod";
 import { transaction, pool, type DB } from "../db";
-import { actorFrom, appOrigin, completeRegistration, cookie, csrfCookie, csrfTokenFor, currentTerms, finishProvider, getCookie, pendingProvider, publicPolicy, staffSignIn, startOtp, startProvider, verifyCsrfToken, verifyOtp, reportDownloadSignature, reportShareToken, verifyReportDownload } from "./auth";
+import { actorFrom, appOrigin, closeCustomerAccount, completeRegistration, confirmEmailChange, cookie, csrfCookie, csrfTokenFor, currentTerms, decideAccountRecovery, executeAccountRecovery, finishProvider, getCookie, linkProviderIdentity, listIdentities, listSessions, pendingProvider, publicPolicy, readAccountRecoveryStatus, reportDownloadSignature, reportShareToken, requestAccountRecovery, requestEmailChange, revokeOtherSessions, revokeSession, staffSignIn, staffUpdateUserStatus, startCustomerReauth, startOtp, startProvider, unlinkIdentity, verifyCsrfToken, verifyCustomerReauth, verifyOtp, verifyReportDownload } from "./auth";
 import { Problem, audit, guard, hash, idempotent, isDemo, one, organization, role, uuid, type Actor } from "./common";
 import { integrationPreflight, signInMethods } from "./integrations";
 import { failedJobs, retryFailedJob } from "./worker";
@@ -205,6 +205,7 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
       if(oid[2]==="start") return redirect(await startProvider(provider,browser,next),[cookie("qcw_browser",browser,3600),clear]);
       const result=await finishProvider(provider,url,browser);
       const destination=customerDestination(result.next);
+      if(result.state==="linked") return redirect(destination??"/account/security",[clear]);
       if(!("secret" in result)) {
         return redirect(withDestination("/login?oauth="+result.state,destination),[clear]);
       }
@@ -217,7 +218,7 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   }
   if(method==="POST" && path==="/auth/otp/request") {
     csrf(req);
-    const {email}=z.object({email:emailSchema}).parse(await input(req));
+    const {email,purpose}=z.object({email:emailSchema,purpose:z.enum(["signin","recovery","link"]).optional()}).parse(await input(req));
     const browser=browserKey(req);
     let identity:ReturnType<typeof pendingProvider>;
     try {
@@ -226,13 +227,107 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
       if(!(error instanceof Problem)) throw error;
       return json({error:{code:error.code,message:error.message}},error.status,[cookie("qcw_provider","",0)]);
     }
-    return json(await startOtp(email,browser,identity),202,[cookie("qcw_browser",browser,3600)]);
+    const otpPurpose=purpose??"signin";
+    const initiatorId=otpPurpose==="link"?actorRequired(actor).id:undefined;
+    return json(await startOtp(email,browser,identity,otpPurpose,initiatorId),202,[cookie("qcw_browser",browser,3600)]);
   }
   if(method==="POST" && path==="/auth/otp/verify") {
     csrf(req);
     const {challenge_id,code}=z.object({challenge_id:idSchema,code:z.string().regex(/^\d{6}$/)}).parse(await input(req));
     const result=await verifyOtp(challenge_id,code,getCookie(req,"qcw_browser"));
     return json({state:result.state,kind:result.kind},200,authResult(result));
+  }
+  if(method==="POST" && path==="/auth/reauth/start") {
+    csrf(req);
+    const browser=browserKey(req);
+    return json(await startCustomerReauth(actorRequired(actor),browser),202,[cookie("qcw_browser",browser,3600)]);
+  }
+  if(method==="POST" && path==="/auth/reauth/verify") {
+    csrf(req);
+    const {challenge_id,code}=z.object({challenge_id:idSchema,code:z.string().regex(/^\d{6}$/)}).parse(await input(req));
+    return json(await verifyCustomerReauth(actorRequired(actor),hash(getCookie(req,"session")),challenge_id,code,getCookie(req,"qcw_browser")));
+  }
+  if(method==="POST" && path==="/auth/recovery/request") {
+    csrf(req);
+    const key=idSchema.parse(req.headers.get("idempotency-key"));
+    const browser=browserKey(req);
+    const body=z.object({
+      challenge_id:idSchema,
+      code:z.string().regex(/^\d{6}$/),
+      previous_email:emailSchema,
+      details:z.string().trim().min(4).max(2000),
+    }).parse(await input(req));
+    return json(await transaction(db=>idempotent(db,"recovery:"+hash(browser),key,body,
+      ()=>requestAccountRecovery(db,browser,body))),201,[cookie("qcw_browser",browser,3600)]);
+  }
+  if(method==="GET" && path==="/auth/recovery/status") {
+    const requestId=idSchema.parse(url.searchParams.get("request_id"));
+    const statusToken=z.string().min(16).max(128).parse(url.searchParams.get("token"));
+    return json(await transaction(db=>readAccountRecoveryStatus(db,requestId,statusToken)));
+  }
+  if(method==="GET" && path==="/me/identities") {
+    return json(await transaction(db=>listIdentities(db,actorRequired(actor),hash(getCookie(req,"session")))));
+  }
+  const linkIdentityRoute=path.match(/^\/me\/identities\/(google|microsoft)\/link$/);
+  if(method==="POST" && linkIdentityRoute) {
+    const provider=linkIdentityRoute[1] as "google"|"microsoft";
+    const browser=browserKey(req);
+    return extraWrite(req,path,actor,z.object({challenge_id:idSchema.optional(),code:z.string().regex(/^\d{6}$/).optional()}),
+      (db,a,b)=>linkProviderIdentity(db,a,hash(getCookie(req,"session")),browser,provider,b));
+  }
+  const deleteIdentityRoute=path.match(/^\/me\/identities\/([a-f0-9-]{36})$/i);
+  if(method==="DELETE" && deleteIdentityRoute) {
+    return extraWrite(req,path,actor,z.object({}),
+      (db,a)=>unlinkIdentity(db,a,idSchema.parse(deleteIdentityRoute[1]),hash(getCookie(req,"session"))));
+  }
+  if(method==="POST" && path==="/me/email-change/request") {
+    csrf(req);
+    const browser=browserKey(req);
+    const {new_email}=z.object({new_email:emailSchema}).parse(await input(req));
+    return json(await requestEmailChange(actorRequired(actor),hash(getCookie(req,"session")),new_email,browser),202,[cookie("qcw_browser",browser,3600)]);
+  }
+  if(method==="POST" && path==="/me/email-change/confirm") {
+    const browser=getCookie(req,"qcw_browser");
+    return extraWrite(req,path,actor,z.object({
+      current_challenge_id:idSchema,current_code:z.string().regex(/^\d{6}$/),
+      new_challenge_id:idSchema,new_code:z.string().regex(/^\d{6}$/),
+    }),(db,a,b)=>confirmEmailChange(db,a,hash(getCookie(req,"session")),browser,b));
+  }
+  if(method==="GET" && path==="/me/sessions") {
+    return json(await transaction(db=>listSessions(db,actorRequired(actor),hash(getCookie(req,"session")))));
+  }
+  const deleteSessionRoute=path.match(/^\/me\/sessions\/([a-f0-9-]{36})$/i);
+  if(method==="DELETE" && deleteSessionRoute) {
+    return extraWrite(req,path,actor,z.object({}),
+      (db,a)=>revokeSession(db,a,idSchema.parse(deleteSessionRoute[1])));
+  }
+  if(method==="POST" && path==="/me/sessions/revoke-others") {
+    return extraWrite(req,path,actor,z.object({}),
+      (db,a)=>revokeOtherSessions(db,a,hash(getCookie(req,"session"))));
+  }
+  if(method==="POST" && path==="/me/account/close") {
+    csrf(req);
+    const a=actorRequired(actor),key=idSchema.parse(req.headers.get("idempotency-key")),data=z.object({}).parse(await input(req));
+    const res=await transaction(db=>idempotent(db,a.id+":"+path,key,data,()=>closeCustomerAccount(db,a,hash(getCookie(req,"session")))));
+    return json(res,200,[cookie("session","",0),csrfCookie("",0)]);
+  }
+  const staffRecovery=path.match(/^\/staff\/account-recoveries\/([a-f0-9-]{36})\/(approve|reject|execute)$/i);
+  if(method==="POST" && staffRecovery) {
+    const reqId=idSchema.parse(staffRecovery[1]);
+    const act=staffRecovery[2].toLowerCase() as "approve"|"reject"|"execute";
+    if(act==="execute") {
+      return extraWrite(req,path,actor,z.object({}),
+        (db,a)=>executeAccountRecovery(db,a,reqId,hash(getCookie(req,"session"))));
+    }
+    return extraWrite(req,path,actor,z.object({reason:z.string().trim().min(4).max(1000),emergency:z.boolean().optional()}),
+      (db,a,b)=>decideAccountRecovery(db,a,reqId,act,b,hash(getCookie(req,"session"))));
+  }
+  const staffUserStatus=path.match(/^\/staff\/users\/([a-f0-9-]{36})\/status$/i);
+  if(method==="POST" && staffUserStatus) {
+    return extraWrite(req,path,actor,z.object({
+      status:z.enum(["active","restricted","disabled"]),
+      reason:z.string().trim().min(4).max(1000),
+    }),(db,a,b)=>staffUpdateUserStatus(db,a,idSchema.parse(staffUserStatus[1]),b,hash(getCookie(req,"session"))));
   }
   if(method==="POST" && path==="/staff/auth/login") {
     csrf(req);
@@ -604,7 +699,7 @@ export async function handle(req:Request,path:string) {
     }),status);
   } catch(e) {
     if(e instanceof Problem) {
-      if(e.status===403 || ["INCOMPATIBLE_SAMPLES","SELF_REVIEW_FORBIDDEN","CATEGORY_ADMISSION_INCOMPLETE","REFERENCE_UNAVAILABLE","REFERENCE_RELEASE_REQUIRED","SIGNATURE_INVALID","PAYMENT_MODE_MISMATCH","PAYMENT_AMOUNT_MISMATCH"].includes(e.code)) {
+      if(e.status===403 || ["INCOMPATIBLE_SAMPLES","SELF_REVIEW_FORBIDDEN","CATEGORY_ADMISSION_INCOMPLETE","REFERENCE_UNAVAILABLE","REFERENCE_RELEASE_REQUIRED","SIGNATURE_INVALID","PAYMENT_MODE_MISMATCH","PAYMENT_AMOUNT_MISMATCH","LAST_LOGIN_METHOD","IDENTITY_ALREADY_LINKED","EMAIL_CHANGE_CONFLICT","ACCOUNT_HAS_ACTIVE_OBLIGATIONS","RECOVERY_COOLDOWN_ACTIVE"].includes(e.code)) {
         await audit(pool,actor,"rejected_"+e.code.toLowerCase(),"http_request",null,{code:e.code,reason:e.message}).catch(()=>undefined);
       }
       const response=json({error:{code:e.code,message:e.message}},e.status);

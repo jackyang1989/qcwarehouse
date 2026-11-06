@@ -85,6 +85,67 @@ export function Login({staff,methods,next,verify,oauth}:{
         <label>{staff?"测试员工邮箱 (@qcw.test)":"Email address"}<input name="email" type="email" autoComplete="email" defaultValue={email} required/></label>
       </Form>)}
     {!staff&&!emailAvailable&&<p className="muted small">Email codes are currently unavailable. <Link href="/contact">Contact support</Link> if you need account access.</p>}
+    {!staff&&<p className="small"><Link href="/account/recovery">Lost access to your sign-in method? Request account recovery</Link></p>}
+  </section>;
+}
+
+export function AccountRecovery() {
+  const [challenge,setChallenge]=useState<Challenge>();
+  const [targetEmail,setTargetEmail]=useState("");
+  const [submitted,setSubmitted]=useState<{request_id:string;status_token:string;state:string}>();
+  const [statusResult,setStatusResult]=useState<{request_id:string;state:string;executable_after?:string|null;executed_at?:string|null}>();
+
+  return <section className="panel access-card" aria-labelledby="access-title">
+    <p className="eyebrow">QCWarehouse account security</p>
+    <h1 id="access-title">Account recovery</h1>
+    <p className="muted">If you lost access to your sign-in method, verify a new email address and provide account ownership details for dual-control security review.</p>
+    {!submitted&&(challenge?
+      <div className="code-step">
+        <p>{challenge.demo_code?"Test code for":"Code sent to"} <strong>{targetEmail}</strong></p>
+        {challenge.demo_code&&<p className="code">{challenge.demo_code}</p>}
+        <Form key={challenge.challenge_id} label="Submit recovery request" run={async f=>{
+          const res=await request("/auth/recovery/request","POST",{
+            challenge_id:challenge.challenge_id,
+            code:text(f,"code"),
+            previous_email:text(f,"previous_email"),
+            details:text(f,"details"),
+          });
+          setSubmitted(res);
+        }}>
+          <label>Verification code for new email<input name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" required/></label>
+          <label>Previous account email<input name="previous_email" type="email" required/></label>
+          <label>Ownership evidence (receiving code, order numbers, or payment receipts)<textarea name="details" required minLength={4} maxLength={2000}/></label>
+        </Form>
+        <button type="button" onClick={()=>setChallenge(undefined)}>Use a different new email</button>
+      </div>:
+      <Form label="Send verification code to new email" run={async f=>{
+        const address=text(f,"target_email");
+        setChallenge(await request("/auth/otp/request","POST",{email:address,purpose:"recovery"}));
+        setTargetEmail(address);
+      }}>
+        <label>New email address to bind after recovery<input name="target_email" type="email" autoComplete="email" defaultValue={targetEmail} required/></label>
+      </Form>)}
+    {submitted&&<div className="notice" role="status">
+      <p><strong>Recovery request submitted.</strong> Save your request ID and status token to check progress.</p>
+      <p>Request ID: <span className="code">{submitted.request_id}</span></p>
+      <p>Status token: <span className="code">{submitted.status_token}</span></p>
+    </div>}
+    <details className="top-gap" open={Boolean(submitted)}>
+      <summary>Check recovery request status</summary>
+      <Form label="Check status" run={async f=>{
+        const reqId=text(f,"request_id"),tok=text(f,"token");
+        setStatusResult(await request("/auth/recovery/status?"+new URLSearchParams({request_id:reqId,token:tok})));
+      }}>
+        <label>Request ID<input name="request_id" defaultValue={submitted?.request_id??""} required/></label>
+        <label>Status token<input name="token" defaultValue={submitted?.status_token??""} required/></label>
+      </Form>
+      {statusResult&&<div className="notice" role="status">
+        <p>Status: <strong>{statusResult.state}</strong></p>
+        {statusResult.executable_after&&<p>Cooldown ends: {statusResult.executable_after}</p>}
+        {statusResult.executed_at&&<p>Completed at: {statusResult.executed_at}</p>}
+      </div>}
+    </details>
+    <p className="small"><Link href="/login">Return to sign in</Link></p>
   </section>;
 }
 

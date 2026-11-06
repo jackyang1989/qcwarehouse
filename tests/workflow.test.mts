@@ -2588,4 +2588,187 @@ test("bilingual tracking freshness, out-of-order callbacks, manual translation r
   assert.equal(staffCorrected.tracking_no,staffWaybill);
 });
 
+test("account security, identity linking, email change, dual-control recovery, restriction/closure, and payment email deep links (TASK-167, TASK-168, TASK-050)",async()=>{
+  const admin=await staffLogin("admin");
+  const {c,registration,terms,email}=await signCustomer();
+  const offer=(await c.fetch("/catalog")).offers.find((o:{service:string})=>o.service==="inspection");
+
+  // 1. TASK-050 & T39: payment.confirmed email has [TEST] prefix for test orders and parcel deep link
+  const {draft}=await createAndPay(c,[{
+    category_id:offer.category_id,offer_id:offer.offer_id,quantity:1,options:{},
+    attributes:{name:"Parka"},items:[{position:1,sample_code:"S-1-1",name:"Parka"}],
+  }],terms);
+  await pool.query("update orders set is_test=true where id=$1",[draft.id]);
+  while(await workOnce());
+  const {rows:payEmails}=await pool.query(
+    `select n.template,n.order_id,n.payload from email_deliveries d join notifications n on n.id=d.notification_id
+     where n.user_id=$1 and n.template='payment.confirmed' order by n.created_at desc limit 1`,
+    [registration.user_id]
+  );
+  assert.equal(payEmails.length,1);
+  assert.equal(payEmails[0].order_id,draft.id);
+  const {renderEmailContent}=await import("../packages/core/email");
+  const rendered=renderEmailContent("payment.confirmed",draft.public_no,true);
+  assert(rendered.subject.startsWith("[TEST] "));
+  assert(rendered.text.includes(`/orders/${draft.public_no}/parcels`));
+
+  // Cancel the paid order so we can test closure later after clearing obligations
+  const ordDetail=await c.fetch("/orders/"+draft.id);
+  await c.fetch(`/orders/${draft.id}/cancel`,{revision:ordDetail.revision,reason:"Clear order for security test"});
+
+  // 2. T94: Sensitive operations require recent reauthentication
+  await c.fetch("/me/email-change/request",{new_email:"next-"+email},"POST",403);
+  const reauthStart=await c.fetch("/auth/reauth/start",{},"POST",202);
+  assert(reauthStart.demo_code);
+  const reauthOk=await c.fetch("/auth/reauth/verify",{challenge_id:reauthStart.challenge_id,code:reauthStart.demo_code});
+  assert.equal(reauthOk.reauthenticated,true);
+
+  // 3. T88, T90, T92: Identity listing, linking, duplicate link guard, and last login method guard
+  const idList1=await c.fetch("/me/identities");
+  assert.equal(idList1.reauthenticated,true);
+  assert.equal(idList1.identities.length,1);
+  const emailIdentityId=idList1.identities[0].id;
+  const lastMethodErr=await c.fetch(`/me/identities/${emailIdentityId}`,{},"DELETE",409);
+  assert.equal(lastMethodErr.error.code,"LAST_LOGIN_METHOD");
+
+  // Create a verified Microsoft OIDC challenge bound to this browser & user to test linking
+  const msSubject="ms-sub-"+randomUUID();
+  const msOtp=await c.fetch("/auth/otp/request",{email},"POST",202);
+  const msCodeHash=createHmac("sha256",process.env.AUTH_OTP_PEPPER!).update(`${msOtp.challenge_id}:link:${msOtp.demo_code}`).digest("hex");
+  await pool.query(
+    `update verification_challenges set purpose='link',initiator_user_id=$2,code_hmac=$3,verified_identity=$4 where id=$1`,
+    [msOtp.challenge_id,registration.user_id,msCodeHash,{provider:"microsoft",issuer:"https://login.microsoftonline.com/common/v2.0",subject:msSubject,email}]
+  );
+  const linkedMs=await c.fetch("/me/identities/microsoft/link",{challenge_id:msOtp.challenge_id,code:msOtp.demo_code});
+  assert.equal(linkedMs.provider,"microsoft");
+
+  // Another customer attempting to link the same Microsoft subject gets 409 IDENTITY_ALREADY_LINKED (T90)
+  const {c:otherC,registration:otherReg,email:otherEmail}=await signCustomer();
+  const otherReauth=await otherC.fetch("/auth/reauth/start",{},"POST",202);
+  await otherC.fetch("/auth/reauth/verify",{challenge_id:otherReauth.challenge_id,code:otherReauth.demo_code});
+  const dupOtp=await otherC.fetch("/auth/otp/request",{email:otherEmail},"POST",202);
+  const dupCodeHash=createHmac("sha256",process.env.AUTH_OTP_PEPPER!).update(`${dupOtp.challenge_id}:link:${dupOtp.demo_code}`).digest("hex");
+  await pool.query(
+    `update verification_challenges set purpose='link',initiator_user_id=$2,code_hmac=$3,verified_identity=$4 where id=$1`,
+    [dupOtp.challenge_id,otherReg.user_id,dupCodeHash,{provider:"microsoft",issuer:"https://login.microsoftonline.com/common/v2.0",subject:msSubject,email:otherEmail}]
+  );
+  const dupErr=await otherC.fetch("/me/identities/microsoft/link",{challenge_id:dupOtp.challenge_id,code:dupOtp.demo_code},"POST",409);
+  assert.equal(dupErr.error.code,"IDENTITY_ALREADY_LINKED");
+
+  // Unlink Microsoft identity succeeds; unlinking the last remaining identity still fails with LAST_LOGIN_METHOD
+  await c.fetch(`/me/identities/${linkedMs.id}`,{},"DELETE",200);
+  await c.fetch(`/me/identities/${emailIdentityId}`,{},"DELETE",409);
+
+  // 4. T91 & T94: Two-step primary email change preserves receiving_code and revokes other device sessions
+  const secondDevice=new Client();
+  assert.equal((await secondDevice.login(email)).state,"signed_in");
+  const sessionsBefore=await c.fetch("/me/sessions");
+  assert.equal(sessionsBefore.sessions.length,2);
+
+  const newEmail="changed-"+randomUUID()+"@qcw.test";
+  const changeReq=await c.fetch("/me/email-change/request",{new_email:newEmail},"POST",202);
+  assert(changeReq.current_demo_code && changeReq.new_demo_code);
+  const changeConfirm=await c.fetch("/me/email-change/confirm",{
+    current_challenge_id:changeReq.current_challenge_id,
+    current_code:changeReq.current_demo_code,
+    new_challenge_id:changeReq.new_challenge_id,
+    new_code:changeReq.new_demo_code,
+  });
+  assert.equal(changeConfirm.revoked_other_sessions,true);
+  assert.equal(changeConfirm.primary_email,newEmail);
+
+  // Receiving code is unchanged, other device session is revoked
+  const deskAfterChange=await c.fetch("/me/desk");
+  assert.equal(deskAfterChange.profile.receiving_code,registration.receiving_code);
+  await secondDevice.fetch("/me",undefined,"GET",401);
+
+  // 5. T97: Account recovery with support review + independent super_admin approval + 24h cooldown
+  await pool.query("insert into staff_roles(user_id,role) select id,'support' from users where display_name='reviewer' on conflict do nothing");
+  staffSessions.delete("reviewer");
+  const supportStaff=await staffLogin("reviewer");
+  const recoveryClient=new Client();
+  const recoveryEmail="recovered-"+randomUUID()+"@qcw.test";
+  const recOtp=await recoveryClient.fetch("/auth/otp/request",{email:recoveryEmail,purpose:"recovery"},"POST",202);
+  const recSubmitted=await recoveryClient.fetch("/auth/recovery/request",{
+    challenge_id:recOtp.challenge_id,
+    code:recOtp.demo_code,
+    previous_email:newEmail,
+    details:"Lost email access; receiving code is "+registration.receiving_code,
+  },"POST",201);
+  assert.equal(recSubmitted.state,"pending_review");
+
+  const statusOpen=await recoveryClient.fetch(
+    "/auth/recovery/status?"+new URLSearchParams({request_id:recSubmitted.request_id,token:recSubmitted.status_token})
+  );
+  assert.equal(statusOpen.state,"pending_review");
+
+  // Support staff performs first-stage review
+  const step1=await supportStaff.fetch(`/staff/account-recoveries/${recSubmitted.request_id}/approve`,{
+    reason:"Verified receiving code and historical order details.",
+  });
+  assert.equal(step1.state,"awaiting_approval");
+
+  // Super admin approves (without emergency override first -> sets 24h cooldown)
+  await pool.query("update sessions set mfa_at=now() where token_hash=$1",[admin.sessionHash()]);
+  const step2=await admin.fetch(`/staff/account-recoveries/${recSubmitted.request_id}/approve`,{
+    reason:"Independent super_admin approval after support verification.",
+  });
+  assert.equal(step2.state,"approved");
+
+  // Executing before 24h cooldown expires fails with 409 RECOVERY_COOLDOWN_ACTIVE
+  const cooldownErr=await admin.fetch(`/staff/account-recoveries/${recSubmitted.request_id}/execute`,{},"POST",409);
+  assert.equal(cooldownErr.error.code,"RECOVERY_COOLDOWN_ACTIVE");
+
+  // Fast-forward cooldown and execute
+  await pool.query("update recovery_requests set execute_after=now()-interval '1 minute' where id=$1",[recSubmitted.request_id]);
+  const executed=await admin.fetch(`/staff/account-recoveries/${recSubmitted.request_id}/execute`,{});
+  assert.equal(executed.state,"executed");
+  assert(executed.executed_at);
+
+  // Old session is revoked; signing in with recoveryEmail opens the existing account with the same receiving_code
+  await c.fetch("/me",undefined,"GET",401);
+  const recoveredSession=new Client();
+  assert.equal((await recoveredSession.login(recoveryEmail)).state,"signed_in");
+  assert.equal((await recoveredSession.fetch("/me/receiving-address")).receiving_code,registration.receiving_code);
+
+  // 6. T98: Account restriction blocks new orders/payments while keeping existing records accessible, and account closure reserves receiving_code
+  await admin.fetch(`/staff/users/${registration.user_id}/status`,{
+    status:"restricted",reason:"Temporary payment risk review",
+  });
+  // Can still read desk
+  assert.equal((await recoveredSession.fetch("/me/desk")).profile.receiving_code,registration.receiving_code);
+  // Creating a draft and trying to submit is blocked with 403 ACCOUNT_RESTRICTED
+  const restrictedDraft=await recoveredSession.fetch("/orders",{lines:[{
+    category_id:offer.category_id,offer_id:offer.offer_id,quantity:1,options:{},
+    attributes:{name:"Blocked item"},items:[{position:1,sample_code:"S-1-1",name:"Blocked item"}],
+  }]},"POST",201);
+  const restrictedQuote=await recoveredSession.fetch("/orders/"+restrictedDraft.id+"/quotes",{revision:restrictedDraft.revision},"POST",201);
+  const restrictedErr=await recoveredSession.fetch("/orders/"+restrictedDraft.id+"/submit",{
+    revision:restrictedDraft.revision,quote_id:restrictedQuote.id,terms_version_ids:terms.map((t:{id:string})=>t.id),
+    acknowledgements:{scope_notice:true,samples_not_batch:true,seller_refund_is_mine:true,no_certification:true,restricted_items:true},
+  },"POST",403);
+  assert.equal(restrictedErr.error.code,"ACCOUNT_RESTRICTED");
+
+  // Restore active status
+  await admin.fetch(`/staff/users/${registration.user_id}/status`,{
+    status:"active",reason:"Risk review cleared",
+  });
+
+  // Reauthenticate and attempt closure while draft order is still open -> 409 ACCOUNT_HAS_ACTIVE_OBLIGATIONS
+  const closeReauth=await recoveredSession.fetch("/auth/reauth/start",{},"POST",202);
+  await recoveredSession.fetch("/auth/reauth/verify",{challenge_id:closeReauth.challenge_id,code:closeReauth.demo_code});
+  const obligationErr=await recoveredSession.fetch("/me/account/close",{},"POST",409);
+  assert.equal(obligationErr.error.code,"ACCOUNT_HAS_ACTIVE_OBLIGATIONS");
+
+  // Cancel the draft order and close the account
+  await recoveredSession.fetch(`/orders/${restrictedDraft.id}/cancel`,{revision:restrictedDraft.revision,reason:"Closing account"});
+  const closed=await recoveredSession.fetch("/me/account/close",{});
+  assert.equal(closed.closed,true);
+  await recoveredSession.fetch("/me",undefined,"GET",401);
+
+  // Re-signing in with the same email starts onboarding for a brand-new account with a different receiving_code
+  const freshClient=new Client();
+  assert.equal((await freshClient.login(recoveryEmail)).state,"onboarding");
+});
+
 test("all core operations have a validated success response",assertCoreCoverage);

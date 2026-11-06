@@ -61,9 +61,13 @@ export async function caseDetail(db:DB,actor:Actor,id:string,orderNumber:string|
   const k=await ticket(db,actor,id,orderNumber);
   const {rows:events}=await db.query(`select id,actor_type,kind,body,media_ids,created_at from ticket_events
     where ticket_id=$1 and ($2::boolean or kind='message') order by created_at,id`,[id,actor.kind==="staff"]);
+  const recovery=actor.kind==="staff"?(await db.query(`select r.id,r.user_id,r.state,r.requested_by as support_reviewer_id,
+    r.approved_by as admin_approver_id,r.execute_after as executable_after,r.executed_at,p.receiving_code,u.status as user_status
+    from recovery_requests r left join users u on u.id=r.user_id left join customer_receiving_profiles p on p.user_id=u.id
+    where r.evidence_ticket_id=$1 order by r.verified_at desc nulls last limit 1`,[id])).rows[0]??null:null;
   return {id:k.id,public_no:k.public_no,subject:k.subject,category:k.category,state:k.state,revision:k.revision,
     next_action_at:k.next_action_at,order_number:k.order_number,
-    ...(actor.kind==="staff"?{assignee_id:k.assignee_id,assignee:k.assignee,
+    ...(actor.kind==="staff"?{assignee_id:k.assignee_id,assignee:k.assignee,account_recovery:recovery,
       ...(k.details.public_inquiry?{inquiry:{contact_email:k.details.contact_email,category:k.details.category_labels,
         sample_count:k.details.sample_count,portal_reply:!!k.org_id}}:{})}:{}),events};
 }

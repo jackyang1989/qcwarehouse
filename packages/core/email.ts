@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { pool, transaction, type DB } from "../db";
-import { decryptSecret, encryptSecret, requireStaffMfa } from "./auth";
+import { appOrigin, decryptSecret, encryptSecret, requireStaffMfa } from "./auth";
 import { audit, guard, hash, isDemo, one, organization, role, uuid, type Actor } from "./common";
 import { postmarkSettings } from "./integrations";
 
@@ -10,33 +10,44 @@ export function maskEmail(email: string) {
   return domain ? `${prefix}@${domain}` : prefix;
 }
 
-function renderEmailContent(template: string, orderPublicNo: string | null) {
+export function renderEmailContent(template: string, orderPublicNo: string | null, isTest = false) {
   const ref = orderPublicNo ? ` (${orderPublicNo})` : "";
+  const prefix = isTest ? "[TEST] " : "";
+  const origin = appOrigin();
   switch (template) {
-    case "intake.checked_in":
+    case "payment.confirmed": {
+      const link = orderPublicNo ? `${origin}/orders/${orderPublicNo}/parcels` : `${origin}/account/billing`;
       return {
-        subject: `Parcel received at QC Warehouse${ref}`,
-        text: `Your parcel${ref} has been checked in at the warehouse. Sign in to review its status.`,
+        subject: `${prefix}Payment confirmed${ref}`,
+        text: `Your payment${ref} has been confirmed. Open ${link} to register seller tracking numbers or review your billing receipt.`,
+      };
+    }
+    case "intake.checked_in":
+    case "package.received":
+      return {
+        subject: `${prefix}Parcel received at QC Warehouse${ref}`,
+        text: `Your parcel${ref} has been checked in at the warehouse. Open ${orderPublicNo ? `${origin}/orders/${orderPublicNo}/parcels` : `${origin}/parcels`} to review its status.`,
       };
     case "report.published":
+    case "report.amended":
       return {
-        subject: `Inspection report ready${ref}`,
-        text: `Your inspection report${ref} has been published. Sign in to review findings and choose item dispositions.`,
+        subject: `${prefix}Inspection report ready${ref}`,
+        text: `Your inspection report${ref} has been published. Open ${orderPublicNo ? `${origin}/orders/${orderPublicNo}/report` : `${origin}/reports`} to review findings and choose item dispositions.`,
       };
     case "shipment.handed_over":
       return {
-        subject: `Shipment handed over to carrier${ref}`,
-        text: `Your outbound parcel${ref} has been handed over to the carrier. Sign in to view tracking updates.`,
+        subject: `${prefix}Shipment handed over to carrier${ref}`,
+        text: `Your outbound parcel${ref} has been handed over to the carrier. Open ${orderPublicNo ? `${origin}/orders/${orderPublicNo}` : `${origin}/account`} to view tracking updates.`,
       };
     case "ticket.reply":
       return {
-        subject: `New support reply${ref}`,
-        text: `Our support team has replied to your case${ref}. Sign in to view the message and respond.`,
+        subject: `${prefix}New support reply${ref}`,
+        text: `Our support team has replied to your case${ref}. Open ${origin}/support to view the message and respond.`,
       };
     default:
       return {
-        subject: `QC Warehouse account update${ref}`,
-        text: `You have a new update${ref} in your QC Warehouse account. Sign in for details.`,
+        subject: `${prefix}QC Warehouse account update${ref}`,
+        text: `You have a new update${ref} in your QC Warehouse account. Open ${origin}/account for details.`,
       };
   }
 }
@@ -119,8 +130,9 @@ export async function deliverEmailOnce() {
         user_id: string;
         template: string;
         order_public_no: string | null;
+        order_is_test: boolean;
       }>(
-        `select d.id, d.notification_id, d.address_snapshot, d.attempt, n.user_id, n.template, o.public_no as order_public_no
+        `select d.id, d.notification_id, d.address_snapshot, d.attempt, n.user_id, n.template, o.public_no as order_public_no, coalesce(o.is_test, false) as order_is_test
          from email_deliveries d
          join notifications n on n.id = d.notification_id
          left join orders o on o.id = n.order_id
@@ -172,13 +184,14 @@ export async function deliverEmailOnce() {
       recipient,
       template: row.template,
       orderPublicNo: row.order_public_no,
+      orderIsTest: row.order_is_test,
       mail,
     };
   });
   if (!claimed) return false;
   if (claimed.handled) return true;
 
-  const content = renderEmailContent(claimed.template, claimed.orderPublicNo);
+  const content = renderEmailContent(claimed.template, claimed.orderPublicNo, claimed.orderIsTest);
   let outcome:
     | { kind: "submitted"; messageId: string }
     | { kind: "bounced"; errorCode: string }

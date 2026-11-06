@@ -118,6 +118,30 @@ export function StaffTicket({id,actor}:{id:string;actor:Row}) {
         {open&&!data.assignee_id&&<div className="actions"><Action primary run={()=>update({kind:"claim"})}>领取工单</Action></div>}
         {data.category==="identity_unclear"&&open&&<p><Link href={"/admin/orders#case-"+id}>打开专用认领核验</Link></p>}
       </Panel>
+      {data.account_recovery&&<Panel title="账号恢复与双人审批（FEAT-M18）">
+        <dl className="location-facts">
+          <div><dt>恢复状态</dt><dd><Tag>{data.account_recovery.state}</Tag></dd></div>
+          <div><dt>专属收件码</dt><dd className="code">{data.account_recovery.receiving_code??"—"}</dd></div>
+          <div><dt>账号状态</dt><dd>{data.account_recovery.user_status??"—"}</dd></div>
+          <div><dt>可最终执行时间</dt><dd>{stamp(data.account_recovery.executable_after)}</dd></div>
+        </dl>
+        <p className="muted">客户提交核验说明：{data.account_recovery.evidence_summary}</p>
+        {["pending_review","awaiting_approval"].includes(data.account_recovery.state)&&<Form label={data.account_recovery.state==="pending_review"?"客服初审通过并提交超管审批":"超管独立复核批准"} run={async f=>{
+          const decision=text(f,"decision");
+          await request("/staff/account-recoveries/"+data.account_recovery.id+"/"+decision,"POST",{
+            reason:text(f,"reason"),
+            ...(f.get("emergency")==="on"?{emergency:true}:{}),
+          });
+          reload();
+        }}>
+          <label>审批结论<select name="decision" defaultValue="approve"><option value="approve">通过</option><option value="reject">驳回</option></select></label>
+          <Field name="reason" label="核验依据与审批说明"/>
+          {actor.roles.includes("super_admin")&&data.account_recovery.state==="awaiting_approval"&&
+            <label className="check"><input type="checkbox" name="emergency"/> 紧急跳过 24 小时冷静期（仅超管经核实后勾选）</label>}
+        </Form>}
+        {data.account_recovery.state==="approved"&&actor.roles.includes("super_admin")&&
+          <Action primary run={async()=>{await request("/staff/account-recoveries/"+data.account_recovery.id+"/execute","POST",{});reload();}}>执行账号恢复换绑并撤销旧会话</Action>}
+      </Panel>}
       <Panel title="沟通与处理记录"><Conversation events={data.events} staff/></Panel>
       {canWork&&<>
         {data.inquiry?.portal_reply===false?<Panel title="访客跟进">

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { pool, type DB } from "../db";
-import { currentTerms } from "./auth";
+import { currentTerms, requireCustomerActive } from "./auth";
 import { audit, event, guard, lock, one, organization, revision, role, uuid, type Actor } from "./common";
 import { validCarrier, waybill } from "./intake";
 import { requireSpace } from "./storage";
@@ -8,6 +8,7 @@ import { requireSpace } from "./storage";
 type Destination={recipient:string;phone:string;address:string;member_code?:string};
 type InstructionInput={action:string;item_id?:string;destination?:Destination;return_info?:object;terms_version_id:string;condition_note?:string};
 export async function instruct(db:DB,actor:Actor,itemId:string,input:InstructionInput,orderId?:string) {
+  await requireCustomerActive(db,actor);
   const org=organization(actor);
   await lock(db,"org:"+org);
   const w=await one(db,"select * from warehouse_items where id=$1 and org_id=$2 for update",[itemId,org]);
@@ -85,6 +86,7 @@ export async function releaseReferenceSample(db:DB,actor:Actor,referenceId:strin
   return updated;
 }
 export async function planBatch(db:DB,actor:Actor,ids:string[]) {
+  await requireCustomerActive(db,actor);
   const org=organization(actor);
   await lock(db,"org:"+org);
   const rows=(await db.query("select * from disposition_requests where id=any($1::uuid[]) and org_id=$2 and state='requested' order by id for update",[ids,org])).rows;
@@ -104,6 +106,7 @@ async function lockBatch(db:DB,id:string) {
   return one(db,"select * from dispatch_batches where id=$1 for update",[id]);
 }
 export async function confirmBatch(db:DB,actor:Actor,id:string,rev:number) {
+  await requireCustomerActive(db,actor);
   const org=organization(actor);
   await lock(db,"org:"+org);
   const b=await one(db,"select * from dispatch_batches where id=$1 and org_id=$2 for update",[id,org]);

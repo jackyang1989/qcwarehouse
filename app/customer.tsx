@@ -502,20 +502,21 @@ export function CustomerDesk({path}:{path:string}) {
   if(error)return <ErrorBlock error={error}/>;
   if(!data)return <p>Loading your account…</p>;
   const addr=data.profile.warehouse_address;
-  const isHome=path==="/account",isItems=path==="/items",isParcels=path==="/parcels",isBills=path==="/account/billing",isOrders=path==="/orders",isHelp=path==="/support";
+  const isHome=path==="/account",isSecurity=path==="/account/security",isItems=path==="/items",isParcels=path==="/parcels",isBills=path==="/account/billing",isOrders=path==="/orders",isHelp=path==="/support";
   const orders:Row[]=data.orders;
   const visibleOrders=isHome?orders.slice(0,5):orders.filter(order=>
     order.public_no.toLowerCase().includes(orderQuery.trim().toLowerCase())&&(!orderState||order.state===orderState));
   return <>
-    {data.email_delivery?.banner_message&&<div className="notice" role="alert"><strong>{data.email_delivery.banner_message}</strong>{data.email_delivery.masked_email?` (${data.email_delivery.masked_email})`:""}. Important updates remain available in your account notifications and action centre.</div>}
+    {data.email_delivery?.banner_message&&<div className="notice" role="alert"><strong>{data.email_delivery.banner_message}</strong>{data.email_delivery.masked_email?` (${data.email_delivery.masked_email})`:""}. Important updates remain available in your account notifications and action centre. <Link href="/account/security">Update email in account security →</Link></div>}
     {isHome&&<><div className="page-head row"><div><p className="eyebrow">CLIENT WORKSPACE</p><h1>Your inspections</h1><p className="muted">Manage your warehouse deliveries, inspection reports and item instructions.</p></div>
-      <Link className="button primary" href="/orders/new">New inspection <span aria-hidden="true">→</span></Link></div>
+      <div className="actions"><Link className="button" href="/account/security">Sign-in &amp; security</Link><Link className="button primary" href="/orders/new">New inspection <span aria-hidden="true">→</span></Link></div></div>
       <div className="ops-columns"><Panel title="Warehouse receiving address">
       <div className="receiving-code"><span className="eyebrow">PERSONAL RECEIVING CODE</span><strong className="code">{data.profile.receiving_code}</strong></div>
       {addr?<><p>{addr.recipient} · {addr.phone}<br/>{addr.address_zh}<br/>{addr.address_en}</p>
         <Action run={()=>navigator.clipboard.writeText([addr.recipient,addr.phone,addr.address_zh].join("\n"))}>Copy Chinese shipping address</Action></>:<Empty>The warehouse address is awaiting configuration.</Empty>}
       {next&&<Link className="button primary" href={next}>Continue to your selected page</Link>}
     </Panel><RecentUpdates notices={data.notices} onRead={reload}/></div></>}
+    {isSecurity&&<AccountSecurity receivingCode={data.profile.receiving_code}/>}
     {isOrders&&<div className="page-head row"><div><p className="eyebrow">CLIENT WORKSPACE</p><h1>Inspection orders</h1><p className="muted">Review your orders or continue an existing draft.</p></div>
       <Link className="button primary" href="/orders/new">New inspection <span aria-hidden="true">→</span></Link></div>}
     {isOrders&&<div className="metric-strip" aria-label="Orders summary">
@@ -615,6 +616,111 @@ export function CustomerDesk({path}:{path:string}) {
     {isHelp&&<><div className="page-head"><p className="eyebrow">Account services</p><h1>Support</h1><p className="muted">Open a case or check the warehouse team’s reply.</p></div><Panel title="Open a case"><Form label="Send case" run={async f=>{await request("/me/cases","POST",{subject:text(f,"subject"),message:text(f,"message")});reload();}}>
       <Field name="subject" label="Subject"/><label>Message<textarea name="message" required/></label>
       </Form><Table headers={["Case","Subject","Status"]} rows={data.tickets.map((t:Row)=>[<Link className="code" href={"/support/cases/"+t.id}>{t.public_no}</Link>,t.subject,label(t.state)])}/></Panel></>}
+  </>;
+}
+
+function AccountSecurity({receivingCode}:{receivingCode:string}) {
+  const identities=useLoad("/me/identities");
+  const sessions=useLoad("/me/sessions");
+  const [reauthChallenge,setReauthChallenge]=useState<{challenge_id:string;demo_code?:string}>();
+  const [emailChange,setEmailChange]=useState<{
+    new_email:string;current_challenge_id:string;current_demo_code?:string;new_challenge_id:string;new_demo_code?:string;
+  }>();
+  const refreshAll=()=>{identities.reload();sessions.reload();};
+  const info=identities.data;
+  const activeIdentities:Row[]=info?.identities??[];
+  const emails:Row[]=info?.emails??[];
+  const primaryEmail=emails.find(e=>e.is_primary)?.original_email??"—";
+  return <>
+    <div className="page-head row">
+      <div><Link href="/account">← Account overview</Link><p className="eyebrow">CLIENT WORKSPACE / SECURITY</p>
+        <h1>Sign-in methods &amp; security</h1>
+        <p className="muted">Manage linked sign-in methods, primary contact email, active device sessions, and account status. Your permanent receiving code <span className="code">{receivingCode}</span> never changes.</p>
+      </div>
+      {info?.reauthenticated?<Tag>Reauthenticated</Tag>:<Tag>Standard session</Tag>}
+    </div>
+    {(identities.error||sessions.error)&&<ErrorBlock error={identities.error||sessions.error}/>}
+    {info?.status==="restricted"&&<div className="notice" role="alert"><strong>Account restricted:</strong> New orders, payments, and outbound instructions are temporarily paused while your existing orders and support cases remain accessible.</div>}
+    <Panel title="Recent verification for sensitive changes">
+      <p className="muted">Linking or removing sign-in methods, changing your primary email, revoking other sessions, or closing your account requires verification within the last 10 minutes.</p>
+      {info?.reauthenticated?<p className="notice" role="status">Your session is verified for sensitive security actions.</p>:
+        reauthChallenge?<div className="code-step">
+          {reauthChallenge.demo_code&&<p>Test code: <strong className="code">{reauthChallenge.demo_code}</strong></p>}
+          <Form key={reauthChallenge.challenge_id} label="Confirm verification code" run={async f=>{
+            await request("/auth/reauth/verify","POST",{challenge_id:reauthChallenge.challenge_id,code:text(f,"code")});
+            setReauthChallenge(undefined);refreshAll();
+          }}>
+            <Field name="code" label="6-digit verification code"/>
+          </Form>
+        </div>:
+        <Action primary run={async()=>{
+          setReauthChallenge(await request("/auth/reauth/start","POST",{}));
+        }}>Send verification code to {primaryEmail}</Action>}
+    </Panel>
+    <Panel title="Linked sign-in methods">
+      <Table headers={["Provider","Identifier","Linked","Last used",""]} rows={activeIdentities.map(i=>[
+        i.provider==="email_otp"?"Email verification code":i.provider==="google"?"Google":"Microsoft",
+        <span className="code">{i.email??i.issuer}</span>,
+        stamp(i.linked_at),
+        stamp(i.last_authenticated_at),
+        activeIdentities.length>1?<Action run={async()=>{
+          await request("/me/identities/"+i.id,"DELETE",{});refreshAll();
+        }}>Remove</Action>:<small className="muted">Last sign-in method</small>
+      ])} empty="No active sign-in methods found."/>
+      <div className="actions">
+        {(["google","microsoft"] as const).filter(p=>!activeIdentities.some(i=>i.provider===p)).map(provider=>
+          <Action key={provider} run={async()=>{
+            const res=await request("/me/identities/"+provider+"/link","POST",{});
+            if(res.redirect_url) location.assign(res.redirect_url);
+            else refreshAll();
+          }}>Link {provider==="google"?"Google":"Microsoft"}</Action>)}
+      </div>
+    </Panel>
+    <Panel title="Primary contact &amp; sign-in email">
+      <p>Current primary email: <strong>{primaryEmail}</strong></p>
+      {emailChange?<div className="code-step">
+        <p>Verify both your current email (<strong>{primaryEmail}</strong>) and new email (<strong>{emailChange.new_email}</strong>).</p>
+        {(emailChange.current_demo_code||emailChange.new_demo_code)&&<p className="small">
+          Current code: <span className="code">{emailChange.current_demo_code}</span> · New code: <span className="code">{emailChange.new_demo_code}</span>
+        </p>}
+        <Form key={emailChange.new_challenge_id} label="Confirm email change" run={async f=>{
+          await request("/me/email-change/confirm","POST",{
+            current_challenge_id:emailChange.current_challenge_id,
+            current_code:text(f,"current_code"),
+            new_challenge_id:emailChange.new_challenge_id,
+            new_code:text(f,"new_code"),
+          });
+          setEmailChange(undefined);refreshAll();
+        }}>
+          <Field name="current_code" label="Code sent to current email"/>
+          <Field name="new_code" label="Code sent to new email"/>
+        </Form>
+        <button type="button" onClick={()=>setEmailChange(undefined)}>Cancel email change</button>
+      </div>:<Form label="Send verification codes" run={async f=>{
+        const newEmail=text(f,"new_email");
+        const res=await request("/me/email-change/request","POST",{new_email:newEmail});
+        setEmailChange({new_email:newEmail,...res});
+      }}>
+        <Field name="new_email" label="New primary email address" type="email"/>
+      </Form>}
+    </Panel>
+    <Panel title="Active device sessions">
+      <Table headers={["Session","Created","Last active","Expires",""]} rows={(sessions.data?.sessions??[]).map((s:Row)=>[
+        s.current?<strong>Current device</strong>:"Signed-in device",
+        stamp(s.created_at),stamp(s.last_seen_at),stamp(s.expires_at),
+        !s.current?<Action run={async()=>{await request("/me/sessions/"+s.id,"DELETE",{});sessions.reload();}}>Revoke</Action>:null
+      ])} empty="No active sessions."/>
+      {(sessions.data?.sessions??[]).some((s:Row)=>!s.current)&&<Action run={async()=>{
+        await request("/me/sessions/revoke-others","POST",{});sessions.reload();
+      }}>Sign out all other devices</Action>}
+    </Panel>
+    <Panel title="Close account">
+      <p className="muted">You can close your account when there are no active orders, stored warehouse items, or unpaid charges. Historical audit and financial records are retained per policy.</p>
+      <Action run={async()=>{
+        await request("/me/account/close","POST",{});
+        location.assign("/login");
+      }}>Close my account</Action>
+    </Panel>
   </>;
 }
 

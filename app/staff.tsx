@@ -702,6 +702,21 @@ export function StaffOrder({number}:{number:string}) {
         </Panel>
         <Panel title="履约节点">
           <dl className="location-facts">{milestones.map(([name,at])=><div key={name}><dt>{name}</dt><dd>{stamp(at)}</dd></div>)}</dl>
+          {data.customer&&<>
+            <hr className="divider"/>
+            <p><strong>客户账号</strong> · <span className="code">{data.customer.receiving_code}</span> · {data.customer.email??"—"} · <Tag>{data.customer.status}</Tag></p>
+            <Form inline label="更新账号状态" run={async f=>{
+              await request("/staff/users/"+data.customer.id+"/status","POST",{status:text(f,"status"),reason:text(f,"reason")});
+              reload();
+            }}>
+              <Select name="status" label="状态" value={data.customer.status} choices={[
+                {id:"active",label:"正常 (active)"},
+                {id:"restricted",label:"限制新单与付款 (restricted)"},
+                {id:"disabled",label:"停用并撤销会话 (disabled)"},
+              ]}/>
+              <Field name="reason" label="处理原因"/>
+            </Form>
+          </>}
         </Panel>
       </div>
       <Panel title="实物及库位"><Table headers={["实物编号","检查位置","身份","保管状态","库位"]} rows={data.items.map((i:Row)=>[

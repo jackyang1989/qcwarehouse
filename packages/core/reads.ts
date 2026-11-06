@@ -408,8 +408,11 @@ export async function staffOrderDetail(db:DB,actor:Actor,publicNo:string) {
   const {rows:activity}=await db.query(`select a.id,a.at,a.actor_type,a.action,u.display_name
     from audit_events a left join users u on u.id=a.actor_id where a.entity_type='orders' and a.entity_id=$1
     order by a.at desc,a.id desc limit 100`,[id]);
+  const customer=(await db.query(`select u.id,u.status,p.receiving_code,e.normalized_email::text as email
+    from customer_receiving_profiles p join users u on u.id=p.user_id left join user_emails e on e.user_id=u.id and e.is_primary
+    where p.org_id=$1 limit 1`,[org_id])).rows[0]??null;
   const shipments=(await orderShipments(db,id,org_id)).map(({state,tracking_norm,shipped_at,action})=>({state,tracking_norm,shipped_at,action}));
   return {order:orderDTO(order),created_at:order.created_at,paid_at:order.paid_at,
     samples_ready_at:order.samples_ready_at,sla_due_at:order.sla_due_at,report_published_at:order.report_published_at,closed_at:order.closed_at,
-    lines,items,parcels,tickets,blocks,activity,shipments};
+    customer,lines,items,parcels,tickets,blocks,activity,shipments};
 }

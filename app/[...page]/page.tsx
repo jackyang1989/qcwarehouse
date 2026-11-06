@@ -4,7 +4,7 @@ import { actorForSession } from "../../packages/core/auth";
 import { isDemo } from "../../packages/core/common";
 import { signInMethods } from "../../packages/core/integrations";
 import { customerDestination, resolvePortalRoute, withDestination } from "../../packages/core/portal-routes";
-import { AccessShell, Login, Onboarding } from "../account-access";
+import { AccessShell, AccountRecovery, Login, Onboarding } from "../account-access";
 import { Portal } from "../portal";
 
 type Search = Record<string,string|string[]|undefined>;
@@ -33,6 +33,9 @@ export default async function Page({params,searchParams}:{params:Promise<{page:s
       redirect(withDestination(entry,customerDestination(target)));
     }
     redirect(withDestination("/staff/login",target));
+  }
+  if(route.view==="account-recovery") {
+    return <AccessShell staff={false}><AccountRecovery/></AccessShell>;
   }
   if(route.view==="login"||route.view==="staff-login"||route.view==="onboarding") {
     const search=await searchParams;

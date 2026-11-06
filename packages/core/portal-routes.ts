@@ -54,7 +54,7 @@ export const legalPages = {
 } as const;
 
 type Area = "public" | "customer" | "warehouse" | "admin";
-type StaticView = "catalog" | "how-it-works" | "faq" | "report-guide" | "public-inquiry" | "legal" | "login" | "onboarding" | "staff-login" | "customer" | "customer-actions" | "warehouse" | "admin" | "staff-tickets" | "logistics" | "logistics-configuration" | "storage-move" | "storage-locations" | "warehouse-scan" | "report-desk" | "operations";
+type StaticView = "catalog" | "how-it-works" | "faq" | "report-guide" | "public-inquiry" | "legal" | "login" | "onboarding" | "account-recovery" | "staff-login" | "customer" | "customer-actions" | "warehouse" | "admin" | "staff-tickets" | "logistics" | "logistics-configuration" | "storage-move" | "storage-locations" | "warehouse-scan" | "report-desk" | "operations";
 type DetailView = "order" | "report" | "parcel" | "shipment" | "task" | "demo" | "warehouse-package" | "warehouse-item" | "customer-case" | "staff-ticket" | "staff-order" | "order-quote" | "order-shipment" | "dispatch-batch" | "staff-report";
 export const orderSections={
   payment:"Payment",parcels:"Parcels",dispositions:"Item instructions",storage:"Storage",
@@ -78,9 +78,10 @@ for(const [paths,route] of [
   [["/report-guide"],{area:"public",view:"report-guide"}],
   [["/login","/signup"],{area:"public",view:"login"}],
   [["/onboarding"],{area:"public",view:"onboarding"}],
+  [["/account/recovery"],{area:"public",view:"account-recovery"}],
   [["/staff/login"],{area:"public",view:"staff-login"}],
   [["/orders/new"],{area:"customer",view:"new-order"}],
-  [["/account/notifications"],{area:"customer",view:"customer"}],
+  [["/account/notifications","/account/security"],{area:"customer",view:"customer"}],
   [["/actions"],{area:"customer",view:"customer-actions"}],
   [["/admin/tickets"],{area:"admin",view:"staff-tickets"}],
   [["/admin/operations"],{area:"admin",view:"operations"}],

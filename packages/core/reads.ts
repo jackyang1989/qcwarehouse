@@ -11,9 +11,17 @@ import { effectiveDispatchCharge } from "./dispatch";
 
 export async function items(db:DB,actor:Actor) {
   return (await db.query(`select w.id item_id,w.code,w.custody_state,w.revision,w.identity_state,w.storage_until,
-    a.order_line_id, array(select d.id from disposition_requests d where d.item_id=w.id and d.state='requested'
+    a.order_line_id,o.id order_id,o.public_no order_no,sl.code location_code,
+    (select jsonb_build_object(
+      'reference_id',r.id,'state',r.state,'revision',r.revision,'expires_at',r.expires_at,
+      'expired',r.expires_at<=now(),
+      'in_use',exists(select 1 from reference_reservations rr where rr.reference_id=r.id and rr.released_at is null)
+    ) from reference_samples r where r.item_id=w.id order by r.revision desc limit 1) reference_sample,
+    array(select d.id from disposition_requests d where d.item_id=w.id and d.state='requested'
       and not exists(select 1 from dispatch_batch_items bi where bi.disposition_id=d.id and bi.released_at is null)) instructions
     from warehouse_items w left join order_line_item_links a on a.item_id=w.id and a.unlinked_at is null
+    left join order_lines l on l.id=a.order_line_id left join orders o on o.id=l.order_id
+    left join storage_locations sl on sl.id=w.location_id
     where w.org_id=$1 and w.parent_item_id is null order by w.received_at desc limit 400`,[organization(actor)])).rows.map(w=>({
       ...w,allowed_actions:["stored","received"].includes(w.custody_state)?["request_disposition"]:[],
     }));
@@ -60,6 +68,16 @@ export async function customerActions(db:DB,actor:Actor) {
       and s.previous_snapshot->>'order_revision'=o.revision::text
     union all select e.id,'email',e.delivery_state,null,null from user_emails e
       where e.user_id=$2 and e.is_primary and e.delivery_state in ('bounced','complained')
+    union all select r.id,'reference',
+      case when r.expires_at<=now() then 'reference_expired' else 'reference_conflict' end,
+      w.code,r.expires_at
+      from reference_samples r join warehouse_items w on w.id=r.item_id
+      where r.org_id=$1 and r.state='active' and (
+        r.expires_at<=now() or (
+          r.authorization_snapshot ? 'outbound_conflict_at'
+          and exists(select 1 from reference_reservations rr where rr.reference_id=r.id and rr.released_at is null)
+        )
+      )
   ) actions order by due_at nulls last,kind,reference,id limit 200`,[org,actor.id]);
   return {rows};
 }
@@ -84,8 +102,16 @@ export async function customerDesk(db:DB,actor:Actor) {
     where o.org_id=$1 and r.published_version is not null limit 200`,[org])).rows;
   const tickets=(await db.query(`select id,public_no,subject,state,details->>'decision' decision from tickets where org_id=$1 order by created_at desc limit 100`,[org])).rows;
   const notices=(await customerNotifications(db,actor)).rows;
-  const references=(await db.query(`select r.id reference_id,r.item_id,r.state,r.expires_at,w.code from reference_samples r join warehouse_items w on w.id=r.item_id
-    where r.org_id=$1 order by r.expires_at desc limit 100`,[org])).rows;
+  const references=(await db.query(`select r.id reference_id,r.item_id,r.state,r.revision,r.condition_note,r.expires_at,
+    r.expires_at<=now() expired,
+    exists(select 1 from reference_reservations rr where rr.reference_id=r.id and rr.released_at is null) in_use,
+    coalesce(
+      (select l.category_id from order_line_item_links a join order_lines l on l.id=a.order_line_id where a.item_id=w.id order by a.linked_at desc limit 1),
+      (r.authorization_snapshot->>'category_id')::uuid
+    ) category_id,
+    w.code,w.custody_state
+    from reference_samples r join warehouse_items w on w.id=r.item_id
+    where r.org_id=$1 order by r.expires_at desc,r.revision desc limit 100`,[org])).rows;
   return {orders,advices,shipments,quotes,batches,reports,tickets,notices,references,profile:await receiving(db,actor.id),email_delivery:await customerEmailDeliveryStatus(db,actor),items:await items(db,actor),bills:await bills(db,actor)};
 }
 export async function customerNotifications(db:DB,actor:Actor,unread=false,before:string|null=null) {
@@ -275,10 +301,21 @@ export async function adminDesk(db:DB,actor:Actor) {
       where user_id=$1 and template='warehouse.address_required'
       and not exists(select 1 from warehouse_addresses where is_default and active) limit 1`,[actor.id])).rowCount===1:false,
     addresses:actor.roles.includes("super_admin")?(await db.query("select id,address_zh,address_en,contact_name,contact_phone,is_default from warehouse_addresses order by created_at desc")).rows:[],
-    templates:templates?(await db.query("select id,template_key,version,state from template_versions order by published_at desc nulls first limit 100")).rows:[],
-    categories:templates?(await db.query("select id,labels,status from categories order by slug")).rows:[],
-    services:templates?(await db.query("select id,labels from service_types order by code")).rows:[],
-    capabilities:templates?(await db.query("select id,code from capabilities where approved_by is not null and revoked_at is null")).rows:[],
+    templates:templates?(await db.query(`select t.id,t.template_key,t.category_id,t.service_type_id,t.version,t.state,t.content,
+      t.content_hash,t.author_id,t.reviewer_id,t.published_at,
+      array(select c.code from template_capabilities tc join capabilities c on c.id=tc.capability_id
+        where tc.template_version_id=t.id order by c.code) capability_codes
+      from template_versions t order by t.published_at desc nulls first,t.template_key,t.version desc limit 100`)).rows:[],
+    categories:templates?(await db.query("select id,slug,labels,status,revision,admission_snapshot from categories order by slug")).rows:[],
+    services:templates?(await db.query("select id,code,labels from service_types order by code")).rows:[],
+    capabilities:templates?(await db.query("select id,code,method from capabilities where approved_by is not null and revoked_at is null order by code")).rows:[],
+    allCapabilities:templates?(await db.query("select id,code,method,approval,approved_by,revoked_at from capabilities order by code")).rows:[],
+    offers:templates?(await db.query(`select o.id,o.sku_code,o.title,o.enabled,o.service_type_id,ot.category_id,ot.template_version_id,
+      p.version price_version,p.rules from service_offers o
+      left join offer_templates ot on ot.offer_id=o.id
+      left join lateral(select version,rules from sku_prices sp where sp.offer_id=o.id and effective_from<=now()
+        and (effective_to is null or effective_to>now()) order by effective_from desc,version desc limit 1) p on true
+      order by o.sku_code`)).rows:[],
     jobErrors:actor.roles.includes("super_admin")?(await db.query("select id,type,attempts,last_error,next_attempt_at from outbox_events where processed_at is null and attempts>0 order by id desc limit 50")).rows:[],
   };
 }

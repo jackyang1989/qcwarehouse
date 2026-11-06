@@ -37,6 +37,7 @@ export function canOpenStaffPage(path:string,route:PortalRoute,roles:readonly st
   if(route.view==="staff-report") return hasStaffAccess(roles,staffAccess.reportEditing);
   if(route.view==="staff-ticket"||route.view==="staff-order") return hasStaffAccess(roles,staffAccess.orders);
   if(route.view==="warehouse-package"||route.view==="warehouse-item") return hasStaffAccess(roles,staffAccess.intake);
+  if(["/admin/catalog","/admin/categories","/admin/templates"].includes(path)) return hasStaffAccess(roles,staffAccess.templates);
   return staffTabs(route.area,roles).some(([link])=>link===path);
 }
 
@@ -83,6 +84,7 @@ for(const [paths,route] of [
   [["/actions"],{area:"customer",view:"customer-actions"}],
   [["/admin/tickets"],{area:"admin",view:"staff-tickets"}],
   [["/admin/operations"],{area:"admin",view:"operations"}],
+  [["/admin/catalog","/admin/categories","/admin/templates"],{area:"admin",view:"admin"}],
   [["/wh/logistics"],{area:"warehouse",view:"logistics"}],
   [["/wh/storage"],{area:"warehouse",view:"storage-move"}],
   [["/wh/review"],{area:"warehouse",view:"report-desk"}],

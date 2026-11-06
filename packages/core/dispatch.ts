@@ -1,27 +1,57 @@
 import { z } from "zod";
-import type { DB } from "../db";
+import { pool, type DB } from "../db";
 import { currentTerms } from "./auth";
 import { audit, event, guard, lock, one, organization, revision, role, uuid, type Actor } from "./common";
 import { validCarrier, waybill } from "./intake";
 import { requireSpace } from "./storage";
 
 type Destination={recipient:string;phone:string;address:string;member_code?:string};
-type InstructionInput={action:string;item_id?:string;destination?:Destination;return_info?:object;terms_version_id:string};
+type InstructionInput={action:string;item_id?:string;destination?:Destination;return_info?:object;terms_version_id:string;condition_note?:string};
 export async function instruct(db:DB,actor:Actor,itemId:string,input:InstructionInput,orderId?:string) {
   const org=organization(actor);
   await lock(db,"org:"+org);
   const w=await one(db,"select * from warehouse_items where id=$1 and org_id=$2 for update",[itemId,org]);
   guard(["stored","received"].includes(w.custody_state) && !w.parent_item_id && w.identity_state!=="quarantined",
     "ITEM_UNAVAILABLE","This item cannot be released.");
-  const order=(await db.query(`select o.id,o.state from orders o join order_lines l on l.order_id=o.id
+  const order=(await db.query(`select o.id,o.state,l.category_id from orders o join order_lines l on l.order_id=o.id
     join order_line_item_links a on a.order_line_id=l.id where a.item_id=$1 and a.unlinked_at is null`,[itemId])).rows[0];
   guard(!orderId || order?.id===orderId,"NOT_FOUND","Item is not in this order.",404);
   guard(!order || ["report_ready","action_pending","cancelled","closed"].includes(order.state),
     "ITEM_IN_INSPECTION","Resolve the active inspection before requesting shipment.");
-  guard(!(await db.query(`select 1 from reference_reservations rr join reference_samples r on r.id=rr.reference_id
-    where r.item_id=$1 and rr.released_at is null`,[itemId])).rowCount,"ITEM_RESERVED","An inspection still needs this reference sample.");
+  const activeLock=(await db.query<{id:string}>(`select r.id from reference_reservations rr join reference_samples r on r.id=rr.reference_id
+    where r.item_id=$1 and rr.released_at is null`,[itemId])).rows[0];
+  if(activeLock) {
+    await pool.query(`update reference_samples set authorization_snapshot=authorization_snapshot||jsonb_build_object('outbound_conflict_at',now(),'requested_action',$2::text) where id=$1`,[activeLock.id,input.action]);
+    await audit(pool,actor,"reference_outbound_conflict","reference_samples",activeLock.id,{code:"ITEM_RESERVED",reason:"Outbound instruction requested while reference sample is in use."});
+    guard(false,"ITEM_RESERVED","An inspection still needs this reference sample.");
+  }
   const terms=await currentTerms(db,["terms"]);
   guard(terms[0]?.id===input.terms_version_id,"TERMS_CHANGED","Review the current terms.");
+  if(input.action==="reserve_reference") {
+    guard(!(await db.query("select 1 from disposition_requests where item_id=$1 and state not in ('completed','cancelled')",[itemId])).rowCount,
+      "ITEM_RESERVED","Resolve the active handling instruction before reserving this reference sample.");
+    await db.query("update reference_samples set state='expired' where item_id=$1 and state='active' and expires_at<=now()",[itemId]);
+    guard(!(await db.query("select 1 from reference_samples where item_id=$1 and state='active' and expires_at>now()",[itemId])).rowCount,
+      "REFERENCE_ALREADY_ACTIVE","This item is already an active reference sample.");
+    await db.query("update warehouse_items set custody_state='stored',revision=revision+1 where id=$1 and custody_state='received'",[itemId]);
+    const out=await one(db,`insert into disposition_requests(org_id,item_id,action,destination,return_info,authorization_snapshot,state,created_by)
+      values($1,$2,'reserve_reference',null,null,jsonb_build_object('terms_version_id',$3::uuid,'authorized_at',now()),'completed',$4)
+      returning id,item_id,state,revision`,[org,itemId,input.terms_version_id,actor.id]);
+    const nextRev=await one<{n:number}>(db,"select coalesce(max(revision),0)::int+1 n from reference_samples where item_id=$1",[itemId]);
+    const ref=await one<{id:string}>(db,`insert into reference_samples(id,item_id,org_id,revision,authorization_snapshot,condition_note,expires_at,state)
+      values($1,$2,$3,$4,$5,$6,now()+interval '90 days','active') returning id`,[
+      uuid(),itemId,org,nextRev.n,
+      {terms_version_id:input.terms_version_id,authorized_by:actor.id,authorized_at:new Date().toISOString(),disposition_id:out.id,...(order?.category_id?{category_id:order.category_id}:{})},
+      input.condition_note??null,
+    ]);
+    await audit(db,actor,"authorize_disposition","disposition_requests",out.id);
+    await audit(db,actor,"reserve_reference","reference_samples",ref.id,{version:nextRev.n});
+    return out;
+  }
+  if(["to_forwarder","to_domestic_address","return_to_seller"].includes(input.action)) {
+    guard(!(await db.query("select 1 from reference_samples where item_id=$1 and state='active' and expires_at>now()",[itemId])).rowCount,
+      "REFERENCE_RELEASE_REQUIRED","Release the active reference sample authorization before shipping this item.");
+  }
   if(input.action==="return_to_seller") {
     const info=z.object({requested_from_seller:z.literal(true),customer_pays_shipping:z.literal(true),deadline:z.iso.datetime().optional()}).parse(input.return_info);
     guard(!info.deadline || new Date(info.deadline)>new Date(),"RETURN_EXPIRED","The seller's return deadline has passed.");
@@ -31,6 +61,28 @@ export async function instruct(db:DB,actor:Actor,itemId:string,input:Instruction
     returning id,item_id,state,revision`,[org,itemId,input.action,input.destination??null,input.return_info??null,input.terms_version_id,actor.id]);
   await audit(db,actor,"authorize_disposition","disposition_requests",out.id);
   return out;
+}
+export async function releaseReferenceSample(db:DB,actor:Actor,referenceId:string,input:{terms_version_id:string;reason?:string}) {
+  const org=organization(actor);
+  await lock(db,"org:"+org);
+  const r=await one(db,"select * from reference_samples where id=$1 and org_id=$2",[referenceId,org]);
+  guard(r.state==="active","REFERENCE_UNAVAILABLE","This reference sample is already released or retired.");
+  const activeLock=(await db.query("select 1 from reference_reservations where reference_id=$1 and released_at is null",[referenceId])).rowCount;
+  if(activeLock) {
+    await pool.query(`update reference_samples set authorization_snapshot=authorization_snapshot||jsonb_build_object('outbound_conflict_at',now(),'requested_action','release') where id=$1`,[referenceId]);
+    await audit(pool,actor,"reference_outbound_conflict","reference_samples",referenceId,{code:"ITEM_RESERVED",reason:"Release requested while reference sample is in use."});
+    guard(false,"ITEM_RESERVED","An inspection still needs this reference sample.");
+  }
+  await one(db,"select id from reference_samples where id=$1 and org_id=$2 for update",[referenceId,org]);
+  const terms=await currentTerms(db,["terms"]);
+  guard(terms[0]?.id===input.terms_version_id,"TERMS_CHANGED","Review the current terms.");
+  const updated=await one(db,`update reference_samples set state='released',
+    authorization_snapshot=(authorization_snapshot - 'outbound_conflict_at')||jsonb_build_object(
+      'released_at',now(),'released_by',$2::uuid,'release_terms_version_id',$3::uuid,'release_reason',$4::text
+    ) where id=$1 returning id as reference_id,item_id,state,revision,expires_at`,
+    [referenceId,actor.id,input.terms_version_id,input.reason?.trim()||null]);
+  await audit(db,actor,"release_reference","reference_samples",referenceId,{version:updated.revision,reason:input.reason?.trim()||"Customer release"});
+  return updated;
 }
 export async function planBatch(db:DB,actor:Actor,ids:string[]) {
   const org=organization(actor);

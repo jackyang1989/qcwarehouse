@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { DB } from "../db";
 import { audit, code, event, guard, hash, lock, one, organization, revision, role, uuid, type Actor } from "./common";
-import { readyOrder, templateSchema } from "./orders";
+import { priceSchema, readyOrder, templateSchema } from "./orders";
 import { requireSpace } from "./storage";
 
 export async function cancelOrder(db:DB,actor:Actor,id:string,rev:number) {
@@ -56,6 +56,99 @@ export async function publishTemplate(db:DB,actor:Actor,id:string) {
   await db.query("update template_versions set reviewer_id=$2,state='PUBLISHED',published_at=now() where id=$1",[id,actor.id]);
   await audit(db,actor,"publish_template","template_versions",id);
   return {id,state:"PUBLISHED"};
+}
+export async function createCapability(db:DB,actor:Actor,input:{code:string;method:string;approval?:Record<string,unknown>}) {
+  role(actor,"template_admin","super_admin");
+  await lock(db,"capability:"+input.code);
+  const cap=await one<{id:string;code:string;method:string}>(db,`insert into capabilities(id,code,method,approval,approved_by)
+    values($1,$2,$3,$4,null) returning id,code,method`,
+    [uuid(),input.code,input.method,{...(input.approval??{}),author_id:actor.id,submitted_at:new Date().toISOString()}]);
+  await audit(db,actor,"create_capability","capabilities",cap.id,{code:cap.code});
+  return {...cap,state:"pending_approval"};
+}
+export async function approveCapability(db:DB,actor:Actor,id:string) {
+  role(actor,"reviewer","super_admin");
+  const cap=await one(db,"select * from capabilities where id=$1 for update",[id]);
+  guard(!cap.revoked_at,"CAPABILITY_UNAVAILABLE","Revoked capabilities cannot be approved.");
+  guard(cap.approval?.author_id!==actor.id,"SELF_REVIEW_FORBIDDEN","Independent capability approval is required.");
+  await db.query("update capabilities set approved_by=$2 where id=$1",[id,actor.id]);
+  await audit(db,actor,"approve_capability","capabilities",id,{code:cap.code});
+  return {id,code:cap.code,state:"approved"};
+}
+export async function revokeCapability(db:DB,actor:Actor,id:string,reason:string) {
+  role(actor,"super_admin");
+  const cap=await one(db,"select * from capabilities where id=$1 for update",[id]);
+  await db.query(`update capabilities set revoked_at=now(),
+    approval=approval||jsonb_build_object('revoked_by',$2::uuid,'revoked_reason',$3::text) where id=$1`,[id,actor.id,reason.trim()]);
+  await audit(db,actor,"revoke_capability","capabilities",id,{code:cap.code,reason:reason.trim()});
+  return {id,code:cap.code,state:"revoked"};
+}
+export async function createCategory(db:DB,actor:Actor,input:{slug:string;labels:{en:string;"zh-CN":string};parent_id?:string}) {
+  role(actor,"template_admin","super_admin");
+  await lock(db,"category:"+input.slug);
+  const cat=await one(db,`insert into categories(id,slug,parent_id,labels,status,admission_snapshot)
+    values($1,$2,$3,$4,'PLANNED',null) returning id,slug,labels,status,revision`,
+    [uuid(),input.slug,input.parent_id??null,input.labels]);
+  await audit(db,actor,"create_category","categories",cat.id,{code:cat.slug});
+  return cat;
+}
+export async function updateCategoryStatus(db:DB,actor:Actor,id:string,input:{
+  status:"PLANNED"|"ACTIVE"|"PAUSED"|"RESTRICTED"|"RETIRED";
+  admission_snapshot?:Record<string,unknown>;
+}) {
+  role(actor,"super_admin");
+  const cat=await one(db,"select * from categories where id=$1 for update",[id]);
+  const nextAdmission=input.admission_snapshot?{...(cat.admission_snapshot??{}),...input.admission_snapshot}:cat.admission_snapshot;
+  if(input.status==="ACTIVE") {
+    const missing:string[]=[];
+    if(typeof nextAdmission?.sop_ref!=="string" || !nextAdmission.sop_ref.trim()) missing.push("sop_ref");
+    if(nextAdmission?.training_completed!==true) missing.push("training_completed");
+    if(nextAdmission?.equipment_verified!==true) missing.push("equipment_verified");
+    if(typeof nextAdmission?.pilot_evidence!=="string" || !nextAdmission.pilot_evidence.trim()) missing.push("pilot_evidence");
+    guard(missing.length===0,"CATEGORY_ADMISSION_INCOMPLETE",
+      `Category admission requires SOP, training, equipment verification, and pilot evidence (missing: ${missing.join(", ")}).`,422);
+    const publishedTpl=(await db.query(`
+      select t.id from template_versions t where t.category_id=$1 and t.state='PUBLISHED'
+        and exists(select 1 from template_capabilities tc where tc.template_version_id=t.id)
+        and not exists(select 1 from template_capabilities tc join capabilities cap on cap.id=tc.capability_id
+          where tc.template_version_id=t.id and (cap.revoked_at is not null or cap.approved_by is null))
+      limit 1`,[id])).rowCount;
+    guard(publishedTpl,"CATEGORY_ADMISSION_INCOMPLETE","Category activation requires at least one published template with approved capabilities.",422);
+  }
+  const updated=await one(db,`update categories set status=$2,admission_snapshot=$3,revision=revision+1
+    where id=$1 returning id,slug,labels,status,revision,admission_snapshot`,[id,input.status,nextAdmission]);
+  await audit(db,actor,"update_category_status","categories",id,{code:cat.slug,active:input.status==="ACTIVE"});
+  return updated;
+}
+export async function publishSkuPrice(db:DB,actor:Actor,skuCode:string,input:{rules:z.infer<typeof priceSchema>}) {
+  role(actor,"super_admin");
+  const rules=priceSchema.parse(input.rules);
+  const offer=await one<{id:string;sku_code:string}>(db,"select id,sku_code from service_offers where sku_code=$1 for update",[skuCode]);
+  const next=await one<{n:number}>(db,"select coalesce(max(version),0)::int+1 n from sku_prices where offer_id=$1",[offer.id]);
+  await db.query("update sku_prices set effective_to=now() where offer_id=$1 and (effective_to is null or effective_to>now())",[offer.id]);
+  const price=await one<{id:string;version:number}>(db,`insert into sku_prices(id,offer_id,version,currency,rules,effective_from)
+    values($1,$2,$3,'USD',$4,now()) returning id,version`,[uuid(),offer.id,next.n,rules]);
+  await audit(db,actor,"publish_sku_price","service_offers",offer.id,{code:offer.sku_code,version:price.version});
+  return {id:price.id,offer_id:offer.id,sku_code:offer.sku_code,version:price.version,rules};
+}
+export async function upsertOffer(db:DB,actor:Actor,input:{
+  sku_code:string;category_id:string;service_type_id:string;template_version_id:string;
+  title:{en:string;"zh-CN":string};enabled?:boolean;rules:z.infer<typeof priceSchema>;
+}) {
+  role(actor,"super_admin");
+  const tpl=await one(db,"select * from template_versions where id=$1 and category_id=$2 and service_type_id=$3",
+    [input.template_version_id,input.category_id,input.service_type_id]);
+  guard(tpl.state==="PUBLISHED","TEMPLATE_NOT_PUBLISHED","Only published templates can be bound to a purchasable offer.");
+  const offer=await one<{id:string;sku_code:string;enabled:boolean}>(db,`
+    insert into service_offers(id,sku_code,service_type_id,title,enabled)
+    values($1,$2,$3,$4,$5)
+    on conflict(sku_code) do update set title=excluded.title,enabled=excluded.enabled
+    returning id,sku_code,enabled`,[uuid(),input.sku_code,input.service_type_id,input.title,input.enabled??true]);
+  await db.query(`insert into offer_templates(offer_id,category_id,service_type_id,template_version_id)
+    values($1,$2,$3,$4) on conflict do nothing`,[offer.id,input.category_id,input.service_type_id,input.template_version_id]);
+  const price=await publishSkuPrice(db,actor,offer.sku_code,{rules:input.rules});
+  await audit(db,actor,"publish_offer","service_offers",offer.id,{code:offer.sku_code,version:price.version});
+  return {...offer,price_version:price.id,version:price.version};
 }
 export const orderCaseCategory=z.enum(["receipt_mismatch","measurement_dispute","return_info_incomplete","damage_or_loss","payment_refund"]);
 export async function reportIssue(db:DB,actor:Actor,subject:string,message:string,orderId?:string,category?:z.infer<typeof orderCaseCategory>) {
@@ -155,4 +248,18 @@ export const staffSchemas={
   address:z.object({address_zh:z.string().min(3).max(500),address_en:z.string().min(3).max(500),contact_name:z.string().min(1).max(100),contact_phone:z.string().min(5).max(30)}),
   template:z.object({template_key:z.string().min(2).max(100),category_id:z.string().uuid(),service_type_id:z.string().uuid(),content:templateSchema,
     capability_ids:z.array(z.string().uuid()).min(1).max(20)}),
+  capability:z.object({code:z.string().regex(/^[a-z0-9][a-z0-9_-]{1,63}$/),method:z.string().trim().min(2).max(200),
+    approval:z.record(z.string(),z.unknown()).optional()}),
+  capabilityRevoke:z.object({reason:z.string().trim().min(2).max(300)}),
+  categoryCreate:z.object({slug:z.string().regex(/^[a-z0-9][a-z0-9_-]{1,63}$/),
+    labels:z.object({en:z.string().trim().min(1).max(100),"zh-CN":z.string().trim().min(1).max(100)}),
+    parent_id:z.string().uuid().optional()}),
+  categoryStatus:z.object({status:z.enum(["PLANNED","ACTIVE","PAUSED","RESTRICTED","RETIRED"]),
+    admission_snapshot:z.record(z.string(),z.unknown()).optional()}),
+  skuPrice:z.object({rules:priceSchema}),
+  offer:z.object({sku_code:z.string().regex(/^[a-z0-9][a-z0-9_-]{1,80}$/),category_id:z.string().uuid(),
+    service_type_id:z.string().uuid(),template_version_id:z.string().uuid(),
+    title:z.object({en:z.string().trim().min(1).max(120),"zh-CN":z.string().trim().min(1).max(120)}),
+    enabled:z.boolean().optional(),rules:priceSchema}),
+  referenceRelease:z.object({terms_version_id:z.string().uuid(),reason:z.string().trim().max(300).optional()}),
 };

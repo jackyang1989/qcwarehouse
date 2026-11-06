@@ -440,8 +440,11 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
   },[data,path]);
   if(error)return <ErrorBlock error={error}/>;
   if(!data)return <p>正在加载后台…</p>;
-  const page=path.split("/")[2]??"overview";
+  const rawPage=path.split("/")[2]??"overview";
+  const page=["catalog","categories","templates"].includes(rawPage)?"settings":rawPage;
   const superAdmin=actor.roles.includes("super_admin");
+  const canReviewTemplate=actor.roles.some((r:string)=>["reviewer","super_admin"].includes(r));
+  const canAuthorTemplate=actor.roles.some((r:string)=>["template_admin","super_admin"].includes(r));
   const links=staffTabs("admin",actor.roles);
   const heading={
     overview:["运营概览","查看当前工作范围的订单、资金、目录和运输入口。"],
@@ -556,10 +559,47 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
           <Field name="contact_name" label="仓库收件人"/><Field name="contact_phone" label="仓库电话"/>
         </Form>
       </Panel>}
-      <Panel title="类目及模板版本">
-        <Table headers={["模板","版本","状态",""]} rows={data.templates.map((t:Row)=>[t.template_key,t.version,t.state,
-          t.state==="IN_REVIEW"&&superAdmin?<Action run={async()=>{await request("/staff/admin/templates/"+t.id+"/publish","POST",{});reload();}}>独立审核发布</Action>:null])}/>
-        {!!data.categories.length&&<Form label="提交模板审核" run={async f=>{
+      <Panel title="品类准入与开关（PAGE-M09）">
+        <Table headers={["标识","中文名称","英文名称","状态","准入材料","操作"]} rows={data.categories.map((c:Row)=>[
+          <span className="code">{c.slug}</span>,c.labels["zh-CN"],c.labels.en,<Tag>{c.status}</Tag>,
+          c.admission_snapshot?`SOP: ${c.admission_snapshot.sop_ref??(c.admission_snapshot.demo?"演示夹具":"待补")}`:"未提交准入",
+          superAdmin&&c.status!=="ACTIVE"?<Form inline label="激活类目" run={async f=>{
+            await request("/staff/admin/categories/"+c.id+"/status","POST",{
+              status:"ACTIVE",
+              admission_snapshot:{sop_ref:text(f,"sop_ref"),pilot_evidence:text(f,"pilot_evidence"),training_completed:true,equipment_verified:true},
+            });reload();
+          }}><Field name="sop_ref" label="SOP 编号"/><Field name="pilot_evidence" label="试运行记录"/></Form>:
+          superAdmin&&c.status==="ACTIVE"?<Action run={async()=>{
+            await request("/staff/admin/categories/"+c.id+"/status","POST",{status:"PAUSED"});reload();
+          }}>暂停可售</Action>:null,
+        ])} empty="暂无类目记录。"/>
+        {canAuthorTemplate&&<Form inline label="新建规划类目" run={async f=>{
+          await request("/staff/admin/categories","POST",{slug:text(f,"slug"),labels:{en:text(f,"en"),"zh-CN":text(f,"zh")}});reload();
+        }}><Field name="slug" label="类目编码"/><Field name="zh" label="中文名称"/><Field name="en" label="英文名称"/></Form>}
+      </Panel>
+      <Panel title="检验能力准入与独立审批（FEAT-M11）">
+        <Table headers={["能力编码","检验方法","状态","操作"]} rows={(data.allCapabilities??data.capabilities).map((cap:Row)=>[
+          <span className="code">{cap.code}</span>,cap.method,
+          cap.revoked_at?"已撤销":cap.approved_by?"已批准":"待独立审批",
+          !cap.revoked_at&&!cap.approved_by&&canReviewTemplate&&cap.approval?.author_id!==actor.id?
+            <Action run={async()=>{await request("/staff/admin/capabilities/"+cap.id+"/approve","POST",{});reload();}}>独立批准能力</Action>:
+          !cap.revoked_at&&cap.approved_by&&superAdmin?
+            <Action run={async()=>{await request("/staff/admin/capabilities/"+cap.id+"/revoke","POST",{reason:"后台调整能力准入"});reload();}}>撤销能力</Action>:null,
+        ])} empty="暂无检验能力记录。"/>
+        {canAuthorTemplate&&<Form inline label="提交检验能力" run={async f=>{
+          await request("/staff/admin/capabilities","POST",{code:text(f,"code"),method:text(f,"method")});reload();
+        }}><Field name="code" label="能力编码"/><Field name="method" label="标准方法与工具说明"/></Form>}
+      </Panel>
+      <Panel title="受控模板版本与独立审核发布（PAGE-M18）">
+        <Table headers={["模板键","版本","状态","关联能力","检查项预览","操作"]} rows={data.templates.map((t:Row)=>[
+          <span className="code">{t.template_key}</span>,t.version,<Tag>{t.state}</Tag>,
+          (t.capability_codes??[]).join(", ")||"—",
+          t.content?.checks?`${t.content.checks.length} 项（${t.content.checks.map((c:Row)=>c.zh||c.key).join("、")}）`:"—",
+          t.state==="IN_REVIEW"&&canReviewTemplate&&t.author_id!==actor.id?
+            <Action run={async()=>{await request("/staff/admin/templates/"+t.id+"/publish","POST",{});reload();}}>独立审核发布</Action>:
+          t.state==="IN_REVIEW"&&t.author_id===actor.id?<small>等待非作者独立复核</small>:null,
+        ])} empty="暂无模板版本。"/>
+        {!!data.categories.length&&canAuthorTemplate&&<Form label="提交模板审核" run={async f=>{
           const content=JSON.parse(text(f,"content"));
           await request("/staff/admin/templates","POST",{template_key:text(f,"key"),category_id:text(f,"category"),service_type_id:text(f,"service"),
             capability_ids:[text(f,"capability")],content});reload();
@@ -568,6 +608,27 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
         <Select name="capability" label="获批能力" choices={options(data.capabilities)}/>
         <label>模板 JSON<textarea name="content" required placeholder={'{"checks":[{"key":"width","label":"Width","zh":"宽度","type":"number","unit":"cm","method":"Ruler","required":true,"evidence":true}]}'}/></label></Form>}
       </Panel>
+      {superAdmin&&<Panel title="可售套餐与版本化价格（PAGE-M09）">
+        <Table headers={["SKU","名称","价格版本","计价规则","状态"]} rows={(data.offers??[]).map((o:Row)=>[
+          <span className="code">{o.sku_code}</span>,o.title?.["zh-CN"]??o.title?.en??o.sku_code,
+          o.price_version?`v${o.price_version}`:"—",
+          o.rules?`${o.rules.minimum}–${o.rules.maximum} 件 · ${usd(o.rules.package_cents??o.rules.unit_cents)} · ${o.rules.business_days} 工作日`:"—",
+          o.enabled?"可售":"已停用",
+        ])} empty="暂无可售套餐。"/>
+        {!!(data.offers??[]).length&&<Form inline label="发布新价格版本" run={async f=>{
+          const sku=text(f,"sku"),offer=(data.offers??[]).find((o:Row)=>o.sku_code===sku);
+          const cents=Math.round(Number(text(f,"price"))*100),days=Number(text(f,"days"));
+          const isPackage=offer?.rules?.package_cents!=null;
+          await request("/staff/admin/skus/"+sku+"/prices","POST",{rules:{
+            minimum:offer?.rules?.minimum??1,maximum:offer?.rules?.maximum??100,
+            ...(isPackage?{package_cents:cents}:{unit_cents:cents}),business_days:days,
+          }});reload();
+        }}>
+          <Select name="sku" label="套餐 SKU" choices={(data.offers??[]).map((o:Row)=>({id:o.sku_code,label:o.sku_code}))}/>
+          <Field name="price" label="新价格（USD）" type="number" min={.01} step=".01"/>
+          <Field name="days" label="承诺工作日" type="number" min={1} max={180} value={3}/>
+        </Form>}
+      </Panel>}
       {superAdmin&&<Panel title="作业异常"><Table headers={["作业","尝试","错误","下次"]} rows={data.jobErrors.map((j:Row)=>[j.type,j.attempts,j.last_error,stamp(j.next_attempt_at)])}/></Panel>}
     </>}
   </>;

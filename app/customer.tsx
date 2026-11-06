@@ -148,7 +148,7 @@ export function NewOrder() {
           {eligibleOffers.map(o=><option key={o.offer_id} value={o.offer_id}>{o.title.en}</option>)}</select></label>
         {offer&&<Field key={offer.offer_id} label="Actual number of items" name="quantity" type="number" min={offer.rules.minimum} max={offer.service==="inspection"?300:offer.rules.maximum} value={offer.rules.minimum}/>}
         <Field label="Product name or style" name="item_name"/>
-        {offer?.service==="reference_match"&&<Select name="reference_id" label="Active reference sample" choices={(refs.data?.items??[]).filter((r:Row)=>r.state==="active").map((r:Row)=>({id:r.reference_id,label:r.item_id+" · "+stamp(r.expires_at)}))}/>}
+        {offer?.service==="reference_match"&&<Select name="reference_id" label="Active reference sample" choices={(refs.data?.items??[]).filter((r:Row)=>r.state==="active"&&new Date(r.expires_at)>new Date()).map((r:Row)=>({id:r.reference_id,label:(r.code??r.item_id)+" · "+stamp(r.expires_at)}))}/>}
       </Form>
     </Panel>
     <Panel title="Inspection summary">
@@ -465,14 +465,42 @@ export function CustomerDesk({path}:{path:string}) {
         <Link href={"/shipments/"+s.id}>{s.tracking_norm}</Link>,label(s.action),stamp(s.shipped_at)
       ])}/>
     </Panel></>}
-    {isItems&&<><div className="page-head"><p className="eyebrow">Inventory &amp; handling</p><h1>Warehouse items</h1><p className="muted">Review what the warehouse is holding and submit item handling instructions.</p></div><Panel title="Your items">
-      <Table headers={["Item","Custody","Storage through","Instructions"]} rows={data.items.map((w:Row)=>[
-        w.code,label(w.custody_state),stamp(w.storage_until),w.instructions.map((i:string)=><label key={i} className="small"><input type="checkbox" checked={batchIds.includes(i)} onChange={e=>setBatchIds(xs=>e.target.checked?[...xs,i]:xs.filter(x=>x!==i))}/> Select for shipping</label>)
+    {isItems&&<><div className="page-head"><p className="eyebrow">Inventory &amp; handling</p><h1>Warehouse items</h1><p className="muted">Review uncommissioned items, commissioned items and active reference samples, or submit handling instructions.</p></div>
+    <div className="metric-strip" aria-label="Items summary">
+      {[
+        ["Warehouse items",data.items.length],
+        ["Uncommissioned",data.items.filter((w:Row)=>!w.order_line_id).length],
+        ["Commissioned",data.items.filter((w:Row)=>!!w.order_line_id).length],
+        ["Active reference samples",(data.references??[]).filter((r:Row)=>r.state==="active"&&!r.expired).length],
+      ].map(([name,value])=><div className="metric" key={name}><span>{name}</span><strong>{value}</strong></div>)}
+    </div>
+    <Panel title="Your items">
+      <Table headers={["Item","Scope","Custody","Storage through","Reference status","Instructions"]} rows={data.items.map((w:Row)=>[
+        <span className="code">{w.code}</span>,
+        w.order_no?<Link className="code" href={"/orders/"+w.order_no}>{w.order_no}</Link>:"Uncommissioned",
+        label(w.custody_state),stamp(w.storage_until),
+        w.reference_sample?`${w.reference_sample.state==="active"?(w.reference_sample.expired?"Expired":"Active"):"Released"}${w.reference_sample.in_use?" · In comparison":""}`:"—",
+        w.instructions.map((i:string)=><label key={i} className="small"><input type="checkbox" checked={batchIds.includes(i)} onChange={e=>setBatchIds(xs=>e.target.checked?[...xs,i]:xs.filter(x=>x!==i))}/> Select for shipping</label>)
       ])}/>
       {!data.items.length&&<Empty>Items will appear after physical warehouse intake and ownership verification.</Empty>}
       {!!batchIds.length&&<Action primary run={async()=>{const b=await request("/dispatch-batches","POST",{disposition_ids:batchIds});await request("/dispatch-batches/"+b.batch_id+"/confirm","POST",{revision:b.revision});setBatchIds([]);reload();}}>Confirm selected items for quoting</Action>}
       {data.batches.map((b:Row)=><div key={b.id} className="notice"><Action run={async()=>{await request("/dispatch-batches/"+b.id+"/confirm","POST",{revision:b.revision});reload();}}>Confirm draft batch</Action></div>)}
-    </Panel><Panel title="Request handling for an item">
+    </Panel>
+    <Panel title="Reference samples">
+      <Table headers={["Item","Revision","Status","Valid through",""]} rows={(data.references??[]).map((r:Row)=>[
+        <span className="code">{r.code??r.item_id}</span>,`v${r.revision??1}`,
+        <Tag>{r.in_use?"Locked in comparison":r.state==="active"&&r.expired?"Expired":label(r.state)}</Tag>,
+        stamp(r.expires_at),
+        r.state==="active"&&!r.in_use?<Action run={async()=>{
+          const t=await request("/public/terms");
+          const termsId=t.terms?.find((x:Row)=>x.kind==="terms")?.id;
+          if(!termsId) throw new Error("Service terms are unavailable.");
+          await request("/me/reference-samples/"+r.reference_id+"/release","POST",{terms_version_id:termsId,reason:"Customer released reference sample"});
+          reload();
+        }}>Release reference</Action>:r.in_use?<small>In active comparison</small>:null,
+      ])} empty="No reference samples reserved yet. Use the instruction form below to reserve a stored item as a reference sample."/>
+    </Panel>
+    <Panel title="Request handling for an item">
       <ItemInstructionForm items={data.items.filter((w:Row)=>["stored","received"].includes(w.custody_state))} onSave={reload}/>
     </Panel></>}
     {isBills&&<><div className="page-head"><p className="eyebrow">Account services</p><h1>Billing</h1><p className="muted">Review shipping quotes, charges and refunds for your inspections.</p></div><Panel title="Quotes awaiting your approval">
@@ -523,6 +551,7 @@ const actionTitles:Record<string,string>={
   retain:"Review storage extension",needs_carrier:"Confirm parcel carrier",needs_verification:"Verify parcel tracking",waiting_customer:"Review support case",
   dispatch:"Review shipping payment",storage:"Review storage payment",
   bounced:"We couldn't deliver email to this address",complained:"We couldn't deliver email to this address",
+  reference_expired:"Update expired reference sample",reference_conflict:"Resolve reference sample in use before shipping",
 };
 export function CustomerActions() {
   const {data,error,reload}=useLoad("/actions");
@@ -536,6 +565,7 @@ export function CustomerActions() {
       const href=row.kind==="order"?"/orders/"+row.reference+(row.state==="awaiting_payment"?"/payment":row.state==="awaiting_samples"?"/parcels":""):row.kind==="parcel"?"/parcels/"+row.id:
         row.kind==="quote"||row.kind==="charge"?"/account/billing#"+row.kind+"-"+row.id:
         row.kind==="scope"?"/orders/"+row.reference+"#scope-"+row.id:
+        row.kind==="reference"?"/items":
         row.kind==="email"?"/account":"/support/cases/"+row.id;
       return [row.kind==="scope"?"Review inspection scope":actionTitles[row.state],row.reference?<span className="code">{row.reference}</span>:"—",stamp(row.due_at),<Link href={href}>Open</Link>];
     })} empty="You’re all caught up. New actions will appear here when an order, parcel, quote or case needs your input."/></Panel>}
@@ -571,6 +601,7 @@ function ItemInstructionForm({items,orderId,storage=false,onSave}:{
   const [action,setAction]=useState(storage?"retain":"return_to_seller");
   const [saved,setSaved]=useState<string>();
   const currentAction=storage?"retain":action;
+  const needsDestination=!["retain","reserve_reference"].includes(currentAction);
   const termsId=terms.data?.terms.find((t:Row)=>t.kind==="terms")?.id;
   if(!items.length)return <Empty>No items are available for a new instruction.</Empty>;
   if(terms.error)return <ErrorBlock error={terms.error}/>;
@@ -580,8 +611,8 @@ function ItemInstructionForm({items,orderId,storage=false,onSave}:{
       const itemId=text(f,"item");
       const item=items.find(row=>row.item_id===itemId);
       if(!item||!checked(f,"agree"))throw new Error("Confirm the selected item and instruction.");
-      const destination=currentAction==="retain"?undefined:{recipient:text(f,"recipient"),phone:text(f,"phone"),address:text(f,"address"),
-        ...(currentAction==="to_forwarder"?{member_code:text(f,"member_code")}:{})};
+      const destination=needsDestination?{recipient:text(f,"recipient"),phone:text(f,"phone"),address:text(f,"address"),
+        ...(currentAction==="to_forwarder"?{member_code:text(f,"member_code")}:{})}:undefined;
       const deadline=text(f,"deadline");
       const result=await request(orderId?"/orders/"+orderId+"/dispositions":"/me/items/"+itemId+"/dispositions","POST",{
         ...(orderId?{item_id:itemId}:{}),action:currentAction,terms_version_id:termsId,...(destination?{destination}:{}),
@@ -593,8 +624,9 @@ function ItemInstructionForm({items,orderId,storage=false,onSave}:{
       <Select name="item" label="Item" choices={items.map(item=>({id:item.item_id,label:item.code}))}/>
       {!storage&&<label>Requested action<select value={action} onChange={e=>setAction(e.target.value)}>
         <option value="return_to_seller">Return to seller</option><option value="to_forwarder">Send to freight forwarder</option>
-        <option value="to_domestic_address">Send to a domestic address</option><option value="retain">Extend storage</option></select></label>}
-      {currentAction!=="retain"&&<><Field name="recipient" label="Recipient"/><Field name="phone" label="Destination phone"/>
+        <option value="to_domestic_address">Send to a domestic address</option><option value="retain">Extend storage</option>
+        <option value="reserve_reference">Reserve as reference sample (90 days)</option></select></label>}
+      {needsDestination&&<><Field name="recipient" label="Recipient"/><Field name="phone" label="Destination phone"/>
         <label>{currentAction==="return_to_seller"?"Return address supplied by your seller":"Destination address"}<textarea name="address" required/></label></>}
       {currentAction==="to_forwarder"&&<Field name="member_code" label="Forwarder member code"/>}
       {currentAction==="return_to_seller"&&<Field name="deadline" label="Seller’s return deadline (your local time)" type="datetime-local" required={false}/>}

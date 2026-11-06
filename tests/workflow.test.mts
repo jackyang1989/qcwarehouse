@@ -1957,4 +1957,227 @@ test("catalog and order creation enforce joint category, capability, template, a
   await c.fetch("/orders",{lines:[{category_id:bags.category_id,offer_id:bags.offer_id,quantity:1}]},"POST",409);
 });
 
+test("controlled template admin, capability approval, category admission guard, and offer pricing versions enforce independent review and audit",async()=>{
+  const templateAdmin=await staffLogin("inspector");
+  const reviewer=await staffLogin("reviewer");
+  const admin=await staffLogin("admin");
+  const receiver=await staffLogin("receiving");
+
+  const capCode="cap-"+randomUUID().slice(0,8);
+  await receiver.fetch("/staff/admin/capabilities",{code:capCode,method:"Calibrated tape measure"},"POST",403);
+  const createdCap=await admin.fetch("/staff/admin/capabilities",{code:capCode,method:"Calibrated tape measure"},"POST",200);
+  assert.equal(createdCap.state,"pending_approval");
+
+  const selfApprove=await admin.fetch(`/staff/admin/capabilities/${createdCap.id}/approve`,{},"POST",409);
+  assert.equal(selfApprove.error.code,"SELF_REVIEW_FORBIDDEN");
+  assert((await pool.query("select 1 from audit_events where action='rejected_self_review_forbidden' and after->>'code'='SELF_REVIEW_FORBIDDEN'")).rowCount!>=1);
+
+  const approvedCap=await reviewer.fetch(`/staff/admin/capabilities/${createdCap.id}/approve`,{},"POST",200);
+  assert.equal(approvedCap.state,"approved");
+
+  const catSlug="cat-"+randomUUID().slice(0,8);
+  const createdCat=await templateAdmin.fetch("/staff/admin/categories",{
+    slug:catSlug,labels:{en:"Footwear","zh-CN":"鞋靴"},
+  },"POST",200);
+  assert.equal(createdCat.status,"PLANNED");
+
+  const missingSop=await admin.fetch(`/staff/admin/categories/${createdCat.id}/status`,{
+    status:"ACTIVE",admission_snapshot:{training_completed:true,equipment_verified:true},
+  },"POST",422);
+  assert.equal(missingSop.error.code,"CATEGORY_ADMISSION_INCOMPLETE");
+  assert((await pool.query("select 1 from audit_events where action='rejected_category_admission_incomplete' and after->>'code'='CATEGORY_ADMISSION_INCOMPLETE'")).rowCount!>=1);
+
+  const missingTpl=await admin.fetch(`/staff/admin/categories/${createdCat.id}/status`,{
+    status:"ACTIVE",
+    admission_snapshot:{sop_ref:"SOP-FW-01",training_completed:true,equipment_verified:true,pilot_evidence:"PILOT-FW-01"},
+  },"POST",422);
+  assert.equal(missingTpl.error.code,"CATEGORY_ADMISSION_INCOMPLETE");
+
+  const serviceId=(await pool.query<{id:string}>("select id from service_types where code='inspection'")).rows[0].id;
+  const tplDraft=await templateAdmin.fetch("/staff/admin/templates",{
+    template_key:catSlug+"-inspection",
+    category_id:createdCat.id,
+    service_type_id:serviceId,
+    capability_ids:[createdCap.id],
+    content:{checks:[
+      {key:"outsole",label:"Outsole condition",zh:"外底外观",type:"boolean",method:"Visual observation",required:true,evidence:true},
+      {key:"insole_len",label:"Insole length",zh:"内长",type:"number",unit:"cm",method:"Calibrated tape measure",required:true,evidence:true},
+    ]},
+  },"POST",200);
+  assert.equal(tplDraft.state,"IN_REVIEW");
+
+  const unpublishedOffer=await admin.fetch("/staff/admin/offers",{
+    sku_code:catSlug+"-inspect-1",
+    category_id:createdCat.id,
+    service_type_id:serviceId,
+    template_version_id:tplDraft.id,
+    title:{en:"Footwear inspection","zh-CN":"鞋靴逐件检查"},
+    rules:{minimum:1,maximum:50,unit_cents:3200,business_days:3,demo:true},
+  },"POST",409);
+  assert.equal(unpublishedOffer.error.code,"TEMPLATE_NOT_PUBLISHED");
+
+  const publishedTpl=await reviewer.fetch(`/staff/admin/templates/${tplDraft.id}/publish`,{},"POST",200);
+  assert.equal(publishedTpl.state,"PUBLISHED");
+  await assert.rejects(pool.query("update template_versions set content='{}' where id=$1",[tplDraft.id]),{code:"23514"});
+
+  const activatedCat=await admin.fetch(`/staff/admin/categories/${createdCat.id}/status`,{
+    status:"ACTIVE",
+    admission_snapshot:{sop_ref:"SOP-FW-01",training_completed:true,equipment_verified:true,pilot_evidence:"PILOT-FW-01",demo:true},
+  },"POST",200);
+  assert.equal(activatedCat.status,"ACTIVE");
+
+  const offer=await admin.fetch("/staff/admin/offers",{
+    sku_code:catSlug+"-inspect-1",
+    category_id:createdCat.id,
+    service_type_id:serviceId,
+    template_version_id:tplDraft.id,
+    title:{en:"Footwear inspection","zh-CN":"鞋靴逐件检查"},
+    rules:{minimum:1,maximum:50,unit_cents:3200,business_days:3,demo:true},
+  },"POST",200);
+  assert.equal(offer.version,1);
+
+  const repriced=await admin.fetch(`/staff/admin/skus/${catSlug}-inspect-1/prices`,{
+    rules:{minimum:1,maximum:50,unit_cents:3400,business_days:2,demo:true},
+  },"POST",200);
+  assert.equal(repriced.version,2);
+
+  const catalogOffers=(await admin.fetch("/catalog")).offers as {sku_code:string;rules:{unit_cents:number;business_days:number}}[];
+  const liveOffer=catalogOffers.find(o=>o.sku_code===catSlug+"-inspect-1");
+  assert(liveOffer);
+  assert.equal(liveOffer.rules.unit_cents,3400);
+  assert.equal(liveOffer.rules.business_days,2);
+});
+
+test("reference sample reservation, active comparison lock, outbound shipping conflict, release authorization, and expiry / category compatibility guards",async()=>{
+  const {c,terms}=await signCustomer();
+  const receiver=await staffLogin("receiving"),inspector=await staffLogin("inspector"),reviewer=await staffLogin("reviewer");
+  const addr=(await c.fetch("/me/receiving-address")).warehouse_address.id;
+  const loc=(await pool.query<{id:string}>("select id from storage_locations where code='S-01'")).rows[0].id;
+  const termsId=terms.find((t:{kind:string})=>t.kind==="terms")!.id;
+  const offers=(await c.fetch("/catalog")).offers as {offer_id:string;category_id:string;sku_code:string;service:string;content:{checks:{key:string;type:string;unit?:string;method:string;required:boolean}[]}}[];
+  const apparelInspect=offers.find(o=>o.sku_code==="apparel-inspection-1")!;
+  const apparelCompare=offers.find(o=>o.sku_code==="apparel-compare-2")!;
+  const apparelRefMatch=offers.find(o=>o.sku_code==="apparel-reference_match-1")!;
+  const bagsOffer=offers.find(o=>o.sku_code==="bags-shadow")!;
+
+  async function receiveAndAssign(orderId:string) {
+    const tracking="ZT"+randomUUID().slice(0,8).toUpperCase();
+    const advice=await c.fetch("/me/parcels",{address_id:addr,carrier_code:"zto",tracking_no:tracking},"POST",201);
+    const pkg=await receiver.fetch("/staff/intake/check-in",{tracking_no:tracking,advice_id:advice.id,carrier_code:"zto",outer_media_ids:[await receiver.photo("intake_outer")]},"POST",201);
+    const items=await receiver.fetch("/staff/packages/"+pkg.id+"/items",{revision:pkg.revision,items:[{code:"S-"+randomUUID(),location_id:loc}]},"POST",201);
+    const itemId=items.item_ids[0];
+    const order=await c.fetch("/orders/"+orderId);
+    const expected=order.items[0];
+    await receiver.fetch("/staff/items/"+itemId+"/assign",{revision:1,order_line_id:expected.order_line_id,expected_item_id:expected.id,evidence_ids:[await receiver.photo("label_photo")]});
+    return itemId;
+  }
+
+  async function finishTaskAndApprove(orderId:string,taskId:string,taskRevision:number) {
+    const started=await inspector.fetch("/staff/inspection-tasks/"+taskId+"/start",{revision:taskRevision});
+    const view=await inspector.fetch("/staff/inspection-tasks/"+taskId);
+    await submitRequiredChecks(inspector,taskId,started.revision,view);
+    const order=await c.fetch("/orders/"+orderId);
+    const report=await inspector.fetch(`/staff/orders/${orderId}/report/submit`,{revision:order.revision,task_ids:[taskId]});
+    await reviewer.fetch(`/staff/reports/${report.id}/approve`,{revision:1,checklist:["reviewed_en","evidence_checked"]},"POST",202);
+    for(let i=0;i<20;i++){if(!await workOnce())break;}
+  }
+
+  const incompatibleCompare=await c.fetch("/orders",{
+    lines:[{
+      category_id:apparelCompare.category_id,
+      offer_id:apparelCompare.offer_id,
+      quantity:2,
+      items:[{category_id:apparelCompare.category_id},{category_id:bagsOffer.category_id}],
+    }],
+  },"POST",422);
+  assert.equal(incompatibleCompare.error.code,"INCOMPATIBLE_SAMPLES");
+  assert((await pool.query("select 1 from audit_events where action='rejected_incompatible_samples' and after->>'code'='INCOMPATIBLE_SAMPLES'")).rowCount!>=1);
+
+  const {draft:seedOrder}=await createAndPay(c,[{category_id:apparelInspect.category_id,offer_id:apparelInspect.offer_id,quantity:1}],terms);
+  const seedItemId=await receiveAndAssign(seedOrder.id);
+  const {rows:[seedTask]}=await pool.query("select t.id,t.revision from inspection_tasks t join order_lines l on l.id=t.order_line_id where l.order_id=$1",[seedOrder.id]);
+  await finishTaskAndApprove(seedOrder.id,seedTask.id,seedTask.revision);
+
+  const reservedInstruction=await c.fetch(`/me/items/${seedItemId}/dispositions`,{
+    action:"reserve_reference",terms_version_id:termsId,
+  },"POST",201);
+  assert.equal(reservedInstruction.state,"completed");
+
+  const dupReserve=await c.fetch(`/me/items/${seedItemId}/dispositions`,{
+    action:"reserve_reference",terms_version_id:termsId,
+  },"POST",409);
+  assert.equal(dupReserve.error.code,"REFERENCE_ALREADY_ACTIVE");
+
+  const refList=(await c.fetch("/me/reference-samples")).items as {reference_id:string;item_id:string;state:string;expires_at:string}[];
+  assert.equal(refList.length,1);
+  assert.equal(refList[0].item_id,seedItemId);
+  assert.equal(refList[0].state,"active");
+  const refId=refList[0].reference_id;
+
+  const {draft:matchOrder}=await createAndPay(c,[{
+    category_id:apparelRefMatch.category_id,
+    offer_id:apparelRefMatch.offer_id,
+    quantity:1,
+    options:{reference_id:refId},
+  }],terms);
+  await receiveAndAssign(matchOrder.id);
+  assert.equal((await c.fetch("/orders/"+matchOrder.id)).state,"queued");
+
+  const deskDuringLock=await c.fetch("/me/desk");
+  const lockedRef=deskDuringLock.references.find((r:{reference_id:string})=>r.reference_id===refId);
+  assert.equal(lockedRef.in_use,true);
+
+  const shipWhileInUse=await c.fetch(`/me/items/${seedItemId}/dispositions`,{
+    action:"to_domestic_address",
+    terms_version_id:termsId,
+    destination:{recipient:"Alice",phone:"13800138000",address:"No. 1 Test Road"},
+  },"POST",409);
+  assert.equal(shipWhileInUse.error.code,"ITEM_RESERVED");
+  assert((await pool.query("select 1 from audit_events where action='reference_outbound_conflict' and entity_id=$1",[refId])).rowCount!>=1);
+  assert((await c.fetch("/actions")).rows.some((r:{kind:string;state:string;id:string})=>r.kind==="reference"&&r.state==="reference_conflict"&&r.id===refId));
+
+  const releaseWhileInUse=await c.fetch(`/me/reference-samples/${refId}/release`,{
+    terms_version_id:termsId,reason:"Attempt release during active match",
+  },"POST",409);
+  assert.equal(releaseWhileInUse.error.code,"ITEM_RESERVED");
+
+  const {rows:[matchTask]}=await pool.query("select t.id,t.revision from inspection_tasks t join order_lines l on l.id=t.order_line_id where l.order_id=$1",[matchOrder.id]);
+  await finishTaskAndApprove(matchOrder.id,matchTask.id,matchTask.revision);
+
+  assert.equal((await c.fetch("/orders/"+matchOrder.id)).state,"report_ready");
+  assert(!(await c.fetch("/actions")).rows.some((r:{kind:string;id:string})=>r.kind==="reference"&&r.id===refId));
+  assert.equal((await c.fetch("/me/desk")).references.find((r:{reference_id:string})=>r.reference_id===refId).in_use,false);
+
+  const shipWithoutRelease=await c.fetch(`/me/items/${seedItemId}/dispositions`,{
+    action:"to_domestic_address",
+    terms_version_id:termsId,
+    destination:{recipient:"Alice",phone:"13800138000",address:"No. 1 Test Road"},
+  },"POST",409);
+  assert.equal(shipWithoutRelease.error.code,"REFERENCE_RELEASE_REQUIRED");
+
+  const released=await c.fetch(`/me/reference-samples/${refId}/release`,{
+    terms_version_id:termsId,reason:"Release reference sample after comparison report",
+  },"POST",200);
+  assert.equal(released.state,"released");
+  assert.equal((await c.fetch(`/orders/${matchOrder.id}/report`)).version,1);
+
+  await c.fetch(`/me/items/${seedItemId}/dispositions`,{
+    action:"reserve_reference",terms_version_id:termsId,
+  },"POST",201);
+  const refV2=(await c.fetch("/me/desk")).references.find((r:{revision:number})=>r.revision===2);
+  assert(refV2);
+  await pool.query("update reference_samples set expires_at=now()-interval '2 minutes' where id=$1",[refV2.reference_id]);
+  assert((await c.fetch("/actions")).rows.some((r:{kind:string;state:string;id:string})=>r.kind==="reference"&&r.state==="reference_expired"&&r.id===refV2.reference_id));
+
+  const expiredMatch=await c.fetch("/orders",{
+    lines:[{
+      category_id:apparelRefMatch.category_id,
+      offer_id:apparelRefMatch.offer_id,
+      quantity:1,
+      options:{reference_id:refV2.reference_id},
+    }],
+  },"POST",409);
+  assert.equal(expiredMatch.error.code,"REFERENCE_UNAVAILABLE");
+});
+
 test("all core operations have a validated success response",assertCoreCoverage);

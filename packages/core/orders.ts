@@ -13,9 +13,31 @@ export const templateSchema=z.object({checks:z.array(checkSchema).min(1).max(60)
   t=>new Set(t.checks.map(c=>c.key)).size===t.checks.length,"Check keys must be unique.");
 export const priceSchema=z.object({
   minimum:z.number().int().positive(),maximum:z.number().int().positive(),unit_cents:z.number().int().positive().optional(),
-  package_cents:z.number().int().positive().optional(),business_days:z.number().int().positive()
+  package_cents:z.number().int().positive().optional(),business_days:z.number().int().positive(),demo:z.boolean().optional()
 }).refine(p=>p.maximum>=p.minimum && Number(!!p.unit_cents)+Number(!!p.package_cents)===1);
 export type LineInput={category_id:string; offer_id:string; quantity:number; options?:object; attributes?:object; items?:object[]};
+async function validateLineSamples(db:DB,org:string,line:{category_id:string;options?:unknown;items?:unknown[];draft_items?:unknown[]},service:string) {
+  const items=(Array.isArray(line.items)?line.items:Array.isArray(line.draft_items)?line.draft_items:[]) as {category_id?:string}[];
+  if(service==="compare") {
+    const mismatch=items.some(item=>typeof item?.category_id==="string" && item.category_id!==line.category_id);
+    const optCategories=(line.options as {item_categories?:unknown})?.item_categories;
+    const optMismatch=Array.isArray(optCategories) && optCategories.some(cat=>typeof cat==="string" && cat!==line.category_id);
+    guard(!mismatch && !optMismatch,"INCOMPATIBLE_SAMPLES","Direct comparison requires items from the same product category.",422);
+  }
+  if(service==="reference_match") {
+    const ref=z.object({reference_id:z.string().uuid()}).parse(line.options);
+    const sample=(await db.query<{id:string;state:string;not_expired:boolean;snapshot_cat:string|null;linked_cat:string|null}>(`
+      select r.id,r.state,r.expires_at>now() not_expired,
+        r.authorization_snapshot->>'category_id' snapshot_cat,
+        (select l.category_id::text from order_line_item_links a join order_lines l on l.id=a.order_line_id
+         where a.item_id=r.item_id order by a.linked_at desc limit 1) linked_cat
+      from reference_samples r where r.id=$1 and r.org_id=$2`,[ref.reference_id,org])).rows[0];
+    guard(sample,"NOT_FOUND","Record not found.",404);
+    const sampleCat=sample.linked_cat??sample.snapshot_cat;
+    guard(!sampleCat || sampleCat===line.category_id,"INCOMPATIBLE_SAMPLES","The reference sample belongs to a different product category.",422);
+    guard(sample.state==="active" && sample.not_expired,"REFERENCE_UNAVAILABLE","The selected reference sample is expired or unavailable.");
+  }
+}
 const offersSql=`
   select o.id offer_id,o.sku_code,o.title,c.id category_id,c.labels category,c.admission_snapshot,t.id template_version_id,t.content,
     st.code service,p.id price_version,p.rules
@@ -68,10 +90,7 @@ export async function saveOrder(db:DB,actor:Actor,input:{lines:LineInput[];custo
   }
   for(const line of input.lines) {
     const {offer}=await eligible(db,line,true);
-    if (offer.service==="reference_match") {
-      const ref=z.object({reference_id:z.string().uuid()}).parse(line.options);
-      await one(db,"select id from reference_samples where id=$1 and org_id=$2 and state='active' and expires_at>now()",[ref.reference_id,org]);
-    }
+    await validateLineSamples(db,org,line,offer.service);
     await db.query(`insert into order_lines(order_id,org_id,offer_id,category_id,template_version_id,quantity,options,attributes,draft_items)
       values($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
       [order.id,org,line.offer_id,line.category_id,offer.template_version_id,line.quantity,line.options??{},line.attributes??{},JSON.stringify(line.items??[])]);
@@ -90,6 +109,7 @@ async function pricedLines(db:DB,id:string,manual=false) {
   for(const line of lines) {
     const {offer,p}=await eligible(db,line,manual);
     guard(offer.template_version_id===line.template_version_id,"TEMPLATE_CHANGED","Review the latest inspection template.");
+    await validateLineSamples(db,line.org_id,line,offer.service);
     snapshot.push({order_line_id:line.id,category_id:line.category_id,offer_id:line.offer_id,template_version_id:line.template_version_id,
       quantity:line.quantity,price_version:offer.price_version,amount_cents:p.package_cents??p.unit_cents!*line.quantity,
       business_days:p.business_days,options:line.options});

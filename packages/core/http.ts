@@ -6,14 +6,14 @@ import { parse } from "yaml";
 import { z } from "zod";
 import { transaction, pool, type DB } from "../db";
 import { actorFrom, appOrigin, completeRegistration, cookie, csrfCookie, csrfTokenFor, currentTerms, finishProvider, getCookie, pendingProvider, publicPolicy, staffSignIn, startOtp, startProvider, verifyCsrfToken, verifyOtp, reportDownloadSignature, reportShareToken, verifyReportDownload } from "./auth";
-import { Problem, guard, hash, idempotent, isDemo, one, organization, role, uuid, type Actor } from "./common";
+import { Problem, audit, guard, hash, idempotent, isDemo, one, organization, role, uuid, type Actor } from "./common";
 import { integrationPreflight, signInMethods } from "./integrations";
 import { failedJobs, retryFailedJob } from "./worker";
 import { customerEmailDeliveryStatus, receivePostmarkWebhook, retryEmailDelivery, staffEmailDeliveries } from "./email";
 import { catalog, issueManualQuote, orderDetail, quoteOrder, requestManualQuote, saveOrder, submitOrder } from "./orders";
 import { advise, assign, checkIn, decideIntakeClaim, intakeItems, lookup, requestIntakeClaim, savePhoto, waybill } from "./intake";
 import { amendReport, amendReportInput, approveReport, editReportRevision, readReport, recordResults, reportDesk, returnReport, revisionChanges, staffReport, startTask, submitReport, submitReportRevision, submitTask, taskDetail } from "./inspection";
-import { acceptQuote, confirmBatch, handover, instruct, packShipment, planBatch, quoteBatch, receiveReturn, storageQuote } from "./dispatch";
+import { acceptQuote, confirmBatch, handover, instruct, packShipment, planBatch, quoteBatch, receiveReturn, releaseReferenceSample, storageQuote } from "./dispatch";
 import { checkout, demoPay, orderPayment, orderRefundPayments, refundApprove, refundRequest, stripeEvent, verifyStripe } from "./payments";
 import { providerCallback, tracking, trackingAdmin, verificationState, verifyTracking } from "./logistics";
 import { adminDesk, bills, customerActions, customerDesk, customerNotifications, dispatchQueueStates, items, markNotificationRead, readOrderByPublicNumber, searchStaffOrders, staffOrderDetail, staffOrderFilters, warehouseDesk, warehouseDispatchBatch, warehouseDispatchQueue, warehouseItem, warehousePackage } from "./reads";
@@ -22,7 +22,7 @@ import { customerDestination, withDestination } from "./portal-routes";
 import { orderFulfillmentRecord } from "./fulfillment-reads";
 import { canReadCasePhoto, caseDetail, createPublicInquiry, customerTicketMessage, inquiryCategories, publicInquiry, replyToCase, staffTicketEvent, staffTicketQueue, writeStaffTicket } from "./tickets";
 import { createLocations, locationBatchSchema, locationMaster, setLocationActive, storageMovementDesk } from "./storage";
-import { acceptScope, cancelOrder, moveItem, newTemplate, orderCaseCategory, publishTemplate, reportIssue, scopeProposal, scopeReview, setAddress, staffSchemas } from "./operations";
+import { acceptScope, approveCapability, cancelOrder, createCapability, createCategory, moveItem, newTemplate, orderCaseCategory, publishSkuPrice, publishTemplate, reportIssue, revokeCapability, scopeProposal, scopeReview, setAddress, staffSchemas, updateCategoryStatus, upsertOffer } from "./operations";
 import { createReportShare, listPublishedReports, listReportShares, readSharedPhoto, readSharedReport, reportSharingEnabled, revokeReportShare, shareInput, shareTokenPattern } from "./report-shares";
 import { auditFilters, readAudit } from "./audit-read";
 
@@ -439,6 +439,22 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
     return extraWrite(req,path,actor,staffSchemas.template,newTemplate);
   const publish=path.match(/^\/staff\/admin\/templates\/([a-f0-9-]{36})\/publish$/i);
   if(method==="POST" && publish) return extraWrite(req,path,actor,z.object({}),(db,a)=>publishTemplate(db,a,idSchema.parse(publish[1])));
+  if(method==="POST" && path==="/staff/admin/capabilities")
+    return extraWrite(req,path,actor,staffSchemas.capability,createCapability);
+  const capApprove=path.match(/^\/staff\/admin\/capabilities\/([a-f0-9-]{36})\/approve$/i);
+  if(method==="POST" && capApprove) return extraWrite(req,path,actor,z.object({}),(db,a)=>approveCapability(db,a,idSchema.parse(capApprove[1])));
+  const capRevoke=path.match(/^\/staff\/admin\/capabilities\/([a-f0-9-]{36})\/revoke$/i);
+  if(method==="POST" && capRevoke) return extraWrite(req,path,actor,staffSchemas.capabilityRevoke,(db,a,b)=>revokeCapability(db,a,idSchema.parse(capRevoke[1]),b.reason));
+  if(method==="POST" && path==="/staff/admin/categories")
+    return extraWrite(req,path,actor,staffSchemas.categoryCreate,createCategory);
+  const catStatus=path.match(/^\/staff\/admin\/categories\/([a-f0-9-]{36})\/status$/i);
+  if(method==="POST" && catStatus) return extraWrite(req,path,actor,staffSchemas.categoryStatus,(db,a,b)=>updateCategoryStatus(db,a,idSchema.parse(catStatus[1]),b));
+  if(method==="POST" && path==="/staff/admin/offers")
+    return extraWrite(req,path,actor,staffSchemas.offer,upsertOffer);
+  const skuPrice=path.match(/^\/staff\/admin\/skus\/([a-z0-9_-]{2,80})\/prices$/i);
+  if(method==="POST" && skuPrice) return extraWrite(req,path,actor,staffSchemas.skuPrice,(db,a,b)=>publishSkuPrice(db,a,skuPrice[1].toLowerCase(),b));
+  const refRelease=path.match(/^\/me\/reference-samples\/([a-f0-9-]{36})\/release$/i);
+  if(method==="POST" && refRelease) return extraWrite(req,path,actor,staffSchemas.referenceRelease,(db,a,b)=>releaseReferenceSample(db,a,idSchema.parse(refRelease[1]),b));
   const store=path.match(/^\/staff\/dispositions\/([a-f0-9-]{36})\/storage-quote$/i);
   if(method==="POST" && store) return extraWrite(req,path,actor,z.object({}),(db,a)=>storageQuote(db,a,idSchema.parse(store[1])));
   const cancel=path.match(/^\/orders\/([a-f0-9-]{36})\/cancel$/i);
@@ -513,8 +529,9 @@ async function dispatch(db:DB,actor:Actor,id:string,op:string,b:Record<string,an
   }
 }
 export async function handle(req:Request,path:string) {
+  let actor:Actor|null=null;
   try {
-    const actor=await actorFrom(req);
+    actor=await actorFrom(req);
     const entry=operations.find(e=>e.method===req.method && e.re.test(path));
     if(!entry) {
       const response=await extras(req,path,actor);
@@ -546,6 +563,9 @@ export async function handle(req:Request,path:string) {
     }),status);
   } catch(e) {
     if(e instanceof Problem) {
+      if(e.status===403 || ["INCOMPATIBLE_SAMPLES","SELF_REVIEW_FORBIDDEN","CATEGORY_ADMISSION_INCOMPLETE","REFERENCE_UNAVAILABLE","REFERENCE_RELEASE_REQUIRED"].includes(e.code)) {
+        await audit(pool,actor,"rejected_"+e.code.toLowerCase(),"http_request",null,{code:e.code,reason:e.message}).catch(()=>undefined);
+      }
       const response=json({error:{code:e.code,message:e.message}},e.status);
       return path.startsWith("/public/report-shares/")?privateShareResponse(response):response;
     }

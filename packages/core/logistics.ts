@@ -1,20 +1,34 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { pool, transaction, type DB } from "../db";
-import { encryptSecret, decryptSecret } from "./auth";
+import { encryptSecret, decryptSecret, requireStaffMfa } from "./auth";
 import { trackingSettings } from "./integrations";
-import { validCarrier } from "./intake";
+import { validCarrier, waybill } from "./intake";
 import { staffAccess } from "./staff-access";
-import { audit, guard, hash, isDemo, lock, one, organization, revision, role, type Actor } from "./common";
+import { Problem, audit, event, guard, hash, isDemo, lock, one, organization, revision, role, uuid, type Actor } from "./common";
 
 const md5=(s:string)=>createHash("md5").update(s).digest("hex").toUpperCase();
 const states:Record<string,string>={"0":"in_transit","1":"picked_up","2":"exception","3":"delivered","4":"returned","5":"out_for_delivery","6":"returning","7":"forwarded","8":"exception"};
 const payloadSchema=z.object({com:z.string().optional(),nu:z.string().optional(),state:z.union([z.string(),z.number()]).optional(),
-  data:z.array(z.object({context:z.string().min(1).max(1600),ftime:z.string().optional(),time:z.string().optional(),statusCode:z.string().optional()})).max(500)});
+  data:z.array(z.object({context:z.string().min(1).max(1600),ftime:z.string().optional(),time:z.string().optional(),statusCode:z.string().optional(),areaName:z.string().optional(),areaCode:z.string().optional()})).max(500)});
 function eventTime(time?:string) {
   if(!time) return undefined;
   const parsed=new Date(time.replace(" ","T")+(time.length===19?"+08:00":""));
   return Number.isFinite(parsed.valueOf())?parsed.toISOString():undefined;
+}
+function redactTrackingText(raw:string) {
+  return raw
+    .replace(/(?:取件码|提货码|取货码|pickup\s*code)[:：\s]*[A-Za-z0-9-]+/gi,"[pickup code redacted]")
+    .replace(/\+?\d[\d -]{6,}\d/g,"[phone redacted]");
+}
+async function openTrackingAlert(db:DB,trackerId:string,kind:string) {
+  const active=(await db.query("select id from tracking_alerts where tracker_id=$1 and kind=$2 and state in ('open','acknowledged') limit 1",[trackerId,kind])).rows[0];
+  if(active) return active.id as string;
+  const {n}=await one<{n:number}>(db,"select coalesce(max(episode),0)::int n from tracking_alerts where tracker_id=$1 and kind=$2",[trackerId,kind]);
+  const alert=await one<{id:string}>(db,`insert into tracking_alerts(id,tracker_id,kind,episode,state,due_at,last_notified_at)
+    values($1,$2,$3,$4,'open',now()+interval '24 hours',now()) returning id`,[uuid(),trackerId,kind,n+1]);
+  await event(db,"tracking.exception_opened",{tracker_id:trackerId,alert_id:alert.id,kind,episode:n+1});
+  return alert.id;
 }
 async function storeSnapshot(db:DB,id:string,locale:string,source:string,input:unknown) {
   const p=payloadSchema.parse(input);
@@ -23,19 +37,47 @@ async function storeSnapshot(db:DB,id:string,locale:string,source:string,input:u
   guard((!p.com || p.com===carrier.provider_code) && (!p.nu || p.nu.toUpperCase()===tracker.tracking_norm),
     "TRACKING_MISMATCH","Carrier response does not match the transport record.");
   const events=p.data.map(e=>{
-    const ts=eventTime(e.ftime??e.time);
-    // Omit explicit telephone numbers from customer-facing content.
-    const message=e.context.replace(/\+?\d[\d -]{6,}\d/g,"[redacted]");
-    return {id:hash((ts??"")+e.context).slice(0,24),text:message,source,...(ts?{occurred_at:ts}:{}),...(e.statusCode?{status_code:e.statusCode}:{})};
+    const rawTime=e.ftime??e.time;
+    const ts=eventTime(rawTime);
+    const loc=e.areaName?.trim()||e.areaCode?.trim()||undefined;
+    // Omit explicit telephone numbers and pickup codes from customer-facing content.
+    const message=redactTrackingText(e.context);
+    const fp=hash(`${rawTime??""}|${e.statusCode??""}|${loc??""}|${message}`);
+    return {
+      id:fp.slice(0,24),
+      text:message,
+      source,
+      ...(ts?{occurred_at:ts}:{}),
+      ...(loc?{location:loc}:{}),
+      ...(e.statusCode?{status_code:e.statusCode}:{}),
+      _rawTime:rawTime??null,
+      _fp:fp,
+    };
   });
-  const last=events.flatMap(e=>e.occurred_at?[e.occurred_at]:[]).sort().at(-1)??null;
+  const storedEvents=events.map(({_rawTime,_fp,...pub})=>pub);
+  const last=storedEvents.flatMap(e=>e.occurred_at?[e.occurred_at]:[]).sort().at(-1)??null;
   const state=states[String(p.state)]??"unknown";
-  await db.query(`insert into tracking_snapshots(tracker_id,source,locale,payload_hash,fetched_at,latest_event_at,provider_state,events_json,schema_version)
-    values($1,$2,$3,$4,now(),$5,$6,$7,1) on conflict do nothing`,[id,source,locale,hash(JSON.stringify(p)),last,state,JSON.stringify(events)]);
+  const payloadHash=hash(JSON.stringify(p));
+  const snap=(await db.query<{id:string}>(`insert into tracking_snapshots(tracker_id,source,locale,payload_hash,fetched_at,latest_event_at,provider_state,events_json,schema_version)
+    values($1,$2,$3,$4,now(),$5,$6,$7,1)
+    on conflict(tracker_id,source,locale,payload_hash) do update set schema_version=tracking_snapshots.schema_version
+    returning id`,[id,source,locale,payloadHash,last,state,JSON.stringify(storedEvents)])).rows[0];
+  if(locale==="zh-CN" && snap) {
+    for(const e of events) {
+      await db.query(`insert into tracking_events(tracker_id,fingerprint,source_time,occurred_at,source_timezone,status_code,location_code,text_zh,source_snapshot_id)
+        values($1,$2,$3,$4,'Asia/Shanghai',$5,$6,$7,$8) on conflict(tracker_id,fingerprint) do nothing`,
+        [id,e._fp,e._rawTime,e.occurred_at??null,e.status_code??null,e.location??null,e.text,snap.id]);
+    }
+  }
   await db.query(`update tracking_records set last_success_at=now(),sync_state=$4,
     latest_event_at=greatest(latest_event_at,$2),transport_state=case when $2::timestamptz is not null
-    and (latest_event_at is null or latest_event_at<$2 or (latest_event_at=$2 and transport_state=$3)) then $3 else transport_state end
-    where id=$1`,[id,last,state,events.length?"active":"no_record"]);
+    and (latest_event_at is null or latest_event_at<$2::timestamptz or (latest_event_at=$2::timestamptz and ($3 in ('delivered','returning','returned','exception') or transport_state=$3))) then $3 else transport_state end
+    where id=$1`,[id,last,state,storedEvents.length?"active":"no_record"]);
+  if(["exception","returning","returned"].includes(state)) {
+    await openTrackingAlert(db,id,state==="exception"?"exception":"returning");
+  } else if(["in_transit","out_for_delivery","delivered"].includes(state)) {
+    await db.query("update tracking_alerts set state='resolved' where tracker_id=$1 and kind in ('exception','stalled') and state in ('open','acknowledged')",[id]);
+  }
 }
 export async function tracking(db:DB,actor:Actor,id:string,kind:"advice"|"shipment",locale:string) {
   const org=organization(actor);
@@ -43,12 +85,43 @@ export async function tracking(db:DB,actor:Actor,id:string,kind:"advice"|"shipme
   const t=await one(db,`select t.*,coalesce(p.state,s.state) warehouse_state,c.labels from tracking_records t left join packages p on p.id=t.package_id
     left join shipments s on s.id=t.shipment_id left join carriers c on c.code=t.carrier_code where ${filter}=$1 and t.org_id=$2 and t.closed_at is null order by t.generation desc limit 1`,[id,org]);
   const lang=locale==="zh-CN"?"zh-CN":"en";
-  const snapshot=(await db.query(`select fetched_at,events_json from tracking_snapshots where tracker_id=$1 and locale=$2
+  const snapshot=(await db.query(`select fetched_at,latest_event_at,events_json from tracking_snapshots where tracker_id=$1 and locale=$2
     order by latest_event_at desc nulls last,fetched_at desc limit 1`,[t.id,lang])).rows[0];
+  let events:(Record<string,unknown>)[]=Array.isArray(snapshot?.events_json)?[...snapshot.events_json]:[];
+  let translationStatus=snapshot?"ready":"pending";
+  if(lang==="en") {
+    const zhSnap=(await db.query(`select latest_event_at from tracking_snapshots where tracker_id=$1 and locale='zh-CN'
+      order by latest_event_at desc nulls last,fetched_at desc limit 1`,[t.id])).rows[0];
+    const manual=(await db.query<{fingerprint:string;occurred_at:Date|null;location_code:string|null;status_code:string|null;body:string;text_zh:string;source_hash:string}>(
+      `select te.fingerprint,te.occurred_at,te.location_code,te.status_code,tr.body,te.text_zh,tr.source_hash
+       from tracking_events te join tracking_translations tr on tr.event_id=te.id
+       where te.tracker_id=$1 and tr.locale='en' and tr.reviewed_at is not null order by te.occurred_at desc nulls last`,[t.id]
+    )).rows.filter(r=>hash(r.text_zh??"")===r.source_hash);
+    const seen=new Set(events.map(e=>String(e.id)));
+    for(const m of manual) {
+      const mid=m.fingerprint.slice(0,24);
+      if(!seen.has(mid)) {
+        seen.add(mid);
+        events.push({
+          id:mid,
+          text:redactTrackingText(m.body),
+          source:"manual_reviewed",
+          ...(m.occurred_at?{occurred_at:new Date(m.occurred_at).toISOString()}:{}),
+          ...(m.location_code?{location:m.location_code}:{}),
+          ...(m.status_code?{status_code:m.status_code}:{}),
+        });
+      }
+    }
+    if(zhSnap?.latest_event_at && (!snapshot?.latest_event_at || new Date(zhSnap.latest_event_at)>new Date(snapshot.latest_event_at)) && !manual.length) {
+      translationStatus="updating";
+    } else if(events.length>0) {
+      translationStatus="ready";
+    }
+  }
   const canVerify=kind==="advice" && ["needs_carrier","needs_verification"].includes(t.sync_state);
   return {tracking_id:t.id,direction:t.direction,carrier:t.labels?.[lang]??t.labels?.en??t.carrier_code??null,tracking_no:t.tracking_norm,
     warehouse_state:t.warehouse_state??null,transport_state:t.transport_state,sync_state:t.sync_state,locale:lang,
-    translation_status:snapshot?"ready":"pending",events:snapshot?.events_json??[],allowed_actions:canVerify?["verify_tracking"]:[],
+    translation_status:translationStatus,events,allowed_actions:canVerify?["verify_tracking"]:[],
     ...(t.last_success_at?{last_success_at:t.last_success_at}:{}),...(t.latest_event_at?{latest_event_at:t.latest_event_at}:{}),
     ...(snapshot?{localized_snapshot_at:snapshot.fetched_at}:{}),...(t.next_query_at?{next_allowed_at:t.next_query_at}:{})};
 }
@@ -102,7 +175,10 @@ export async function consumeTrackingCallback(db:DB) {
     try {
       const payload=JSON.parse(decryptSecret(row.encrypted_payload));
       if(payload.lastResult?.data) await storeSnapshot(db,row.tracker_id,"zh-CN","kuaidi100_push",payload.lastResult);
-      if(payload.status==="abort") await db.query("update tracking_records set sync_state='stopped' where id=$1",[row.tracker_id]);
+      if(payload.status==="abort") {
+        await db.query("update tracking_records set sync_state='stopped' where id=$1",[row.tracker_id]);
+        await openTrackingAlert(db,row.tracker_id,"subscription_aborted");
+      }
     } catch (e) {
       if(!(e instanceof z.ZodError) && !(e instanceof Error && "code" in e && e.code==="TRACKING_MISMATCH")) throw e;
       await db.query("update tracking_inbox set error_code='INVALID_PAYLOAD' where id=$1",[row.id]);
@@ -110,6 +186,116 @@ export async function consumeTrackingCallback(db:DB) {
   }
   await db.query("update tracking_inbox set processed_at=now() where id=$1",[row.id]);
   return true;
+}
+export async function refreshTracking(db:DB,actor:Actor,id:string,kind:"advice"|"shipment") {
+  const org=organization(actor);
+  const filter=kind==="advice"?"advice_id":"shipment_id";
+  const t=await one(db,`select * from tracking_records where ${filter}=$1 and org_id=$2 and closed_at is null order by generation desc limit 1 for update`,[id,org]);
+  await lock(db,"query:"+(t.carrier_code??"unknown")+":"+t.tracking_norm);
+  const counts=t.carrier_code
+    ?await one<{n:number;too_soon:boolean;last_reserved:Date|null}>(db,`select count(*)::int n,coalesce(max(reserved_at)>now()-interval '60 minutes',false) too_soon,max(reserved_at) last_reserved
+      from tracking_query_attempts where provider='kuaidi100' and carrier_code=$1 and tracking_norm=$2 and reserved_at>now()-interval '24 hours'`,
+      [t.carrier_code,t.tracking_norm])
+    :{n:0,too_soon:false,last_reserved:null};
+  const now=new Date();
+  const nextAllowed=t.next_query_at?new Date(t.next_query_at):now;
+  const blocked=!t.carrier_code || ["stopped","superseded","needs_carrier","needs_verification","unsupported","delayed"].includes(t.sync_state) || counts.n>=24 || counts.too_soon || nextAllowed>now;
+  let effectiveNext=nextAllowed>now?nextAllowed:new Date(now.getTime()+60*60_000);
+  if(counts.too_soon && counts.last_reserved) {
+    const cooldownEnd=new Date(new Date(counts.last_reserved).getTime()+60*60_000);
+    if(cooldownEnd>effectiveNext) effectiveNext=cooldownEnd;
+  }
+  if(blocked) {
+    throw new Problem("RATE_LIMITED",`Next manual refresh is available at ${effectiveNext.toISOString()}.`,429);
+  }
+  await db.query("update tracking_records set next_query_at=now()+interval '60 minutes' where id=$1",[t.id]);
+  const snap=await tracking(db,actor,id,kind,"en");
+  return {queued:true,cooldown:false,next_allowed_at:effectiveNext.toISOString(),cached_snapshot:snap};
+}
+export async function correctCustomerParcelTracking(
+  db:DB,actor:Actor,adviceId:string,input:{revision:number;carrier_code:string;tracking_no:string;phone?:string}
+) {
+  const org=organization(actor);
+  await lock(db,"org:"+org);
+  const norm=waybill(input.tracking_no);
+  await lock(db,"waybill:"+norm);
+  const t=await one(db,"select * from tracking_records where advice_id=$1 and org_id=$2 and closed_at is null for update",[adviceId,org]);
+  revision(t.revision,input.revision);
+  guard(!t.package_id,"PARCEL_ALREADY_RECEIVED","Checked-in parcels require warehouse staff verification to amend.");
+  await validCarrier(db,input.carrier_code);
+  const carrier=await one(db,"select phone_rule from carriers where code=$1",[input.carrier_code]);
+  const phone=input.phone?.replace(/[ -]/g,"");
+  guard(!carrier.phone_rule?.required || phone && (carrier.phone_rule.format==="last4"?/^\d{4}$/:/^\+?\d{7,20}$/).test(phone),
+    "TRACKING_VERIFICATION_REQUIRED","Enter the phone verification used on this shipping label.",422);
+  const conflicts=await db.query(`select 1 from tracking_records where closed_at is null and tracking_norm=$1
+    and (carrier_code is null or carrier_code=$2) and id<>$3`,[norm,input.carrier_code,t.id]);
+  guard(!conflicts.rowCount,"TRACKING_REVIEW_REQUIRED","This tracking number requires staff verification.");
+  await db.query("update tracking_records set closed_at=now(),sync_state='superseded',revision=revision+1 where id=$1",[t.id]);
+  const next=await one<{id:string;generation:number;revision:number}>(db,`insert into tracking_records(
+    org_id,direction,advice_id,carrier_code,tracking_norm,generation,supersedes_id,source_phone_ciphertext,transport_state,sync_state,next_query_at,revision
+  ) values($1,'inbound',$2,$3,$4,$5,$6,$7,'unknown','pending',now(),1) returning id,generation,revision`,
+  [org,adviceId,input.carrier_code,norm,t.generation+1,t.id,carrier.phone_rule?.required&&phone?encryptSecret(phone):null]);
+  await event(db,"tracking.corrected",{tracker_id:next.id,supersedes_id:t.id,advice_id:adviceId});
+  await audit(db,actor,"correct_parcel_tracking","tracking_records",next.id,{supersedes_id:t.id,tracking_norm:norm,carrier_code:input.carrier_code});
+  return {tracking_id:next.id,generation:next.generation,revision:next.revision,tracking_no:norm,carrier_code:input.carrier_code,sync_state:"pending"};
+}
+export async function correctStaffTracking(
+  db:DB,actor:Actor,trackerId:string,input:{revision:number;carrier_code:string;tracking_no:string;reason:string;evidence_ids?:string[]},sessionHash:string
+) {
+  role(actor,"warehouse_admin","super_admin");
+  await requireStaffMfa(db,actor,sessionHash,15);
+  const norm=waybill(input.tracking_no);
+  await validCarrier(db,input.carrier_code);
+  await lock(db,"waybill:"+norm);
+  const t=await one(db,"select * from tracking_records where id=$1 and closed_at is null for update",[trackerId]);
+  revision(t.revision,input.revision);
+  if(t.shipment_id) {
+    guard(input.evidence_ids && input.evidence_ids.length>=1,"EVIDENCE_REQUIRED","Outbound waybill correction after handover requires label photo evidence.",422);
+  }
+  const conflicts=await db.query(`select 1 from tracking_records where closed_at is null and tracking_norm=$1
+    and (carrier_code is null or carrier_code=$2) and id<>$3`,[norm,input.carrier_code,t.id]);
+  guard(!conflicts.rowCount,"TRACKING_REVIEW_REQUIRED","This tracking number conflicts with another active record.");
+  await db.query("update tracking_records set closed_at=now(),sync_state='superseded',revision=revision+1 where id=$1",[t.id]);
+  const next=await one<{id:string;generation:number;revision:number}>(db,`insert into tracking_records(
+    org_id,direction,advice_id,package_id,shipment_id,carrier_code,tracking_norm,generation,supersedes_id,source_phone_ciphertext,transport_state,sync_state,next_query_at,revision
+  ) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'unknown','pending',now(),1) returning id,generation,revision`,
+  [t.org_id,t.direction,t.advice_id,t.package_id,t.shipment_id,input.carrier_code,norm,t.generation+1,t.id,t.source_phone_ciphertext]);
+  await event(db,"tracking.corrected",{tracker_id:next.id,supersedes_id:t.id,reason:input.reason});
+  await audit(db,actor,"staff_correct_tracking","tracking_records",next.id,{supersedes_id:t.id,tracking_norm:norm,carrier_code:input.carrier_code,reason:input.reason,evidence_ids:input.evidence_ids??[]});
+  return {tracking_id:next.id,generation:next.generation,revision:next.revision,tracking_no:norm,carrier_code:input.carrier_code};
+}
+export async function submitTrackingTranslation(
+  db:DB,actor:Actor,trackerId:string,input:{event_id?:string;tracking_event_id?:string;source_hash?:string;text?:string;text_en?:string}
+) {
+  role(actor,"receiver","support","reviewer","warehouse_admin","super_admin");
+  const eventId=input.tracking_event_id??input.event_id;
+  const textEn=input.text_en??input.text??"";
+  guard(eventId && textEn.trim().length>=2,"INVALID_REQUEST","Provide tracking_event_id and translated English text.",422);
+  const ev=await one<{id:string;tracker_id:string;text_zh:string|null}>(db,"select id,tracker_id,text_zh from tracking_events where id=$1 and tracker_id=$2",[eventId,trackerId]);
+  const expectedHash=hash(ev.text_zh??"");
+  if(input.source_hash) {
+    guard(input.source_hash===expectedHash,"SOURCE_HASH_MISMATCH","The Chinese source event text does not match the provided hash.");
+  }
+  const tr=await one<{id:string;event_id:string;source_hash:string;locale:string;body:string;source:string}>(db,
+    `insert into tracking_translations(id,event_id,source_hash,locale,body,source,reviewer_id,reviewed_at)
+     values($1,$2,$3,'en',$4,$5,null,null)
+     on conflict(event_id,source_hash,locale) do update set body=excluded.body,source=excluded.source,reviewer_id=null,reviewed_at=null
+     returning id,event_id,source_hash,locale,body,source`,
+    [uuid(),ev.id,expectedHash,redactTrackingText(textEn.trim()),"draft:"+actor.id]
+  );
+  await audit(db,actor,"submit_tracking_translation","tracking_translations",tr.id,{event_id:ev.id,source_hash:expectedHash});
+  return {id:tr.id,event_id:tr.event_id,source_hash:tr.source_hash,locale:tr.locale,text:tr.body,state:"pending_review"};
+}
+export async function approveTrackingTranslation(db:DB,actor:Actor,translationId:string) {
+  role(actor,"receiver","reviewer","support","warehouse_admin","super_admin");
+  const tr=await one<{id:string;event_id:string;source_hash:string;locale:string;body:string;source:string;reviewer_id:string|null}>(db,
+    "select * from tracking_translations where id=$1 for update",[translationId]);
+  guard(tr.source!=="draft:"+actor.id,"SELF_REVIEW_FORBIDDEN","Translation drafts must be approved by a different staff member.",403);
+  const ev=await one<{id:string;text_zh:string|null}>(db,"select id,text_zh from tracking_events where id=$1",[tr.event_id]);
+  guard(hash(ev.text_zh??"")===tr.source_hash,"TRANSLATION_STALE","Source event text changed after the translation was drafted.");
+  await db.query("update tracking_translations set source='manual_reviewed',reviewer_id=$2,reviewed_at=now() where id=$1",[tr.id,actor.id]);
+  await audit(db,actor,"approve_tracking_translation","tracking_translations",tr.id,{event_id:tr.event_id,source_hash:tr.source_hash});
+  return {id:tr.id,event_id:tr.event_id,source_hash:tr.source_hash,locale:tr.locale,text:tr.body,state:"approved",reviewer_id:actor.id};
 }
 async function postForm(url:string,body:Record<string,string>) {
   const r=await fetch(url,{method:"POST",body:new URLSearchParams(body),signal:AbortSignal.timeout(8000)});

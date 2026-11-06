@@ -2447,4 +2447,145 @@ test("Stripe webhook signature/amount guards, order hold/resume during payment, 
   }
 });
 
+test("bilingual tracking freshness, out-of-order callbacks, manual translation review, manual refresh cooldown and waybill correction",async()=>{
+  const {c,registration}=await signCustomer();
+  const receiving=await staffLogin("receiving"),admin=await staffLogin("admin");
+  const wrongWaybill="YTO"+randomUUID().slice(0,8).toUpperCase();
+  const rightWaybill="ZTO"+randomUUID().slice(0,8).toUpperCase();
+  const advice=await c.fetch("/me/parcels",{
+    address_id:registration.warehouse_address.id,carrier_code:"yto",tracking_no:wrongWaybill,
+  },"POST",201);
+  const parcelPath="/me/parcels/"+advice.id;
+  const verBefore=await c.fetch(parcelPath+"/tracking-verification");
+  const corrected=await c.fetch(parcelPath+"/correct",{
+    revision:verBefore.revision,carrier_code:"zto",tracking_no:rightWaybill,reason:"Seller sent updated ZTO waybill.",
+  });
+  assert.equal(corrected.tracking_no,rightWaybill);
+  const trackerId=corrected.tracking_id;
+  const {rows:trackers}=await pool.query(
+    "select id,generation,sync_state,closed_at,tracking_norm from tracking_records where advice_id=$1 order by generation",
+    [advice.id]
+  );
+  assert.equal(trackers.length,2);
+  assert.equal(trackers[0].sync_state,"superseded");
+  assert(trackers[0].closed_at);
+  assert.equal(trackers[1].id,trackerId);
+  assert.equal(trackers[1].generation,2);
+
+  const refreshed=await c.fetch(parcelPath+"/tracking/refresh",{},"POST",202);
+  assert.equal(refreshed.queued,true);
+  assert(refreshed.next_allowed_at);
+  const rateLimited=await c.fetch(parcelPath+"/tracking/refresh",{},"POST",429);
+  assert.equal(rateLimited.error.code,"RATE_LIMITED");
+
+  const token=randomBytes(32).toString("hex"),salt=randomBytes(32).toString("hex");
+  await pool.query(`insert into tracking_subscriptions(tracker_id,provider,callback_token,salt_ciphertext,credential_version,status)
+    values($1,'kuaidi100',$2,$3,'test','active')`,[trackerId,token,encryptSecret(salt)]);
+  const callback="/webhooks/tracking/kuaidi100/"+token;
+  async function pushCallback(payload:object) {
+    const param=JSON.stringify(payload);
+    const sign=createHash("md5").update(param+salt).digest("hex").toUpperCase();
+    const res=await handle(new Request(origin+"/api/v1"+callback,{method:"POST",body:new URLSearchParams({sign,param})}),callback);
+    assert.equal(res.status,200);
+    for(let i=0;i<50;i++){if(!await workOnce())break;}
+  }
+
+  await pushCallback({
+    status:"polling",
+    lastResult:{
+      com:"zhongtong",nu:rightWaybill,state:"3",
+      data:[
+        {context:"快件已签收，派件员电话 13812345678，取件码: A8-902",ftime:"2026-11-05 14:00:00",statusCode:"301"},
+        {context:"快件已到达代收点柜机",ftime:"2026-11-05 14:00:00",statusCode:"302"},
+      ],
+    },
+  });
+  const {rows:eventsAfterDelivered}=await pool.query(
+    "select id,text_zh,occurred_at from tracking_events where tracker_id=$1 order by occurred_at desc,text_zh asc",
+    [trackerId]
+  );
+  assert.equal(eventsAfterDelivered.length,2);
+  const enUpdating=await c.fetch(parcelPath+"/tracking?locale=en");
+  assert.equal(enUpdating.transport_state,"delivered");
+  assert.equal(enUpdating.warehouse_state,null);
+  assert.equal(enUpdating.translation_status,"updating");
+
+  await pushCallback({
+    status:"polling",
+    lastResult:{
+      com:"zhongtong",nu:rightWaybill,state:"0",
+      data:[{context:"快件在途中",ftime:"2026-11-05 10:00:00",statusCode:"001"}],
+    },
+  });
+  assert.equal((await c.fetch(parcelPath+"/tracking?locale=en")).transport_state,"delivered");
+
+  await pushCallback({
+    status:"polling",
+    lastResult:{
+      com:"zhongtong",nu:rightWaybill,state:"6",
+      data:[
+        {context:"快件退回中",ftime:"2026-11-05 16:00:00",statusCode:"601"},
+        {context:"快件已签收，派件员电话 13812345678，取件码: A8-902",ftime:"2026-11-05 14:00:00",statusCode:"301"},
+      ],
+    },
+  });
+  const afterReturn=await c.fetch(parcelPath+"/tracking?locale=en");
+  assert.equal(afterReturn.transport_state,"returning");
+  const {rows:returnAlerts}=await pool.query(
+    "select kind,episode from tracking_alerts where tracker_id=$1 order by episode",
+    [trackerId]
+  );
+  assert(returnAlerts.some(a=>a.kind==="returning"&&a.episode===1));
+
+  await pushCallback({
+    status:"abort",message:"3 days no update",
+    lastResult:{
+      com:"zhongtong",nu:rightWaybill,state:"6",
+      data:[{context:"快件退回中",ftime:"2026-11-05 16:00:00",statusCode:"601"}],
+    },
+  });
+  assert.equal((await c.fetch(parcelPath+"/tracking?locale=en")).sync_state,"stopped");
+  const {rows:abortAlerts}=await pool.query(
+    "select kind from tracking_alerts where tracker_id=$1 and kind='subscription_aborted'",
+    [trackerId]
+  );
+  assert.equal(abortAlerts.length,1);
+
+  const {rows:[latestEvent]}=await pool.query(
+    "select id,text_zh from tracking_events where tracker_id=$1 order by occurred_at desc limit 1",
+    [trackerId]
+  );
+  const sourceHash=createHash("sha256").update(latestEvent.text_zh).digest("hex");
+  const draftTr=await receiving.fetch(`/staff/tracking/${trackerId}/translations`,{
+    tracking_event_id:latestEvent.id,
+    source_hash:sourceHash,
+    text_en:"Parcel is returning to sender, courier phone 13900001111, pickup code: Z9-111",
+  },"POST",201);
+  await receiving.fetch(`/staff/tracking-translations/${draftTr.id}/approve`,{},"POST",403);
+  await admin.fetch(`/staff/tracking-translations/${draftTr.id}/approve`,{},"POST",200);
+  const enReviewed=await c.fetch(parcelPath+"/tracking?locale=en");
+  assert.equal(enReviewed.translation_status,"ready");
+  assert.equal(enReviewed.events[0].source,"manual_reviewed");
+  assert(enReviewed.events[0].text.includes("[phone redacted]"));
+  assert(enReviewed.events[0].text.includes("[pickup code redacted]"));
+  assert(!enReviewed.events[0].text.includes("13900001111"));
+  assert(!enReviewed.events[0].text.includes("Z9-111"));
+
+  const outer=await receiving.photo("intake_outer");
+  await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:rightWaybill,carrier_code:"zto",outer_media_ids:[outer],
+  },"POST",201);
+  const verAfterCheckin=await c.fetch(parcelPath+"/tracking-verification");
+  await c.fetch(parcelPath+"/correct",{
+    revision:verAfterCheckin.revision,carrier_code:"sf",tracking_no:"SF"+randomUUID().slice(0,8).toUpperCase(),reason:"Too late",
+  },"POST",409);
+
+  const {rows:[curTracker]}=await pool.query("select revision from tracking_records where id=$1",[trackerId]);
+  const staffWaybill="SF"+randomUUID().slice(0,8).toUpperCase();
+  const staffCorrected=await admin.fetch(`/staff/tracking/${trackerId}/correct`,{
+    revision:curTracker.revision,carrier_code:"sf",tracking_no:staffWaybill,reason:"Verified physical SF label over ZTO sticker.",
+  });
+  assert.equal(staffCorrected.tracking_no,staffWaybill);
+});
+
 test("all core operations have a validated success response",assertCoreCoverage);

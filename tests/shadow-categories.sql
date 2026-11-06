@@ -14,7 +14,7 @@ BEGIN
   SELECT id INTO STRICT service FROM service_types WHERE code='inspection';
   SELECT id INTO STRICT capability FROM capabilities WHERE code='demo-visual';
   SELECT author_id,reviewer_id INTO STRICT author,reviewer
-    FROM template_versions WHERE template_key='apparel-inspection';
+    FROM template_versions WHERE template_key='apparel-inspection' AND version=1;
   FOR cfg IN SELECT * FROM (VALUES
     ('bags','Hardware condition','五金状态','Handle drop','提手垂直高度'),
     ('home','Surface finish','表面处理','Maximum height','最大高度')

@@ -15,7 +15,7 @@ import { advise, assign, checkIn, decideIntakeClaim, intakeItems, lookup, reques
 import { amendReport, amendReportInput, approveReport, editReportRevision, readReport, recordResults, reportDesk, returnReport, revisionChanges, staffReport, startTask, submitReport, submitReportRevision, submitTask, taskDetail } from "./inspection";
 import { acceptQuote, confirmBatch, handover, instruct, packShipment, planBatch, quoteBatch, receiveReturn, releaseReferenceSample, storageQuote } from "./dispatch";
 import { checkout, demoPay, orderPayment, orderRefundPayments, refundApprove, refundRequest, stripeEvent, verifyStripe } from "./payments";
-import { providerCallback, tracking, trackingAdmin, verificationState, verifyTracking } from "./logistics";
+import { approveTrackingTranslation, correctCustomerParcelTracking, correctStaffTracking, providerCallback, refreshTracking, submitTrackingTranslation, tracking, trackingAdmin, verificationState, verifyTracking } from "./logistics";
 import { adminDesk, bills, customerActions, customerDesk, customerNotifications, dispatchQueueStates, items, markNotificationRead, readOrderByPublicNumber, searchStaffOrders, staffOrderDetail, staffOrderFilters, warehouseDesk, warehouseDispatchBatch, warehouseDispatchQueue, warehouseItem, warehousePackage } from "./reads";
 import { staffAccess } from "./staff-access";
 import { customerDestination, withDestination } from "./portal-routes";
@@ -440,6 +440,28 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   if(verification && method==="POST") return extraWrite(req,path,actor,z.object({revision:revSchema,
     carrier_code:z.string().min(1).max(40),phone:z.string().max(30).optional()
   }),(db,a,b)=>verifyTracking(db,a,idSchema.parse(verification[1]),b));
+  const parcelRefresh=path.match(/^\/me\/parcels\/([a-f0-9-]{36})\/tracking\/refresh$/i);
+  if(parcelRefresh && method==="POST") return extraWrite(req,path,actor,z.object({}),
+    (db,a)=>refreshTracking(db,a,idSchema.parse(parcelRefresh[1]),"advice"),202);
+  const shipmentRefresh=path.match(/^\/shipments\/([a-f0-9-]{36})\/tracking\/refresh$/i);
+  if(shipmentRefresh && method==="POST") return extraWrite(req,path,actor,z.object({}),
+    (db,a)=>refreshTracking(db,a,idSchema.parse(shipmentRefresh[1]),"shipment"),202);
+  const parcelCorrect=path.match(/^\/me\/parcels\/([a-f0-9-]{36})\/correct$/i);
+  if(parcelCorrect && method==="POST") return extraWrite(req,path,actor,z.object({
+    revision:revSchema,carrier_code:z.string().min(1).max(40),tracking_no:z.string().min(5).max(80),reason:z.string().trim().min(4).max(1000)
+  }),(db,a,b)=>correctCustomerParcelTracking(db,a,idSchema.parse(parcelCorrect[1]),b));
+  const staffCorrect=path.match(/^\/staff\/tracking\/([a-f0-9-]{36})\/correct$/i);
+  if(staffCorrect && method==="POST") return extraWrite(req,path,actor,z.object({
+    revision:revSchema,carrier_code:z.string().min(1).max(40),tracking_no:z.string().min(5).max(80),
+    reason:z.string().trim().min(4).max(1000),evidence_ids:z.array(idSchema).optional()
+  }),(db,a,b)=>correctStaffTracking(db,a,idSchema.parse(staffCorrect[1]),b,hash(getCookie(req,"session"))));
+  const staffTranslation=path.match(/^\/staff\/tracking\/([a-f0-9-]{36})\/translations$/i);
+  if(staffTranslation && method==="POST") return extraWrite(req,path,actor,z.object({
+    tracking_event_id:idSchema,source_hash:z.string().min(8).max(128),text_en:z.string().trim().min(2).max(2000)
+  }),(db,a,b)=>submitTrackingTranslation(db,a,idSchema.parse(staffTranslation[1]),b),201);
+  const approveTranslation=path.match(/^\/staff\/tracking-translations\/([a-f0-9-]{36})\/approve$/i);
+  if(approveTranslation && method==="POST") return extraWrite(req,path,actor,z.object({}),
+    (db,a)=>approveTrackingTranslation(db,a,idSchema.parse(approveTranslation[1])));
   const manual=path.match(/^\/orders\/([a-f0-9-]{36})\/manual-quote-request$/i);
   if(method==="POST" && manual) return extraWrite(req,path,actor,z.object({revision:revSchema,reason:z.string().trim().min(4).max(1200)}),
     (db,a,b)=>requestManualQuote(db,a,idSchema.parse(manual[1]),b.revision,b.reason));
@@ -482,10 +504,10 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   if(method==="POST" && fake && isDemo()) return extraWrite(req,path,actor,z.object({}),(db,a)=>demoPay(db,a,idSchema.parse(fake[1])));
   return null;
 }
-async function extraWrite<S extends z.ZodType>(req:Request,path:string,actor:Actor|null,schema:S,run:(db:DB,actor:Actor,data:z.output<S>)=>Promise<unknown>) {
+async function extraWrite<S extends z.ZodType>(req:Request,path:string,actor:Actor|null,schema:S,run:(db:DB,actor:Actor,data:z.output<S>)=>Promise<unknown>,status=200) {
   csrf(req);
   const a=actorRequired(actor),key=idSchema.parse(req.headers.get("idempotency-key")),data=schema.parse(await input(req));
-  return json(await transaction(db=>idempotent(db,a.id+":"+path,key,data,()=>run(db,a,data))));
+  return json(await transaction(db=>idempotent(db,a.id+":"+path,key,data,()=>run(db,a,data))),status);
 }
 
 // The request is validated against the operation's OpenAPI schema before dispatch.

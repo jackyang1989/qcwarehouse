@@ -427,14 +427,33 @@ export function TrackView({kind,id,embedded=false}:{kind:"parcels"|"shipments";i
   const path=kind==="parcels"?"/me/parcels/":"/shipments/";
   const {data,error,reload}=useLoad(path+id+"/tracking?locale=en");
   const canVerify=kind==="parcels"&&data?.allowed_actions.includes("verify_tracking");
+  const canCorrect=kind==="parcels"&&Boolean(data&&!data.warehouse_state);
   const verificationPath=path+id+"/tracking-verification";
-  const verification=useLoad(canVerify?verificationPath:null),carriers=useLoad(canVerify?"/carriers":null);
+  const verification=useLoad(canVerify||canCorrect?verificationPath:null),carriers=useLoad(canVerify||canCorrect?"/carriers":null);
+  const [refreshError,setRefreshError]=useState<string|null>(null);
   useEffect(()=>{const timer=setInterval(reload,60000);return ()=>clearInterval(timer);},[reload]);
-  return <>{!embedded&&<div className="page-head"><p className="eyebrow">Warehouse / Tracking</p><h1>Tracking details</h1><p className="muted">Follow carrier events and the warehouse’s own handling status.</p></div>}{error&&<ErrorBlock error={error}/>}
+  return <>{!embedded&&<div className="page-head"><p className="eyebrow">Warehouse / Tracking</p><h1>Tracking details</h1><p className="muted">Follow carrier events and the warehouse’s own handling status.</p></div>}{error&&<ErrorBlock error={error}/>}{refreshError&&<ErrorBlock error={refreshError}/>}
     {!data&&!error&&<p role="status">Loading carrier tracking…</p>}
     {data&&<Panel title={data.carrier??"Carrier pending"}><p className="code">{data.tracking_no}</p>
       <div className="actions"><Tag>{label(data.transport_state)}</Tag><Tag>{label(data.sync_state)}</Tag>
-      {data.warehouse_state&&<Tag>Warehouse · {label(data.warehouse_state)}</Tag>}<button onClick={reload}>Refresh status</button></div>
+      {data.warehouse_state&&<Tag>Warehouse · {label(data.warehouse_state)}</Tag>}
+      <button onClick={async()=>{
+        setRefreshError(null);
+        if(data.allowed_actions.includes("refresh_tracking")) {
+          try { await request(path+id+"/tracking/refresh","POST",{}); }
+          catch(e){ setRefreshError(e instanceof Error?e.message:String(e)); }
+        }
+        reload();
+      }}>Refresh status</button></div>
+      {data.direction==="inbound"&&data.transport_state==="delivered"&&!data.warehouse_state&&<p className="notice" role="status"><strong>Delivered by carrier · Warehouse check-in pending.</strong> Physical receipt is confirmed only after warehouse check-in.</p>}
+      {data.direction==="outbound_forward"&&data.transport_state==="delivered"&&<p className="notice" role="status"><strong>Delivered to domestic freight forwarder.</strong> International forwarding is managed by your forwarder.</p>}
+      {data.direction==="outbound_return"&&data.transport_state==="delivered"&&<p className="notice" role="status"><strong>Delivered to seller.</strong> Seller refund depends on your seller platform confirmation.</p>}
+      {(data.translation_status==="updating"||data.translation_status==="pending")&&<p className="muted small" role="status">English details are being updated{data.latest_event_at?` · Latest carrier event ${stamp(data.latest_event_at)}`:""}.</p>}
+      {(data.sync_state==="needs_verification"||data.sync_state==="needs_carrier")&&<p className="notice" role="status">Verification needed — confirm the carrier or shipping label phone number to continue tracking.</p>}
+      {data.sync_state==="no_record"&&<p className="muted small" role="status">No carrier events reported yet — the carrier may not have scanned the parcel yet.</p>}
+      {(data.sync_state==="delayed"||data.sync_state==="provider_error")&&<p className="muted small" role="status">Carrier updates are temporarily delayed — showing the last known snapshot from {stamp(data.last_success_at)}.</p>}
+      {data.sync_state==="unsupported"&&<p className="muted small" role="status">Automatic tracking is not supported for this carrier; warehouse check-in and handover updates will still appear here.</p>}
+      {data.next_allowed_at&&!data.allowed_actions.includes("refresh_tracking")&&<p className="muted small">Next manual refresh available at {stamp(data.next_allowed_at)}.</p>}
       {canVerify&&verification.data&&<Form label="Verify carrier tracking" run={async f=>{
         const phone=text(f,"phone");
         await request(verificationPath,"POST",{revision:verification.data?.revision,carrier_code:verification.data?.carrier_code??text(f,"carrier_code"),...(phone?{phone}:{})});
@@ -443,6 +462,21 @@ export function TrackView({kind,id,embedded=false}:{kind:"parcels"|"shipments";i
         {!verification.data.carrier_code&&<Select name="carrier_code" label="Carrier" choices={(carriers.data?.carriers??[]).map((c:Row)=>({id:c.code,label:c.labels.en}))}/>}
         <Field name="phone" label="Phone used on this shipping label, if required by the carrier" required={false} type="tel"/>
       </Form>}
+      {canCorrect&&verification.data&&<details className="top-gap"><summary>Correct tracking number or carrier before check-in</summary>
+        <Form label="Save corrected tracking" run={async f=>{
+          await request(path+id+"/correct","POST",{
+            revision:verification.data?.revision,
+            carrier_code:text(f,"carrier_code")||verification.data?.carrier_code,
+            tracking_no:text(f,"tracking_no"),
+            reason:text(f,"reason"),
+          });
+          verification.reload();reload();
+        }}>
+          <Select name="carrier_code" label="Carrier" value={verification.data.carrier_code??""} choices={(carriers.data?.carriers??[]).map((c:Row)=>({id:c.code,label:c.labels.en}))}/>
+          <Field name="tracking_no" label="Corrected tracking number" value={data.tracking_no}/>
+          <Field name="reason" label="Reason for correction"/>
+        </Form>
+      </details>}
       <p className="muted small">Carrier data updated {stamp(data.last_success_at)}</p>
       {data.events.length?<ol className="timeline">{data.events.map((e:Row)=><li key={e.id}><small>{stamp(e.occurred_at)}</small><br/>{e.text}</li>)}</ol>:<Empty>English carrier events will appear when verified tracking data is available.</Empty>}
     </Panel>}

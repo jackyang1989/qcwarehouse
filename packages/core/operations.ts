@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { DB } from "../db";
 import { audit, code, event, guard, hash, lock, one, organization, revision, role, uuid, type Actor } from "./common";
-import { priceSchema, readyOrder, templateSchema } from "./orders";
+import { activatePaidOrder, priceSchema, readyOrder, templateSchema } from "./orders";
 import { requireSpace } from "./storage";
 
 export async function cancelOrder(db:DB,actor:Actor,id:string,rev:number) {
@@ -17,12 +17,52 @@ export async function cancelOrder(db:DB,actor:Actor,id:string,rev:number) {
     where l.id=t.order_line_id and l.order_id=$1 and t.state<>'QA_APPROVED'`,[id]);
   await db.query(`update reference_reservations r set released_at=now() from inspection_groups g,order_lines l
     where r.group_id=g.id and g.order_line_id=l.id and l.order_id=$1 and r.released_at is null`,[id]);
-  await db.query("update orders set state='cancelled',revision=revision+1 where id=$1",[id]);
+  await db.query("update order_blocks set resolved_at=now() where order_id=$1 and resolved_at is null",[id]);
+  await db.query("update orders set state='cancelled',held_at=null,held_from_state=null,hold_reason=null,revision=revision+1 where id=$1",[id]);
   if(o.paid_at) await db.query(`insert into tickets(id,public_no,org_id,order_id,category,subject)
     values($1,$2,$3,$4,'payment_refund','Review cancellation and refundable amount')`,[uuid(),code("C-"),org,id]);
   await audit(db,actor,"cancel_order","orders",id);
   await event(db,"order.cancelled",{order_id:id});
   return {state:"cancelled"};
+}
+export async function holdOrder(db:DB,actor:Actor,id:string,reason:string) {
+  role(actor,"receiver","warehouse_admin","inspector","reviewer","support","finance","template_admin","super_admin");
+  const initial=await one(db,"select org_id from orders where id=$1",[id]);
+  await lock(db,"org:"+initial.org_id);
+  const o=await one(db,"select * from orders where id=$1 for update",[id]);
+  if(o.state==="on_hold") return {id:o.id,state:"on_hold",revision:o.revision,held_from_state:o.held_from_state};
+  guard(["draft","awaiting_payment","awaiting_samples","queued","inspecting","qa_review"].includes(o.state),
+    "ORDER_HOLD_UNAVAILABLE","This order cannot be placed on hold.");
+  const updated=await one(db,`update orders set state='on_hold',held_at=now(),held_from_state=state,hold_reason=$2,revision=revision+1
+    where id=$1 returning id,state,revision,held_from_state`,[id,reason.trim()]);
+  await db.query(`insert into order_blocks(id,order_id,reason,object_key,opened_at)
+    values($1,$2,'staff_hold','order',now())
+    on conflict(order_id,reason,object_key) where resolved_at is null do nothing`,[uuid(),id]);
+  await audit(db,actor,"hold_order","orders",id,{reason:reason.trim(),from_state:o.state});
+  await event(db,"order.held",{order_id:id});
+  return updated;
+}
+export async function resumeOrder(db:DB,actor:Actor,id:string,reason:string) {
+  role(actor,"receiver","warehouse_admin","inspector","reviewer","support","finance","template_admin","super_admin");
+  const initial=await one(db,"select org_id from orders where id=$1",[id]);
+  await lock(db,"org:"+initial.org_id);
+  const o=await one(db,"select * from orders where id=$1 for update",[id]);
+  guard(o.state==="on_hold" && o.held_from_state,"ORDER_NOT_ON_HOLD","This order is not currently on hold.");
+  await db.query("update order_blocks set resolved_at=now() where order_id=$1 and reason='staff_hold' and resolved_at is null",[id]);
+  const fromState=o.held_from_state as string;
+  const paidWhileHeld=fromState==="awaiting_payment" && o.submission_snapshot?.quote_id &&
+    (await db.query(`select 1 from charge_items where inspection_quote_id=$1 and voided_at is null
+      and (applied_payment_id is not null or free_authorization is not null)`,[o.submission_snapshot.quote_id])).rowCount;
+  await db.query("update orders set state=$2,held_at=null,held_from_state=null,hold_reason=null,revision=revision+1 where id=$1",[id,fromState]);
+  if(paidWhileHeld) {
+    await activatePaidOrder(db,id);
+  } else if(fromState==="awaiting_samples") {
+    await readyOrder(db,id);
+  }
+  const updated=await one(db,"select id,state,revision from orders where id=$1",[id]);
+  await audit(db,actor,"resume_order","orders",id,{reason:reason.trim(),resumed_state:updated.state});
+  await event(db,"order.resumed",{order_id:id});
+  return updated;
 }
 export async function setAddress(db:DB,actor:Actor,data:{address_zh:string;address_en:string;contact_name:string;contact_phone:string}) {
   role(actor,"super_admin");

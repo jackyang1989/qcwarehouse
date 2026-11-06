@@ -22,7 +22,7 @@ import { customerDestination, withDestination } from "./portal-routes";
 import { orderFulfillmentRecord } from "./fulfillment-reads";
 import { canReadCasePhoto, caseDetail, createPublicInquiry, customerTicketMessage, inquiryCategories, publicInquiry, replyToCase, staffTicketEvent, staffTicketQueue, writeStaffTicket } from "./tickets";
 import { createLocations, locationBatchSchema, locationMaster, setLocationActive, storageMovementDesk } from "./storage";
-import { acceptScope, approveCapability, cancelOrder, createCapability, createCategory, moveItem, newTemplate, orderCaseCategory, publishSkuPrice, publishTemplate, reportIssue, revokeCapability, scopeProposal, scopeReview, setAddress, staffSchemas, updateCategoryStatus, upsertOffer } from "./operations";
+import { acceptScope, approveCapability, cancelOrder, createCapability, createCategory, holdOrder, moveItem, newTemplate, orderCaseCategory, publishSkuPrice, publishTemplate, reportIssue, resumeOrder, revokeCapability, scopeProposal, scopeReview, setAddress, staffSchemas, updateCategoryStatus, upsertOffer } from "./operations";
 import { createReportShare, listPublishedReports, listReportShares, readSharedPhoto, readSharedReport, reportSharingEnabled, revokeReportShare, shareInput, shareTokenPattern } from "./report-shares";
 import { auditFilters, readAudit } from "./audit-read";
 
@@ -104,6 +104,9 @@ async function photoRead(db:DB,actor:Actor,id:string) {
     return binary(await one<{data:Buffer;mime:string}>(db,"select data,mime from private_files where key=$1",[m.object_key]));
   if(actor.kind==="customer") {
     const org=organization(actor);
+    if(m.kind==="attachment" && m.org_id===org && m.uploaded_by===actor.id) {
+      return binary(await one<{data:Buffer;mime:string}>(db,"select data,mime from private_files where key=$1",[m.object_key]));
+    }
     guard(m.org_id===org && m.result_id,"NOT_FOUND","Photo not found.",404);
     await one(db,`select v.id from report_versions v join reports r on r.id=v.report_id join orders o on o.id=r.order_id
       where o.org_id=$2 and v.state in ('published','superseded') and exists(
@@ -113,12 +116,14 @@ async function photoRead(db:DB,actor:Actor,id:string) {
     role(actor,"receiver","warehouse_admin","inspector","reviewer","support","super_admin");
     const claimProof=m.kind==="attachment" && actor.roles.some(r=>["support","super_admin"].includes(r)) &&
       (await db.query("select 1 from tickets where category='identity_unclear' and details->>'proof_id'=$1",[id])).rowCount;
+    const orderAttachment=m.kind==="attachment" && actor.roles.some(r=>["inspector","reviewer","support","warehouse_admin","super_admin"].includes(r)) &&
+      (await db.query("select 1 from order_lines where (attributes->'attachment_ids') ? $1 or exists(select 1 from jsonb_array_elements(draft_items) item where (item->'attachment_ids') ? $1)",[id])).rowCount;
     const claimOuter=m.kind==="intake_outer" && m.org_id===null && actor.roles.some(r=>["support","super_admin"].includes(r)) &&
       (await db.query(`select 1 from tracking_records t join tickets k on k.details->>'tracking_no'=t.tracking_norm
         and coalesce(t.carrier_code,k.details->>'carrier_code')=k.details->>'carrier_code'
         where t.package_id=$1 and t.closed_at is null and t.org_id is null
         and k.category='identity_unclear' and k.state='open' and k.details ? 'proof_id'`,[m.package_id])).rowCount;
-    guard(claimProof || claimOuter || m.uploaded_by===actor.id || actor.roles.includes("super_admin") && m.kind!=="attachment" ||
+    guard(claimProof || orderAttachment || claimOuter || m.uploaded_by===actor.id || actor.roles.includes("super_admin") && m.kind!=="attachment" ||
       actor.roles.includes("warehouse_admin") && m.kind!=="attachment" ||
       (actor.roles.includes("reviewer") && m.task_id),"NOT_FOUND","Photo not found.",404);
   }
@@ -404,6 +409,15 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
     const kind=photoKinds.parse(form.get("kind")),bytes=Buffer.from(await file.arrayBuffer());
     return json(await transaction(db=>savePhoto(db,a,bytes,kind)),201);
   }
+  if(method==="POST" && path==="/me/media") {
+    csrf(req);
+    const a=actorRequired(actor);organization(a);
+    guard(Number(req.headers.get("content-length")??0)<=8_100_000,"BODY_TOO_LARGE","Photo is too large.",413);
+    const form=await req.formData(),file=form.get("photo");
+    guard(file instanceof File,"FILE_INVALID","Choose a photo.",422);
+    const bytes=Buffer.from(await file.arrayBuffer());
+    return json(await transaction(db=>savePhoto(db,a,bytes,"attachment")),201);
+  }
   if(method==="POST" && path==="/me/intake-claims") {
     csrf(req);
     const a=actorRequired(actor);organization(a);
@@ -459,6 +473,9 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   if(method==="POST" && store) return extraWrite(req,path,actor,z.object({}),(db,a)=>storageQuote(db,a,idSchema.parse(store[1])));
   const cancel=path.match(/^\/orders\/([a-f0-9-]{36})\/cancel$/i);
   if(method==="POST" && cancel) return extraWrite(req,path,actor,z.object({revision:revSchema}),(db,a,b)=>cancelOrder(db,a,idSchema.parse(cancel[1]),b.revision));
+  const hold=path.match(/^\/staff\/orders\/([a-f0-9-]{36})\/(hold|resume)$/i);
+  if(method==="POST" && hold) return extraWrite(req,path,actor,z.object({reason:z.string().trim().min(2).max(1000)}),(db,a,b)=>
+    hold[2].toLowerCase()==="hold"?holdOrder(db,a,idSchema.parse(hold[1]),b.reason):resumeOrder(db,a,idSchema.parse(hold[1]),b.reason));
   if(method==="POST" && path==="/staff/storage/move") return extraWrite(req,path,actor,z.object({
     item_id:idSchema,revision:revSchema,location_id:idSchema}),(db,a,b)=>moveItem(db,a,b.item_id,b.revision,b.location_id));
   const fake=path.match(/^\/checkout\/demo\/([a-f0-9-]{36})$/i);
@@ -507,7 +524,9 @@ async function dispatch(db:DB,actor:Actor,id:string,op:string,b:Record<string,an
     case "ownedItems": return {items:(await items(db,actor)).map(x=>({item_id:x.item_id,code:x.code,custody_state:x.custody_state,allowed_actions:x.allowed_actions}))};
     case "billing": return {charges:(await bills(db,actor)).map(x=>({
       charge_item_id:x.charge_item_id,purpose:x.purpose,state:x.state,amount_cents:x.amount_cents,currency:x.currency,
-      refunded_cents:x.refunded_cents,order_ids:x.order_ids
+      refunded_cents:x.refunded_cents,order_ids:x.order_ids,
+      ...(x.batch_id?{batch_id:x.batch_id}:{}),
+      ...(x.latest_attempt_state?{latest_attempt_state:x.latest_attempt_state}:{}),
     }))};
     case "references": return {items:(await db.query(`select id reference_id,item_id,state,expires_at from reference_samples where org_id=$1 order by expires_at desc`,[organization(actor)])).rows};
     case "requestRefund": return refundRequest(db,actor,b.payment_id,b.amount_cents,b.reason,id);
@@ -563,7 +582,7 @@ export async function handle(req:Request,path:string) {
     }),status);
   } catch(e) {
     if(e instanceof Problem) {
-      if(e.status===403 || ["INCOMPATIBLE_SAMPLES","SELF_REVIEW_FORBIDDEN","CATEGORY_ADMISSION_INCOMPLETE","REFERENCE_UNAVAILABLE","REFERENCE_RELEASE_REQUIRED"].includes(e.code)) {
+      if(e.status===403 || ["INCOMPATIBLE_SAMPLES","SELF_REVIEW_FORBIDDEN","CATEGORY_ADMISSION_INCOMPLETE","REFERENCE_UNAVAILABLE","REFERENCE_RELEASE_REQUIRED","SIGNATURE_INVALID","PAYMENT_MODE_MISMATCH","PAYMENT_AMOUNT_MISMATCH"].includes(e.code)) {
         await audit(pool,actor,"rejected_"+e.code.toLowerCase(),"http_request",null,{code:e.code,reason:e.message}).catch(()=>undefined);
       }
       const response=json({error:{code:e.code,message:e.message}},e.status);

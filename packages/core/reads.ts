@@ -33,6 +33,12 @@ export async function bills(db:DB,actor:Actor) {
       when exists(select 1 from payments p where p.charge_item_id=c.id and p.state='processing') then 'processing' else 'open' end state,
     coalesce((select sum(r.amount_cents)::int from refunds r join payments p on p.id=r.payment_id where p.charge_item_id=c.id and r.state='succeeded'),0) refunded_cents,
     case when i.order_id is not null then array[i.order_id] else array(select a.order_id from charge_allocations a where a.charge_id=c.id) end order_ids,
+    case when i.order_id is not null then array(select o.public_no from orders o where o.id=i.order_id)
+      else array(select o.public_no from charge_allocations a join orders o on o.id=a.order_id where a.charge_id=c.id) end order_numbers,
+    d.batch_id,
+    (select p.state from payments p where p.charge_item_id=c.id order by p.updated_at desc nulls last,p.id desc limit 1) latest_attempt_state,
+    (select p.provider_ref from payments p where p.id=c.applied_payment_id) paid_ref,
+    case when c.free_authorization is not null then 'FREE-AUTH' else null end receipt_summary,
     coalesce(i.revision,d.revision,s.revision) quote_revision
     from charge_items c left join inspection_quotes i on i.id=c.inspection_quote_id left join dispatch_quote_versions d on d.id=c.dispatch_quote_id
     left join storage_quotes s on s.id=c.storage_quote_id where c.org_id=$1 order by c.id desc limit 200`,[org])).rows;
@@ -84,8 +90,10 @@ export async function customerActions(db:DB,actor:Actor) {
 export async function customerDesk(db:DB,actor:Actor) {
   const org=organization(actor);
   const orders=(await db.query(`select id,public_no,state,revision,price_cents,created_at from orders where org_id=$1 order by created_at desc limit 200`,[org])).rows;
-  const advices=(await db.query(`select a.id,t.tracking_norm,t.carrier_code,t.transport_state,t.sync_state,p.state warehouse_state,
-    array(select order_id from advice_orders where advice_id=a.id) order_ids from package_advices a
+  const advices=(await db.query(`select a.id,a.address_snapshot,t.tracking_norm,t.carrier_code,t.transport_state,t.sync_state,p.state warehouse_state,
+    array(select order_id from advice_orders where advice_id=a.id) order_ids,
+    array(select o.public_no from advice_orders ao join orders o on o.id=ao.order_id where ao.advice_id=a.id order by o.public_no) order_numbers
+    from package_advices a
     join tracking_records t on t.advice_id=a.id and t.closed_at is null left join packages p on p.advice_id=a.id
     where a.org_id=$1 order by a.created_at desc limit 200`,[org])).rows;
   const shipments=(await db.query(`select s.id,s.state,s.tracking_norm,s.carrier_code,s.shipped_at,b.action from shipments s join dispatch_batches b on b.id=s.batch_id

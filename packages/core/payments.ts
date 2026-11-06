@@ -1,7 +1,7 @@
 import Stripe from "stripe";
-import type { DB } from "../db";
+import { pool, type DB } from "../db";
 import { appOrigin, requireStaffMfa } from "./auth";
-import { audit, event, guard, hash, isDemo, lock, one, organization, role, uuid, type Actor } from "./common";
+import { audit, code, event, guard, hash, isDemo, lock, one, organization, role, uuid, type Actor } from "./common";
 import { stripeSettings } from "./integrations";
 import { activatePaidOrder } from "./orders";
 const refundApprovalMfaMinutes=15;
@@ -86,18 +86,22 @@ async function applyPayment(db:DB,pid:string,providerRef:string,details:object) 
   if(["succeeded","partially_refunded","refunded"].includes(payment.state)) return;
   await db.query("update payments set state='succeeded',provider_ref=$2,provider_data=$3,updated_at=now() where id=$1",[pid,providerRef,details]);
   if(charge.voided_at || charge.applied_payment_id) {
-    await db.query("insert into tickets(id,public_no,org_id,category,subject,details) values($1,$2,$3,'payment_refund',$4,$5)",
-      [uuid(),"PAY-"+pid.slice(0,8),charge.org_id,"Reconcile late or duplicate payment",{payment_id:pid}]);
+    const orderId=charge.inspection_quote_id
+      ?(await db.query<{order_id:string}>("select order_id from inspection_quotes where id=$1",[charge.inspection_quote_id])).rows[0]?.order_id??null
+      :null;
+    await db.query("insert into tickets(id,public_no,org_id,order_id,category,subject,details) values($1,$2,$3,$4,'payment_refund',$5,$6)",
+      [uuid(),code("PAY-"),charge.org_id,orderId,"Reconcile late or duplicate payment",{payment_id:pid}]);
     return;
   }
   if(charge.purpose==="inspection") {
     const order=await one(db,`select o.* from orders o join inspection_quotes q on q.order_id=o.id where q.id=$1 for update of o`,[charge.inspection_quote_id]);
-    if(order.state!=="awaiting_payment" || order.submission_snapshot?.quote_id!==charge.inspection_quote_id) {
+    const heldForPayment=order.state==="on_hold" && order.held_from_state==="awaiting_payment" && order.submission_snapshot?.quote_id===charge.inspection_quote_id;
+    if(!heldForPayment && (order.state!=="awaiting_payment" || order.submission_snapshot?.quote_id!==charge.inspection_quote_id)) {
       await db.query("insert into tickets(id,public_no,org_id,order_id,category,subject,details) values($1,$2,$3,$4,'payment_refund',$5,$6)",
-        [uuid(),"PAY-"+pid.slice(0,8),charge.org_id,order.id,"Reconcile payment against order status",{payment_id:pid}]);
+        [uuid(),code("PAY-"),charge.org_id,order.id,"Reconcile payment against order status",{payment_id:pid}]);
       return;
     }
-    await activatePaidOrder(db,order.id);
+    if(!heldForPayment) await activatePaidOrder(db,order.id);
   } else if(charge.purpose==="dispatch") {
     await db.query(`update dispatch_batches b set state='paid',revision=b.revision+1 from dispatch_quote_versions q
       where q.id=$1 and q.batch_id=b.id and b.state='quoted'`,[charge.dispatch_quote_id]);
@@ -139,9 +143,20 @@ export async function stripeEvent(db:DB,e:Stripe.Event) {
     const s=e.data.object as Stripe.Checkout.Session;
     const pid=s.metadata?.payment_id;
     if(pid && /^[0-9a-f-]{36}$/i.test(pid)) {
-      const p=await one(db,`select p.*,c.org_id from payments p join charge_items c on c.id=p.charge_item_id where p.id=$1`,[pid]);
-      guard(p.charge_item_id===s.metadata?.charge_item_id && p.org_id===s.metadata?.org_id && (!p.provider_ref || p.provider_ref===s.id)
-        && p.amount_cents===s.amount_total && s.currency==="usd","PAYMENT_MISMATCH","Payment does not match the accepted charge.");
+      const p=await one(db,`select p.*,c.org_id,c.inspection_quote_id from payments p join charge_items c on c.id=p.charge_item_id where p.id=$1`,[pid]);
+      guard(p.charge_item_id===s.metadata?.charge_item_id && p.org_id===s.metadata?.org_id && (!p.provider_ref || p.provider_ref===s.id),
+        "PAYMENT_MISMATCH","Payment does not match the accepted charge.");
+      if(p.amount_cents!==s.amount_total || s.currency!=="usd") {
+        const orderId=p.inspection_quote_id
+          ?(await db.query<{order_id:string}>("select order_id from inspection_quotes where id=$1",[p.inspection_quote_id])).rows[0]?.order_id??null
+          :null;
+        await pool.query("insert into tickets(id,public_no,org_id,order_id,category,subject,details) values($1,$2,$3,$4,'payment_refund',$5,$6)",
+          [uuid(),code("PAY-"),p.org_id,orderId,"Reconcile payment amount or currency mismatch",{
+            payment_id:pid,expected_cents:p.amount_cents,actual_cents:s.amount_total??null,currency:s.currency??null,event_id:e.id,
+          }]);
+        await audit(pool,null,"payment_amount_mismatch","payments",pid,{expected_cents:p.amount_cents,actual_cents:s.amount_total??null,currency:s.currency??null});
+        guard(false,"PAYMENT_AMOUNT_MISMATCH","Callback amount does not match the charge snapshot.",409);
+      }
       if((e.type==="checkout.session.completed" || e.type==="checkout.session.async_payment_succeeded") && s.payment_status==="paid") {
         await applyPayment(db,pid,s.id,{payment_intent:s.payment_intent});
       } else {

@@ -115,6 +115,7 @@ export function NewOrder() {
   const [lines,setLines]=useState<Row[]>([]);
   const [selected,setSelected]=useState("");
   const [category,setCategory]=useState("");
+  const [notes,setNotes]=useState("");
   useEffect(()=>setSelected(new URLSearchParams(location.search).get("offer")??""),[]);
   const offers:Row[]=data?.offers??[];
   const offer=offers.find(x=>x.offer_id===selected);
@@ -136,9 +137,42 @@ export function NewOrder() {
         if(!offer)throw new Error("Choose a service.");
         const quantity=Number(f.get("quantity"));
         if(!Number.isInteger(quantity)||quantity<offer.rules.minimum||quantity>(offer.service==="inspection"?300:offer.rules.maximum))throw new Error("Choose a quantity within the offer range.");
+        const sizeLabel=text(f,"size_label");
+        const colorDeclared=text(f,"color_declared");
+        const toleranceMm=text(f,"tolerance_mm");
+        const compareSizesRaw=text(f,"compare_sizes");
+        const sizeMismatchConfirmed=checked(f,"size_mismatch_confirmed");
+        const photoFile=f.get("photo");
+        let attachmentId:string|undefined;
+        if(photoFile instanceof File&&photoFile.size>0) {
+          const uploadForm=new FormData();
+          uploadForm.set("photo",photoFile);
+          attachmentId=(await request("/me/media","POST",uploadForm)).id;
+        }
+        const compareSizes=compareSizesRaw?compareSizesRaw.split(",").map(s=>s.trim()).filter(Boolean):[];
+        const items=Array.from({length:quantity},(_,idx)=>({
+          position:idx+1,
+          sample_code:`S-${lines.length+1}-${idx+1}`,
+          name:text(f,"item_name"),
+          ...(compareSizes[idx]?{size_label:compareSizes[idx]}:sizeLabel?{size_label:sizeLabel}:{}),
+          ...(colorDeclared?{color_declared:colorDeclared}:{}),
+          ...(toleranceMm?{tolerances:{dimension_mm:Number(toleranceMm)}}:{}),
+          ...(attachmentId?{attachment_ids:[attachmentId]}:{}),
+        }));
         setLines(x=>[...x,{category_id:offer.category_id,offer_id:offer.offer_id,quantity,title:offer.title.en,
-          options:offer.service==="reference_match"?{reference_id:text(f,"reference_id")}:{},
-          attributes:{name:text(f,"item_name")}}]);
+          options:{
+            ...(offer.service==="reference_match"?{reference_id:text(f,"reference_id")}:{}),
+            ...(sizeMismatchConfirmed?{size_mismatch_confirmed:true}:{}),
+          },
+          attributes:{
+            name:text(f,"item_name"),
+            ...(sizeLabel?{size_label:sizeLabel}:{}),
+            ...(colorDeclared?{color_declared:colorDeclared}:{}),
+            ...(toleranceMm?{tolerances:{dimension_mm:Number(toleranceMm)}}:{}),
+            ...(attachmentId?{attachment_ids:[attachmentId]}:{}),
+          },
+          items,
+        }]);
       }}>
         <label>Product category<select value={currentCategory} onChange={event=>{setCategory(event.target.value);setSelected("");}} required>
           <option value="">Choose a category</option>{categories.map(([id,name])=><option key={id} value={id}>{name}</option>)}
@@ -148,15 +182,24 @@ export function NewOrder() {
           {eligibleOffers.map(o=><option key={o.offer_id} value={o.offer_id}>{o.title.en}</option>)}</select></label>
         {offer&&<Field key={offer.offer_id} label="Actual number of items" name="quantity" type="number" min={offer.rules.minimum} max={offer.service==="inspection"?300:offer.rules.maximum} value={offer.rules.minimum}/>}
         <Field label="Product name or style" name="item_name"/>
+        <Field label="Declared size (optional)" name="size_label" required={false}/>
+        <Field label="Declared color (optional)" name="color_declared" required={false}/>
+        <Field label="Measurement tolerance in mm (optional)" name="tolerance_mm" type="number" required={false}/>
+        {offer?.service==="compare"&&<>
+          <Field label="Per-item sizes if comparing different sizes (comma-separated, e.g. S, M)" name="compare_sizes" required={false}/>
+          <label className="check"><input type="checkbox" name="size_mismatch_confirmed"/>I understand comparing items of different sizes affects measurement difference interpretation.</label>
+        </>}
         {offer?.service==="reference_match"&&<Select name="reference_id" label="Active reference sample" choices={(refs.data?.items??[]).filter((r:Row)=>r.state==="active"&&new Date(r.expires_at)>new Date()).map((r:Row)=>({id:r.reference_id,label:(r.code??r.item_id)+" · "+stamp(r.expires_at)}))}/>}
+        <label>Size chart or reference photo (optional)<input name="photo" type="file" accept="image/*"/></label>
       </Form>
     </Panel>
     <Panel title="Inspection summary">
       {lines.length?<><p className="muted">{lines.length} {lines.length===1?"service":"services"} · {total} {total===1?"item":"items"}</p>
-        <ul className="draft-lines">{lines.map((line,index)=><li key={index}><div><strong>{line.title}</strong><small>{line.attributes.name} · {line.quantity} {line.quantity===1?"item":"items"}</small></div>
+        <ul className="draft-lines">{lines.map((line,index)=><li key={index}><div><strong>{line.title}</strong><small>{line.attributes.name} · {line.quantity} {line.quantity===1?"item":"items"}{line.attributes.size_label?` · Size ${line.attributes.size_label}`:""}{line.attributes.tolerances?.dimension_mm?` · ±${line.attributes.tolerances.dimension_mm} mm`:""}</small></div>
           <button type="button" aria-label={"Remove "+line.title} onClick={()=>setLines(items=>items.filter((_,position)=>position!==index))}>Remove</button>
         </li>)}</ul>
-        <Action primary run={async()=>{const r=await request("/orders","POST",{lines:lines.map(({title,...line})=>line)});location.assign("/orders/"+r.public_no);}}>Save draft and continue</Action>
+        <label>Order notes (optional)<input value={notes} maxLength={500} onChange={e=>setNotes(e.target.value)} placeholder="Special instructions or seller context…"/></label>
+        <Action primary run={async()=>{const r=await request("/orders","POST",{lines:lines.map(({title,...line})=>line),...(notes.trim()?{customer_notes:notes.trim()}:{})});location.assign("/orders/"+r.public_no);}}>Save draft and continue</Action>
       </>:<Empty>Add a service to start the draft. The next step shows the server-calculated quote.</Empty>}
     </Panel>
     </div></>;
@@ -200,6 +243,7 @@ export function OrderView({number,section}:{number:string;section?:OrderSection}
     {!o&&!lookup.error&&!detail.error&&<p role="status">Loading inspection order…</p>}
     {o&&<>
       <Tabs path={section?base+"/"+section:base} links={sectionLinks}/>
+      {o.state==="on_hold"&&<div className="notice" role="status"><strong>This order is currently on hold</strong>{o.hold_reason?`: ${o.hold_reason}`:""}.{paymentState==="paid"?" Your payment is recorded and will be applied when the hold is lifted.":""}</div>}
       {section==="parcels"&&<Panel title="Register seller tracking for this order">
         {receiving.error||carriers.error?<ErrorBlock error={receiving.error||carriers.error}/>:!receiving.data?<p role="status">Loading the receiving address…</p>:
           <InboundParcelForm address={receiving.data.warehouse_address} carriers={carriers.data?.carriers??[]} orderId={o.id} onSave={detail.reload}/>}
@@ -223,7 +267,21 @@ export function OrderView({number,section}:{number:string;section?:OrderSection}
           <Link href={payment.data?.charge?"/account/billing#charge-"+payment.data.charge.id:"/account/billing"}>Open billing</Link></div>
       </Panel>}
       {(!section||section==="payment")&&<Panel title="Inspection scope">
+      {o.customer_notes&&<p className="muted">Notes: {o.customer_notes}</p>}
+      {o.sla_due_at&&<p className="muted small">Inspection SLA target · {stamp(o.sla_due_at)}</p>}
       <Table headers={["Service","Position","Warehouse item","Custody"]} rows={o.items.map((i:Row)=>[i.title.en,i.position??i.quantity,i.code??"Awaiting assignment",i.custody_state?label(i.custody_state):"—"])}/>
+      {o.state==="draft"&&Array.isArray(o.lines)&&o.lines.length>0&&<details className="card">
+        <summary>Draft item declarations ({o.lines.reduce((n:number,l:Row)=>n+(l.quantity??0),0)} items)</summary>
+        {o.lines.map((l:Row)=><div key={l.id}>
+          <p><strong>{l.title?.en??l.sku_code}</strong> · {l.quantity} {l.quantity===1?"item":"items"}</p>
+          <Table headers={["Sample code","Size","Color","Tolerance"]} rows={(Array.isArray(l.draft_items)?l.draft_items:[]).map((item:Row,idx:number)=>[
+            <span className="code">{item.sample_code??`P-${idx+1}`}</span>,
+            item.size_label??l.attributes?.size_label??"—",
+            item.color_declared??l.attributes?.color_declared??"—",
+            item.tolerances?.dimension_mm?`±${item.tolerances.dimension_mm} mm`:l.attributes?.tolerances?.dimension_mm?`±${l.attributes.tolerances.dimension_mm} mm`:"—",
+          ])}/>
+        </div>)}
+      </details>}
       {o.report_version&&<Link className="button primary" href={"/orders/"+number+"/report"}>Open inspection report</Link>}
       {(o.state==="draft"||o.state==="awaiting_payment"&&(paymentState==="expired"||checkoutNotice?.expired))&&
         <div className="actions"><Action primary run={async()=>setQuote(await request("/orders/"+id+"/quotes","POST",{revision:o.revision}))}>{o.state==="draft"?"Calculate quote":"Review a new quote"}</Action></div>}
@@ -449,8 +507,11 @@ export function CustomerDesk({path}:{path:string}) {
     </Panel>}
     {isParcels&&<><div className="page-head"><p className="eyebrow">Warehouse deliveries</p><h1>Parcels</h1><p className="muted">Register the seller’s tracking number and follow incoming and outbound shipments.</p></div><Panel title="Register seller tracking">
       <InboundParcelForm address={addr} carriers={carriers.data?.carriers??[]} orders={data.orders} preferredOrder={parcelOrder} onSave={reload}/>
-      <Table headers={["Inbound tracking","Warehouse status","Carrier status"]} rows={data.advices.map((a:Row)=>[
-        <Link href={"/parcels/"+a.id}>{a.tracking_norm}</Link>,label(a.warehouse_state??"awaiting_warehouse"),label(a.transport_state)
+      <Table headers={["Inbound tracking","Linked orders","Warehouse status","Carrier status"]} rows={data.advices.map((a:Row)=>[
+        <Link href={"/parcels/"+a.id}>{a.tracking_norm}</Link>,
+        (a.order_numbers??[]).length?a.order_numbers.map((no:string)=><Link key={no} className="code" href={"/orders/"+no}>{no}</Link>):"—",
+        label(a.warehouse_state??"awaiting_warehouse"),
+        label(a.transport_state)
       ])}/>
     </Panel><Panel title="Claim a parcel already at the warehouse">
       <p className="muted">Upload the seller’s shipment proof. The warehouse reviews ownership before parcel details become visible.</p>
@@ -504,10 +565,16 @@ export function CustomerDesk({path}:{path:string}) {
       <ItemInstructionForm items={data.items.filter((w:Row)=>["stored","received"].includes(w.custody_state))} onSave={reload}/>
     </Panel></>}
     {isBills&&<><div className="page-head"><p className="eyebrow">Account services</p><h1>Billing</h1><p className="muted">Review shipping quotes, charges and refunds for your inspections.</p></div><Panel title="Quotes awaiting your approval">
-      {data.quotes.map((quote:Row)=><FulfillmentQuote key={quote.id} quote={quote}/>)}
+      {data.quotes.map((quote:Row)=><FulfillmentQuote key={quote.id} quote={quote} onUpdate={reload}/>)}
       {!data.quotes.length&&<Empty>No new quotes.</Empty>}
     </Panel><Panel title="Charges and refunds">
-      <Table headers={["Purpose","Charge","Refunded","State",""]} rows={data.bills.map((b:Row)=>[<span id={"charge-"+b.charge_item_id}>{label(b.purpose)}</span>,usd(b.amount_cents),usd(b.refunded_cents),<Tag>{label(b.state)}</Tag>,
+      <Table headers={["Purpose","Order / Batch","Charge","Refunded","State","Receipt / Attempt",""]} rows={data.bills.map((b:Row)=>[
+        <span id={"charge-"+b.charge_item_id}>{label(b.purpose)}</span>,
+        (b.order_numbers??[]).length?b.order_numbers.map((no:string)=><Link key={no} className="code" href={"/orders/"+no}>{no}</Link>):b.batch_id?<span className="code">{b.batch_id.slice(0,8)}</span>:"—",
+        usd(b.amount_cents),
+        usd(b.refunded_cents),
+        <Tag>{label(b.state)}</Tag>,
+        b.paid_ref?<span className="code">{b.paid_ref}</span>:b.latest_attempt_state?label(b.latest_attempt_state):"—",
         b.state==="open"?<Action run={()=>goCheckout(b.charge_item_id,b.quote_revision)}>Pay</Action>:null
       ])}/>
     </Panel></>}

@@ -2180,4 +2180,271 @@ test("reference sample reservation, active comparison lock, outbound shipping co
   assert.equal(expiredMatch.error.code,"REFERENCE_UNAVAILABLE");
 });
 
+test("order drafts preserve per-item declarations, attachments, compare size mismatch confirmation, and template snapshots across edits",async()=>{
+  const {c,terms,registration}=await signCustomer(),other=(await signCustomer()).c;
+  const admin=await staffLogin("admin"),receiver=await staffLogin("receiving");
+  const offers=(await c.fetch("/catalog")).offers as {offer_id:string;category_id:string;sku_code:string;template_version_id:string}[];
+  const apparelInspect=offers.find(o=>o.sku_code==="apparel-inspection-1")!;
+  const apparelCompare=offers.find(o=>o.sku_code==="apparel-compare-2")!;
+
+  const imgBuf=await sharp({create:{width:80,height:80,channels:3,background:"#225588"}}).png().toBuffer();
+  const form=new FormData();
+  form.set("photo",new Blob([new Uint8Array(imgBuf)],{type:"image/png"}),"size-chart.png");
+  form.set("kind","attachment");
+  const uploaded=await c.fetch("/me/media",form,"POST",201);
+  assert(uploaded.id);
+  assert((await c.fetch("/media/"+uploaded.id)).image.length>0);
+  await other.fetch("/media/"+uploaded.id,undefined,"GET",404);
+  await admin.fetch("/media/"+uploaded.id,undefined,"GET",404);
+
+  const unconfirmedCompare=await c.fetch("/orders",{
+    lines:[{
+      category_id:apparelCompare.category_id,
+      offer_id:apparelCompare.offer_id,
+      quantity:2,
+      items:[
+        {sample_code:"Sample A",size_label:"M",color_declared:"Black"},
+        {sample_code:"Sample B",size_label:"L",color_declared:"Black"},
+      ],
+    }],
+  },"POST",422);
+  assert.equal(unconfirmedCompare.error.code,"VALIDATION_FAILED");
+
+  const confirmedCompare=await c.fetch("/orders",{
+    customer_notes:"Compare two supplier batches.",
+    lines:[{
+      category_id:apparelCompare.category_id,
+      offer_id:apparelCompare.offer_id,
+      quantity:2,
+      options:{size_mismatch_confirmed:true},
+      attributes:{attachment_ids:[uploaded.id]},
+      items:[
+        {sample_code:"Sample A",size_label:"M",color_declared:"Black",tolerances:{chest_mm:15},attachment_ids:[uploaded.id]},
+        {sample_code:"Sample B",size_label:"L",color_declared:"Navy",tolerances:{chest_mm:20}},
+      ],
+    }],
+  },"POST",201);
+  assert((await admin.fetch("/media/"+uploaded.id)).image.length>0);
+  const compareDetail=await c.fetch("/orders/"+confirmedCompare.id);
+  assert.equal(compareDetail.customer_notes,"Compare two supplier batches.");
+  assert.equal(compareDetail.lines.length,1);
+  assert.equal(compareDetail.lines[0].draft_items.length,2);
+  assert.equal(compareDetail.lines[0].draft_items[0].sample_code,"Sample A");
+  assert.equal(compareDetail.lines[0].draft_items[1].size_label,"L");
+
+  const patched=await c.fetch("/orders/"+confirmedCompare.id,{
+    revision:confirmedCompare.revision,
+    lines:[{
+      category_id:apparelInspect.category_id,
+      offer_id:apparelInspect.offer_id,
+      quantity:2,
+      items:[
+        {sample_code:"Hoodie-1",size_label:"XL",color_declared:"Grey",tolerances:{length_mm:10},attachment_ids:[uploaded.id]},
+        {sample_code:"Hoodie-2",size_label:"XL",color_declared:"Grey"},
+      ],
+    }],
+  },"PATCH",200);
+  assert.equal(patched.revision,confirmedCompare.revision+1);
+
+  const quote=await c.fetch(`/orders/${confirmedCompare.id}/quotes`,{revision:patched.revision},"POST",201);
+  const originalTemplateVersionId=quote.line_snapshot[0].template_version_id;
+  const submitted=await c.fetch(`/orders/${confirmedCompare.id}/submit`,{
+    revision:patched.revision,
+    quote_id:quote.id,
+    terms_version_ids:terms.map(t=>t.id),
+    acknowledgements:{scope_notice:true,samples_not_batch:true,seller_refund_is_mine:true,no_certification:true,restricted_items:true},
+  });
+  const checkout=await c.fetch(`/charges/${submitted.charge.charge_item_id}/checkout`,{quote_revision:quote.revision});
+  await c.fetch(`/checkout/demo/${checkout.attempt_id}`,{});
+
+  const {rows:[origTpl]}=await pool.query("select template_key,category_id,service_type_id,content,array(select capability_id from template_capabilities where template_version_id=id) capability_ids from template_versions where id=$1",[originalTemplateVersionId]);
+  const templateAdmin=await staffLogin("inspector"),reviewer=await staffLogin("reviewer");
+  const newDraftTpl=await templateAdmin.fetch("/staff/admin/templates",{
+    template_key:origTpl.template_key,
+    category_id:origTpl.category_id,
+    service_type_id:origTpl.service_type_id,
+    capability_ids:origTpl.capability_ids,
+    content:origTpl.content,
+  },"POST",200);
+  await reviewer.fetch(`/staff/admin/templates/${newDraftTpl.id}/publish`,{},"POST",200);
+
+  const desk=await receiver.fetch("/staff/desk");
+  const loc=desk.locations.find((l:{code:string})=>l.code==="R-01").id;
+  const tracking="ZT"+randomUUID().slice(0,8).toUpperCase();
+  const advice=await c.fetch("/me/parcels",{address_id:registration.warehouse_address.id,carrier_code:"zto",tracking_no:tracking,order_ids:[confirmedCompare.id]},"POST",201);
+  const pkg=await receiver.fetch("/staff/intake/check-in",{tracking_no:tracking,advice_id:advice.id,carrier_code:"zto",outer_media_ids:[await receiver.photo("intake_outer")]},"POST",201);
+  const createdItems=await receiver.fetch(`/staff/packages/${pkg.id}/items`,{
+    revision:pkg.revision,
+    items:[{code:"S-"+randomUUID(),location_id:loc},{code:"S-"+randomUUID(),location_id:loc}],
+  },"POST",201);
+  const orderAfterPay=await c.fetch("/orders/"+confirmedCompare.id);
+  assert.equal(orderAfterPay.items.length,2);
+  assert.equal(orderAfterPay.items[0].declared_fields.sample_code,"Hoodie-1");
+  for(let i=0;i<2;i++) {
+    await receiver.fetch(`/staff/items/${createdItems.item_ids[i]}/assign`,{
+      revision:1,
+      order_line_id:orderAfterPay.items[i].order_line_id,
+      expected_item_id:orderAfterPay.items[i].id,
+      evidence_ids:[await receiver.photo("label_photo")],
+    });
+  }
+  const {rows:tasks}=await pool.query(
+    "select t.template_version_id from inspection_tasks t join order_lines l on l.id=t.order_line_id where l.order_id=$1",
+    [confirmedCompare.id]
+  );
+  assert.equal(tasks.length,2);
+  for(const t of tasks) {
+    assert.equal(t.template_version_id,originalTemplateVersionId,"Task must use the template version snapshot from order submission (T43)");
+    assert.notEqual(t.template_version_id,newDraftTpl.id);
+  }
+});
+
+test("Stripe webhook signature/amount guards, order hold/resume during payment, late payment after cancellation, and warehouse address rotation preserve invariants",async t=>{
+  const {c,terms,registration}=await signCustomer();
+  const admin=await staffLogin("admin");
+  const offers=(await c.fetch("/catalog")).offers as {offer_id:string;category_id:string;sku_code:string}[];
+  const apparelInspect=offers.find(o=>o.sku_code==="apparel-inspection-1")!;
+  const acknowledgements={scope_notice:true,samples_not_batch:true,seller_refund_is_mine:true,no_certification:true,restricted_items:true};
+
+  async function submitNewOrder() {
+    const draft=await c.fetch("/orders",{lines:[{category_id:apparelInspect.category_id,offer_id:apparelInspect.offer_id,quantity:1}]},"POST",201);
+    const quote=await c.fetch(`/orders/${draft.id}/quotes`,{revision:draft.revision},"POST",201);
+    const submitted=await c.fetch(`/orders/${draft.id}/submit`,{
+      revision:draft.revision,quote_id:quote.id,terms_version_ids:terms.map(x=>x.id),acknowledgements,
+    });
+    const checkout=await c.fetch(`/charges/${submitted.charge.charge_item_id}/checkout`,{quote_revision:quote.revision});
+    return {draft,quote,submitted,checkout};
+  }
+
+  const mismatchOrder=await submitNewOrder();
+  const webhookSecret="whsec_test_secret_fixture_1234567890";
+  setFixtureEnv(t,{QCW_DEMO:"0",STRIPE_SECRET_KEY:"sk_test_fixture_123456",STRIPE_WEBHOOK_SECRET:webhookSecret});
+
+  const badSigRes=await handle(new Request(origin+"/api/v1/webhooks/stripe",{
+    method:"POST",
+    headers:{"content-type":"application/json","stripe-signature":"t=1700000000,v1=deadbeef"},
+    body:JSON.stringify({id:"evt_bad_sig",type:"checkout.session.completed"}),
+  }),"/webhooks/stripe");
+  assert.equal(badSigRes.status,401);
+  assert.equal((await badSigRes.json()).error.code,"SIGNATURE_INVALID");
+  assert((await pool.query("select 1 from audit_events where action='rejected_signature_invalid' and after->>'code'='SIGNATURE_INVALID'")).rowCount!>=1);
+
+  const mismatchPayload=JSON.stringify({
+    id:"evt_mismatch_"+randomUUID(),
+    object:"event",
+    api_version:"2024-06-20",
+    created:Math.floor(Date.now()/1000),
+    livemode:false,
+    pending_webhooks:1,
+    request:{id:null,idempotency_key:null},
+    type:"checkout.session.completed",
+    data:{
+      object:{
+        id:"cs_test_"+randomUUID(),
+        object:"checkout.session",
+        payment_status:"paid",
+        amount_total:mismatchOrder.quote.amount_cents+500,
+        currency:"usd",
+        payment_intent:"pi_test_"+randomUUID(),
+        metadata:{
+          payment_id:mismatchOrder.checkout.attempt_id,
+          charge_item_id:mismatchOrder.submitted.charge.charge_item_id,
+          org_id:registration.org_id,
+          purpose:"inspection",
+          quote_revision:String(mismatchOrder.quote.revision),
+        },
+      },
+    },
+  });
+  const mismatchSig=Stripe.webhooks.generateTestHeaderString({payload:mismatchPayload,secret:webhookSecret});
+  const mismatchRes=await handle(new Request(origin+"/api/v1/webhooks/stripe",{
+    method:"POST",
+    headers:{"content-type":"application/json","stripe-signature":mismatchSig},
+    body:mismatchPayload,
+  }),"/webhooks/stripe");
+  assert.equal(mismatchRes.status,409);
+  assert.equal((await mismatchRes.json()).error.code,"PAYMENT_AMOUNT_MISMATCH");
+  assert.equal((await c.fetch("/orders/"+mismatchOrder.draft.id)).state,"awaiting_payment");
+  assert((await pool.query("select 1 from tickets where category='payment_refund' and details->>'payment_id'=$1",[mismatchOrder.checkout.attempt_id])).rowCount!>=1);
+
+  process.env.QCW_DEMO="1";
+
+  const holdOrder=await submitNewOrder();
+  const held=await admin.fetch(`/staff/orders/${holdOrder.draft.id}/hold`,{
+    revision:holdOrder.submitted.order.revision,
+    reason:"Verify declared seller SKU before sample activation.",
+  });
+  assert.equal(held.state,"on_hold");
+  assert.equal(held.held_from_state,"awaiting_payment");
+  const heldView=await c.fetch("/orders/"+holdOrder.draft.id);
+  assert.equal(heldView.state,"on_hold");
+  assert.equal(heldView.hold_reason,"Verify declared seller SKU before sample activation.");
+
+  await c.fetch(`/checkout/demo/${holdOrder.checkout.attempt_id}`,{});
+  assert.equal((await c.fetch("/orders/"+holdOrder.draft.id)).state,"on_hold");
+  assert.equal((await c.fetch("/orders/"+holdOrder.draft.id)).items.filter((x:{id:string|null})=>x.id!==null).length,0);
+
+  const resumed=await admin.fetch(`/staff/orders/${holdOrder.draft.id}/resume`,{
+    revision:held.revision,
+    reason:"Seller SKU verified; resume order.",
+  });
+  assert.equal(resumed.state,"awaiting_samples");
+  await c.fetch(`/checkout/demo/${holdOrder.checkout.attempt_id}`,{});
+  const afterResume=await c.fetch("/orders/"+holdOrder.draft.id);
+  assert.equal(afterResume.state,"awaiting_samples");
+  assert.equal(afterResume.items.filter((x:{id:string|null})=>x.id!==null).length,1);
+
+  const cancelOrder=await submitNewOrder();
+  const cancelled=await c.fetch(`/orders/${cancelOrder.draft.id}/cancel`,{
+    revision:cancelOrder.submitted.order.revision,
+    reason:"Seller out of stock before shipment.",
+  });
+  assert.equal(cancelled.state,"cancelled");
+  await c.fetch(`/checkout/demo/${cancelOrder.checkout.attempt_id}`,{});
+  const afterLatePay=await c.fetch("/orders/"+cancelOrder.draft.id);
+  assert.equal(afterLatePay.state,"cancelled");
+  assert.equal(afterLatePay.items.filter((x:{id:string|null})=>x.id!==null).length,0);
+  const {rows:lateTickets}=await pool.query(
+    "select id,order_id from tickets where category='payment_refund' and details->>'payment_id'=$1",
+    [cancelOrder.checkout.attempt_id]
+  );
+  assert.equal(lateTickets.length,1);
+  assert.equal(lateTickets[0].order_id,cancelOrder.draft.id);
+
+  const billingRes=await c.fetch("/me/billing");
+  assert(billingRes.charges.some((ch:{charge_item_id:string;state:string})=>ch.charge_item_id===holdOrder.submitted.charge.charge_item_id&&ch.state==="paid"));
+
+  const oldAddrId=registration.warehouse_address.id;
+  const trackingBefore="ZT"+randomUUID().slice(0,8).toUpperCase();
+  const adviceBefore=await c.fetch("/me/parcels",{
+    address_id:oldAddrId,carrier_code:"zto",tracking_no:trackingBefore,order_ids:[holdOrder.draft.id],
+  },"POST",201);
+  const newAddr=await admin.fetch("/staff/admin/warehouse-addresses",{
+    code:"SZ-WH-"+randomUUID().slice(0,6).toUpperCase(),
+    contact_name:"QC Warehouse Receiving Desk B",
+    contact_phone:"0755-88889999",
+    address_zh:"广东省深圳市宝安区测试路88号B仓",
+    address_en:"Warehouse B, 88 Test Rd, Baoan, Shenzhen",
+    is_default:true,
+  },"POST",200);
+  try {
+    const currentReceiving=await c.fetch("/me/receiving-address");
+    assert.equal(currentReceiving.receiving_code,registration.receiving_code);
+    assert.equal(currentReceiving.warehouse_address.id,newAddr.id);
+    const trackingAfter="ZT"+randomUUID().slice(0,8).toUpperCase();
+    const adviceAfter=await c.fetch("/me/parcels",{
+      address_id:newAddr.id,carrier_code:"zto",tracking_no:trackingAfter,order_ids:[holdOrder.draft.id],
+    },"POST",201);
+    const deskAdvices=(await c.fetch("/me/desk")).advices as {id:string;address_snapshot:{id:string};order_numbers:string[]}[];
+    const snapBefore=deskAdvices.find(a=>a.id===adviceBefore.id)!;
+    const snapAfter=deskAdvices.find(a=>a.id===adviceAfter.id)!;
+    assert.equal(snapBefore.address_snapshot.id,oldAddrId);
+    assert.equal(snapAfter.address_snapshot.id,newAddr.id);
+    assert(snapAfter.order_numbers.includes(holdOrder.draft.public_no));
+  } finally {
+    await pool.query("update warehouse_addresses set is_default=false,active=false where id=$1",[newAddr.id]);
+    await pool.query("update warehouse_addresses set is_default=true,active=true where id=$1",[oldAddrId]);
+  }
+});
+
 test("all core operations have a validated success response",assertCoreCoverage);

@@ -16,13 +16,26 @@ export const priceSchema=z.object({
   package_cents:z.number().int().positive().optional(),business_days:z.number().int().positive(),demo:z.boolean().optional()
 }).refine(p=>p.maximum>=p.minimum && Number(!!p.unit_cents)+Number(!!p.package_cents)===1);
 export type LineInput={category_id:string; offer_id:string; quantity:number; options?:object; attributes?:object; items?:object[]};
-async function validateLineSamples(db:DB,org:string,line:{category_id:string;options?:unknown;items?:unknown[];draft_items?:unknown[]},service:string) {
-  const items=(Array.isArray(line.items)?line.items:Array.isArray(line.draft_items)?line.draft_items:[]) as {category_id?:string}[];
+async function validateLineSamples(db:DB,org:string,line:{category_id:string;options?:unknown;attributes?:unknown;items?:unknown[];draft_items?:unknown[]},service:string) {
+  const items=(Array.isArray(line.items)?line.items:Array.isArray(line.draft_items)?line.draft_items:[]) as {category_id?:string;size_label?:string;size?:string;attachment_ids?:unknown}[];
+  const lineAttachments=Array.isArray((line.attributes as {attachment_ids?:unknown})?.attachment_ids)
+    ?((line.attributes as {attachment_ids:unknown[]}).attachment_ids):[];
+  const itemAttachments=items.flatMap(item=>Array.isArray(item?.attachment_ids)?item.attachment_ids:[]);
+  const allAttachments=[...new Set([...lineAttachments,...itemAttachments])];
+  for(const rawId of allAttachments) {
+    const mediaId=z.string().uuid().parse(rawId);
+    const media=(await db.query("select 1 from media_assets where id=$1 and org_id=$2 and kind='attachment' and status='ready'",[mediaId,org])).rowCount;
+    guard(media,"EVIDENCE_MISMATCH","Attachment does not belong to this account.",422);
+  }
   if(service==="compare") {
     const mismatch=items.some(item=>typeof item?.category_id==="string" && item.category_id!==line.category_id);
     const optCategories=(line.options as {item_categories?:unknown})?.item_categories;
     const optMismatch=Array.isArray(optCategories) && optCategories.some(cat=>typeof cat==="string" && cat!==line.category_id);
     guard(!mismatch && !optMismatch,"INCOMPATIBLE_SAMPLES","Direct comparison requires items from the same product category.",422);
+    const sizes=items.map(item=>String(item?.size_label??item?.size??"").trim()).filter(Boolean);
+    const sizeMismatchConfirmed=(line.options as {size_mismatch_confirmed?:unknown})?.size_mismatch_confirmed===true ||
+      (line.attributes as {size_mismatch_confirmed?:unknown})?.size_mismatch_confirmed===true;
+    guard(new Set(sizes).size<=1 || sizeMismatchConfirmed,"VALIDATION_FAILED","Confirm size mismatch before comparing items of different sizes.",422);
   }
   if(service==="reference_match") {
     const ref=z.object({reference_id:z.string().uuid()}).parse(line.options);
@@ -83,17 +96,26 @@ export async function saveOrder(db:DB,actor:Actor,input:{lines:LineInput[];custo
     revision(order.revision,input.revision!);
     guard(order.state==="draft","ORDER_NOT_EDITABLE","Only draft orders can be edited.");
     await db.query("delete from order_lines where order_id=$1",[id]);
-    order=await one(db,"update orders set revision=revision+1,updated_at=now() where id=$1 returning *",[id]);
+    order=await one(db,"update orders set customer_notes=coalesce($2,customer_notes),revision=revision+1,updated_at=now() where id=$1 returning *",[id,input.customer_notes??null]);
   } else {
     order=await one(db,`insert into orders(id,public_no,org_id,created_by,customer_notes,is_test)
       values($1,$2,$3,$4,$5,$6) returning *`,[uuid(),code("QW-"),org,actor.id,input.customer_notes??null,isDemo()]);
   }
-  for(const line of input.lines) {
+  for(const [lineIndex,line] of input.lines.entries()) {
     const {offer}=await eligible(db,line,true);
     await validateLineSamples(db,org,line,offer.service);
+    const normalizedItems=Array.from({length:line.quantity},(_,idx)=>{
+      const raw=(line.items?.[idx]??{}) as Record<string,unknown>;
+      const defaultCode=`L${lineIndex+1}-P${String(idx+1).padStart(2,"0")}`;
+      return {
+        position:idx+1,
+        sample_code:typeof raw.sample_code==="string"&&raw.sample_code.trim()?raw.sample_code.trim():defaultCode,
+        ...raw,
+      };
+    });
     await db.query(`insert into order_lines(order_id,org_id,offer_id,category_id,template_version_id,quantity,options,attributes,draft_items)
       values($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [order.id,org,line.offer_id,line.category_id,offer.template_version_id,line.quantity,line.options??{},line.attributes??{},JSON.stringify(line.items??[])]);
+      [order.id,org,line.offer_id,line.category_id,offer.template_version_id,line.quantity,line.options??{},line.attributes??{},JSON.stringify(normalizedItems)]);
   }
   await audit(db,actor,id?"edit_draft":"create_draft","orders",order.id);
   return orderDTO(order as Parameters<typeof orderDTO>[0]);
@@ -271,7 +293,11 @@ export async function readyOrder(db:DB,id:string) {
 }
 export async function orderDetail(db:DB,actor:Actor,id:string) {
   const order=await ownOrder(db,actor,id);
-  const rows=(await db.query(`select e.id,e.position,l.id as order_line_id,l.quantity,so.title, w.id item_id,w.code,w.custody_state,w.storage_until,
+  const lines=(await db.query(`select l.id,l.offer_id,l.category_id,l.template_version_id,l.quantity,l.options,l.attributes,l.draft_items,
+    so.title,so.sku_code,st.code service
+    from order_lines l join service_offers so on so.id=l.offer_id join service_types st on st.id=so.service_type_id
+    where l.order_id=$1 order by l.id`,[id])).rows;
+  const rows=(await db.query(`select e.id,e.position,e.declared_fields,l.id as order_line_id,l.quantity,so.title, w.id item_id,w.code,w.custody_state,w.storage_until,
     (select max(p.ends_at) from storage_periods p where p.item_id=w.id) paid_storage_until,
     (select jsonb_build_object('id',d.id,'action',d.action,'state',d.state,
       'awaiting_batch',d.action<>'retain' and not exists(select 1 from dispatch_batch_items bi where bi.disposition_id=d.id and bi.released_at is null))
@@ -289,13 +315,15 @@ export async function orderDetail(db:DB,actor:Actor,id:string) {
     where ao.order_id=$1 and ao.org_id=$2 order by t.tracking_norm`,[id,order.org_id])).rows;
   const cases=(await db.query(`select id,public_no,subject,state from tickets
     where order_id=$1 and org_id=$2 order by created_at desc limit 50`,[id,order.org_id])).rows;
-  const consents=(await db.query(`select c.id,c.created_at,
+  const consents=(await db.query(`select c.id,c.created_at,c.acknowledgements,
     jsonb_agg(jsonb_build_object('kind',t.kind,'version',t.version) order by t.kind) policies
     from consents c join terms_versions t on t.id=any(c.terms_version_ids)
     where c.order_id=$1 group by c.id order by c.created_at desc,c.id`,[id])).rows;
   const shipments=await orderShipments(db,id,order.org_id);
   const quotes=(await orderQuotes(db,id,order.org_id)).map(({id,revision,purpose,action,state,amount_cents,expires_at})=>
     ({id,revision,purpose,action,state,amount_cents,expires_at}));
-  return {...orderDTO(order as Parameters<typeof orderDTO>[0]),price_cents:order.price_cents,items:rows,
-    report_version:report?.published_version??null,manual_quote:manual??null,parcels,cases,shipments,quotes,consents};
+  return {...orderDTO(order as Parameters<typeof orderDTO>[0]),price_cents:order.price_cents,
+    customer_notes:order.customer_notes??null,held_at:order.held_at??null,held_from_state:order.held_from_state??null,hold_reason:order.hold_reason??null,
+    created_at:order.created_at,paid_at:order.paid_at??null,samples_ready_at:order.samples_ready_at??null,sla_due_at:order.sla_due_at??null,
+    lines,items:rows,report_version:report?.published_version??null,manual_quote:manual??null,parcels,cases,shipments,quotes,consents};
 }

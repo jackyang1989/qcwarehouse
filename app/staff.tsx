@@ -969,6 +969,44 @@ function ItemIdentity({data,onSave}:{data:Row;onSave:()=>void}) {
       {item.components?.length>0&&<p className="small">包含套装组件：{item.components.map((c:Row)=>c.code).join("、")}</p>}
       {!item.ownership_verified&&<p>待核验客户归属。完成认领后才能关联委托。</p>}
     </div>
+    {item.declared_fields&&<div className="card">
+      <strong>客户委托申报信息（位置 {item.expected_position}）</strong>
+      <p className="small">
+        编号：{item.declared_fields.sample_code??"—"} · 尺码：{item.declared_fields.size_label??item.declared_fields.size??"—"} · 颜色：{item.declared_fields.color_declared??item.declared_fields.color??"—"}
+      </p>
+      {item.declared_fields.mismatch_note&&<p className="bad small">当前登记不符：{item.declared_fields.mismatch_note}</p>}
+    </div>}
+    {item.can_identify&&<details className="card" open={item.identity_state==="mismatch"}>
+      <summary>实物身份核对与收货不符登记（PAGE-H06）</summary>
+      <Form label="提交身份核对结论" run={async f=>{
+        const matches=text(f,"matches_advice")==="true";
+        const file=f.get("photo");
+        const mediaIds:string[]=[];
+        if(file instanceof File && file.size>0) {
+          mediaIds.push(await upload(file,"label_photo"));
+        }
+        await request("/staff/items/"+item.id+"/identify","POST",{
+          revision:item.revision,
+          matches_advice:matches,
+          actual_label_info:{
+            size_label:text(f,"actual_size")||undefined,
+            color_found:text(f,"actual_color")||undefined,
+          },
+          mismatch_note:matches?undefined:text(f,"mismatch_note"),
+          media_ids:mediaIds.length?mediaIds:undefined,
+        });
+        onSave();
+      }}>
+        <Select name="matches_advice" label="核对结论" choices={[
+          {id:"true",label:"实物标签与客户申报一致（确认 identified）"},
+          {id:"false",label:"实物与申报不符（暂停订单并通知客户确认）"},
+        ]}/>
+        <Field name="actual_size" label="实拍吊牌/洗标尺码（选填）" required={false}/>
+        <Field name="actual_color" label="实收外观颜色（选填）" required={false}/>
+        <Field name="mismatch_note" label="不符说明（客户可见英文，不符时必填）" required={false}/>
+        <label>补充标签核对照（选填）<input type="file" name="photo" accept="image/jpeg,image/png,image/webp"/></label>
+      </Form>
+    </details>}
     {positions.length>0?<Form key={item.id} label="核对并绑定" run={async f=>{
       const position=positions.find(p=>p.id===text(f,"position"));
       if(!position)throw new Error("请选择同一客户的委托位置。");

@@ -62,10 +62,11 @@ export async function customerActions(db:DB,actor:Actor) {
     union all select q.id,'quote','retain',w.code,q.expires_at from storage_quotes q
       join disposition_requests d on d.id=q.disposition_id join warehouse_items w on w.id=d.item_id and w.org_id=d.org_id
       where d.org_id=$1 and d.state='requested' and q.accepted_at is null and q.expires_at>now()
-    union all select c.id,'charge',c.purpose,null,coalesce(q.expires_at,s.expires_at) from charge_items c
+    union all select c.id,'charge',c.purpose,null,coalesce(q.expires_at,s.expires_at,iq.expires_at) from charge_items c
       left join dispatch_quote_versions q on q.id=c.dispatch_quote_id left join storage_quotes s on s.id=c.storage_quote_id
-      where c.org_id=$1 and c.purpose in ('dispatch','storage') and c.voided_at is null
-      and c.applied_payment_id is null and c.free_authorization is null
+      left join inspection_quotes iq on iq.id=c.inspection_quote_id
+      where c.org_id=$1 and (c.purpose in ('dispatch','storage') or (c.purpose='inspection' and c.scope_revision_id is not null))
+      and c.voided_at is null and c.applied_payment_id is null and c.free_authorization is null
       and not exists(select 1 from payments p where p.charge_item_id=c.id and p.state='processing')
     union all select t.advice_id,'parcel',t.sync_state,t.tracking_norm,null from tracking_records t
       where t.org_id=$1 and t.direction='inbound' and t.advice_id is not null and t.closed_at is null
@@ -175,18 +176,20 @@ export async function warehouseItem(db:DB,actor:Actor,code:string) {
   role(actor,...staffAccess.intake);
   const item=await one(db,`select w.id,w.code,w.org_id,w.revision,w.parent_item_id,w.intake_batch_id,
     w.identity_state,w.condition_state,w.custody_state,
-    p.code package_code,sl.code location,o.public_no order_number,o.state order_state,
+    p.code package_code,sl.code location,o.id order_id,o.public_no order_number,o.state order_state,
+    a.order_line_id,a.expected_item_id,e.position expected_position,e.declared_fields,
     exists(select 1 from disposition_requests d where d.item_id=w.id and d.state not in ('completed','cancelled')) reserved,
     (select coalesce(jsonb_agg(jsonb_build_object('id',c.id,'code',c.code,'custody_state',c.custody_state) order by c.code),'[]'::jsonb)
      from warehouse_items c where c.parent_item_id=w.id) components
     from warehouse_items w join packages p on p.id=w.package_id
     left join storage_locations sl on sl.id=w.location_id
     left join order_line_item_links a on a.item_id=w.id and a.unlinked_at is null
+    left join expected_items e on e.id=a.expected_item_id
     left join order_lines l on l.id=a.order_line_id left join orders o on o.id=l.order_id
     where w.code=$1`,[code]);
   const movable=["received","stored"].includes(item.custody_state);
   const eligible=item.org_id&&!item.parent_item_id&&!item.order_number&&!item.reserved&&movable&&item.identity_state!=="quarantined";
-  const positions=eligible?(await db.query(`select e.id,e.position,l.id order_line_id,o.public_no,s.title
+  const positions=eligible?(await db.query(`select e.id,e.position,e.declared_fields,l.id order_line_id,o.public_no,s.title
     from expected_items e join order_lines l on l.id=e.order_line_id
     join orders o on o.id=l.order_id join service_offers s on s.id=l.offer_id
     where l.org_id=$1 and o.state='awaiting_samples' and o.paid_at is not null and e.in_scope
@@ -194,8 +197,12 @@ export async function warehouseItem(db:DB,actor:Actor,code:string) {
     order by o.public_no,l.id,e.position`,[item.org_id])).rows:[];
   return {item:{id:item.id,code:item.code,revision:item.revision,parent_item_id:item.parent_item_id,
     intake_batch_id:item.intake_batch_id,identity_state:item.identity_state,condition_state:item.condition_state,
-    custody_state:item.custody_state,package_code:item.package_code,location:item.location,order_number:item.order_number,
-    can_unassign:Boolean(item.order_number && item.order_state==="awaiting_samples"),
+    custody_state:item.custody_state,package_code:item.package_code,location:item.location,
+    order_id:item.order_id??null,order_number:item.order_number,order_state:item.order_state??null,
+    order_line_id:item.order_line_id??null,expected_item_id:item.expected_item_id??null,
+    expected_position:item.expected_position??null,declared_fields:item.declared_fields??null,
+    can_unassign:Boolean(item.order_number && ["awaiting_samples","on_hold"].includes(item.order_state)),
+    can_identify:Boolean(item.order_number && ["awaiting_samples","on_hold"].includes(item.order_state) && item.identity_state!=="quarantined"),
     components:item.components,ownership_verified:!!item.org_id,movable},positions};
 }
 const warehouseBatches=`select b.id,b.revision,b.state,b.action,b.destination_snapshot,q.id quote_id,q.snapshot,

@@ -8,8 +8,34 @@ import { audit, guard, one, role, type Actor } from "./common";
 import { requireStaffMfa } from "./auth";
 import type { DB } from "../db";
 
-const businessEvents=["account.registered","report.render","refund.approved","package.received","order.ready","order.cancelled","dispatch.quoted","quote.offered","shipment.handed_over","shipment.return_received","payment.confirmed","report.published","report.amended","ticket.reply"];
+const businessEvents=["account.registered","report.render","refund.approved","package.received","order.ready","order.identity_mismatch","order.cancelled","dispatch.quoted","quote.offered","shipment.handed_over","shipment.return_received","payment.confirmed","report.published","report.amended","ticket.reply"];
 const maxJobAttempts=10;
+
+function eventDedupeKey(j:{id:string;type:string;payload:Record<string,unknown>}):string {
+  if(typeof j.payload?.dedupe_key==="string" && j.payload.dedupe_key.trim()) return j.payload.dedupe_key.trim();
+  switch(j.type) {
+    case "package.received":
+      return j.payload?.package_id?`package.received:${j.payload.package_id}`:`outbox:${j.id}`;
+    case "order.ready":
+      return j.payload?.order_id?`order.ready:${j.payload.order_id}`:`outbox:${j.id}`;
+    case "order.identity_mismatch":
+      return j.payload?.order_id&&j.payload?.expected_item_id
+        ?`order.identity_mismatch:${j.payload.order_id}:${j.payload.expected_item_id}`
+        :`outbox:${j.id}`;
+    case "order.cancelled":
+      return j.payload?.order_id?`order.cancelled:${j.payload.order_id}`:`outbox:${j.id}`;
+    case "payment.confirmed":
+      return j.payload?.charge_id?`payment.confirmed:${j.payload.charge_id}`:`outbox:${j.id}`;
+    case "report.published":
+      return j.payload?.order_id?`report.published:${j.payload.order_id}:${j.payload.version??1}`:`outbox:${j.id}`;
+    case "report.amended":
+      return j.payload?.order_id&&j.payload?.version?`report.amended:${j.payload.order_id}:${j.payload.version}`:`outbox:${j.id}`;
+    case "shipment.handed_over":
+      return j.payload?.shipment_id?`shipment.handed_over:${j.payload.shipment_id}`:`outbox:${j.id}`;
+    default:
+      return `outbox:${j.id}`;
+  }
+}
 export async function failedJobs(db:DB,actor:Actor) {
   role(actor,"super_admin");
   const {rows}=await db.query(`select j.id,j.type,j.attempts,j.last_error,j.next_attempt_at,j.created_at,
@@ -54,8 +80,9 @@ export async function workOnce() {
           (select org_id from charge_items where id=$5),$6::uuid)`,[j.payload.order_id??null,j.payload.package_id??null,
           j.payload.batch_id??null,j.payload.shipment_id??null,j.payload.charge_id??null,j.payload.org_id??null])).rows[0];
         if(recipient) {
+          const dedupeKey=eventDedupeKey(j);
           const inserted=(await db.query<{id:string}>(`insert into notifications(user_id,order_id,template,locale,payload,dedupe_key)
-            values($1,$2,$3,'en',$4,$5) on conflict do nothing returning id`,[recipient.user_id,j.payload.order_id??null,j.type,j.payload,"outbox:"+j.id])).rows[0];
+            values($1,$2,$3,'en',$4,$5) on conflict do nothing returning id`,[recipient.user_id,j.payload.order_id??null,j.type,j.payload,dedupeKey])).rows[0];
           if(inserted) await queueNotificationEmail(db,inserted.id,recipient.user_id);
         }
       }

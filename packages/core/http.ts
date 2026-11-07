@@ -11,7 +11,7 @@ import { integrationPreflight, signInMethods } from "./integrations";
 import { failedJobs, retryFailedJob } from "./worker";
 import { customerEmailDeliveryStatus, receivePostmarkWebhook, retryEmailDelivery, staffEmailDeliveries } from "./email";
 import { catalog, issueManualQuote, orderDetail, quoteOrder, requestManualQuote, saveOrder, submitOrder } from "./orders";
-import { advise, assign, bindUnmatchedPackageOwner, checkIn, decideIntakeClaim, intakeItems, lookup, quarantineItem, quarantinePackage, requestIntakeClaim, savePhoto, unassignItem, waybill } from "./intake";
+import { advise, assign, bindUnmatchedPackageOwner, checkIn, decideIntakeClaim, identifyItem, intakeItems, lookup, quarantineItem, quarantinePackage, requestIntakeClaim, savePhoto, unassignItem, waybill } from "./intake";
 import { amendReport, amendReportInput, approveReport, editReportRevision, readReport, recordResults, reportDesk, returnReport, revisionChanges, staffReport, startTask, submitReport, submitReportRevision, submitTask, taskDetail } from "./inspection";
 import { acceptQuote, confirmBatch, handover, instruct, packShipment, planBatch, quoteBatch, receiveReturn, releaseReferenceSample, storageQuote } from "./dispatch";
 import { checkout, demoPay, orderPayment, orderRefundPayments, refundApprove, refundRequest, stripeEvent, verifyStripe } from "./payments";
@@ -22,7 +22,7 @@ import { customerDestination, withDestination } from "./portal-routes";
 import { orderFulfillmentRecord } from "./fulfillment-reads";
 import { canReadCasePhoto, caseDetail, createPublicInquiry, customerTicketMessage, inquiryCategories, publicInquiry, replyToCase, staffTicketEvent, staffTicketQueue, writeStaffTicket } from "./tickets";
 import { createLocations, locationBatchSchema, locationMaster, setLocationActive, storageMovementDesk } from "./storage";
-import { acceptScope, approveCapability, cancelOrder, createCapability, createCategory, holdOrder, moveItem, newTemplate, orderCaseCategory, publishSkuPrice, publishTemplate, reportIssue, resumeOrder, revokeCapability, scopeProposal, scopeReview, setAddress, staffSchemas, updateCategoryStatus, upsertOffer } from "./operations";
+import { acceptScope, approveCapability, cancelOrder, convertOrderToTwo, createCapability, createCategory, extendOrderArrival, holdOrder, moveItem, newTemplate, orderCaseCategory, publishSkuPrice, publishTemplate, reportIssue, respondOrderMismatch, resumeOrder, revokeCapability, scopeProposal, scopeReview, setAddress, staffSchemas, updateCategoryStatus, upsertOffer } from "./operations";
 import { createReportShare, listPublishedReports, listReportShares, readSharedPhoto, readSharedReport, reportSharingEnabled, revokeReportShare, shareInput, shareTokenPattern } from "./report-shares";
 import { auditFilters, readAudit } from "./audit-read";
 import { completeMediaUpload, createMediaReadUrl, createMediaUploadUrl, putMediaStaging, readMediaBinary, uploadUrlInputSchema } from "./media";
@@ -571,6 +571,50 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   if(method==="POST" && itemUnassign) return extraWrite(req,path,actor,z.object({
     revision:revSchema,reason:z.string().trim().min(4).max(1000)
   }),(db,a,b)=>unassignItem(db,a,idSchema.parse(itemUnassign[1]),b));
+  const itemIdentify=path.match(/^\/staff\/(items|samples)\/([a-f0-9-]{36})\/identify$/i);
+  if(method==="POST" && itemIdentify) return extraWrite(req,path,actor,z.object({
+    revision:revSchema,
+    matches_advice:z.boolean(),
+    actual_label_info:z.record(z.string(),z.unknown()).optional(),
+    mismatch_note:z.string().trim().max(1000).optional(),
+    media_ids:z.array(idSchema).optional(),
+    evidence_ids:z.array(idSchema).optional(),
+    order_line_id:idSchema.optional(),
+    expected_item_id:idSchema.optional(),
+  }),(db,a,b)=>identifyItem(db,a,idSchema.parse(itemIdentify[2]),b));
+  const mismatchResp=path.match(/^\/orders\/([a-f0-9-]{36})\/mismatch-response$/i);
+  if(method==="POST" && mismatchResp) return extraWrite(req,path,actor,z.object({
+    revision:revSchema.optional(),
+    expected_item_id:idSchema.optional(),
+    sample_label:z.string().trim().max(120).optional(),
+    item_id:idSchema.optional(),
+    decision:z.enum(["proceed_as_received","replace_sample","return_sample"]),
+    note:z.string().trim().max(1000).optional(),
+  }),(db,a,b)=>respondOrderMismatch(db,a,idSchema.parse(mismatchResp[1]),b));
+  const convertTwo=path.match(/^\/orders\/([a-f0-9-]{36})\/convert-to-two$/i);
+  if(method==="POST" && convertTwo) return extraWrite(req,path,actor,z.object({
+    revision:revSchema.optional(),
+    expected_item_id:idSchema.optional(),
+    drop_label:z.string().trim().max(120).optional(),
+    reason:z.string().trim().max(1000).optional(),
+  }),(db,a,b)=>convertOrderToTwo(db,a,idSchema.parse(convertTwo[1]),b));
+  const orderExtend=path.match(/^\/orders\/([a-f0-9-]{36})\/extend$/i);
+  if(method==="POST" && orderExtend) return extraWrite(req,path,actor,z.object({
+    revision:revSchema,
+    extend_days:z.number().int().min(1).max(30),
+    reason:z.string().trim().min(2).max(1000),
+  }),(db,a,b)=>extendOrderArrival(db,a,idSchema.parse(orderExtend[1]),b));
+  const scopeAdditions=path.match(/^\/orders\/([a-f0-9-]{36})\/scope-additions$/i);
+  if(method==="POST" && scopeAdditions) return extraWrite(req,path,actor,z.object({
+    revision:revSchema,
+    reason:z.string().trim().min(1).max(1000),
+    positions:z.array(idSchema),
+    additions:z.array(z.object({
+      order_line_id:idSchema,
+      count:z.number().int().min(1).max(100),
+      declared_fields:z.array(z.record(z.string(),z.unknown())).optional(),
+    })).min(1),
+  }),(db,a,b)=>scopeProposal(db,a,idSchema.parse(scopeAdditions[1]),b),201);
   const verification=path.match(/^\/me\/parcels\/([a-f0-9-]{36})\/tracking-verification$/i);
   if(verification && method==="GET") return json(await transaction(db=>verificationState(db,actorRequired(actor),idSchema.parse(verification[1]))));
   if(verification && method==="POST") return extraWrite(req,path,actor,z.object({revision:revSchema,

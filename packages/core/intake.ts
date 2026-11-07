@@ -182,6 +182,169 @@ export async function unassignItem(db:DB,actor:Actor,itemId:string,input:{revisi
   return {item_id:itemId,unlinked_assignment_id:link.id,revision:item.revision+1};
 }
 
+export async function identifyItem(
+  db:DB,
+  actor:Actor,
+  itemId:string,
+  input:{
+    revision:number;
+    matches_advice:boolean;
+    actual_label_info?:Record<string,unknown>;
+    mismatch_note?:string;
+    media_ids?:string[];
+    evidence_ids?:string[];
+    order_line_id?:string;
+    expected_item_id?:string;
+  }
+) {
+  role(actor,"receiver","warehouse_admin");
+  const initial=await one<{org_id:string|null}>(db,"select org_id from warehouse_items where id=$1",[itemId]);
+  guard(initial.org_id,"ASSIGNMENT_UNAVAILABLE","Verify parcel ownership before identifying sample items.");
+  await lock(db,"org:"+initial.org_id);
+  const item=await one(db,"select * from warehouse_items where id=$1 and org_id=$2 for update",[itemId,initial.org_id]);
+  revision(item.revision,input.revision);
+  guard(item.identity_state!=="quarantined" && item.condition_state!=="restricted",
+    "ITEM_QUARANTINED","Quarantined or restricted items cannot be identified for inspection.");
+  guard(["received","stored"].includes(item.custody_state) && !item.parent_item_id,
+    "ASSIGNMENT_UNAVAILABLE","This item is not eligible for sample identification.");
+  const evidenceIds=[...new Set([...(input.media_ids??[]),...(input.evidence_ids??[])])];
+  if(evidenceIds.length) {
+    await attachEvidence(db,actor,evidenceIds,"label_photo",{org:initial.org_id,package:item.package_id});
+  }
+  let link=(await db.query<{id:string;order_line_id:string;expected_item_id:string}>(
+    "select id,order_line_id,expected_item_id from order_line_item_links where item_id=$1 and unlinked_at is null for update",
+    [itemId]
+  )).rows[0];
+  if(!link) {
+    guard(input.order_line_id && input.expected_item_id,"ASSIGNMENT_REQUIRED","Assign the item to an expected order position first.",422);
+    const line=await one(db,"select * from order_lines where id=$1 and org_id=$2",[input.order_line_id,initial.org_id]);
+    const orderForLink=await one(db,"select * from orders where id=$1 for update",[line.order_id]);
+    guard(orderForLink.paid_at && ["awaiting_samples","on_hold"].includes(orderForLink.state),
+      "ASSIGNMENT_UNAVAILABLE","This order is not accepting sample assignments.");
+    await one(db,"select id from expected_items where id=$1 and order_line_id=$2 and in_scope",[input.expected_item_id,line.id]);
+    link=await one<{id:string;order_line_id:string;expected_item_id:string}>(
+      db,
+      `insert into order_line_item_links(org_id,order_line_id,expected_item_id,item_id,linked_at)
+       values($1,$2,$3,$4,now()) returning id,order_line_id,expected_item_id`,
+      [initial.org_id,line.id,input.expected_item_id,itemId]
+    );
+  }
+  const line=await one<{id:string;order_id:string}>(db,"select id,order_id from order_lines where id=$1",[link.order_line_id]);
+  const expected=await one<{id:string;position:number;declared_fields:Record<string,unknown>}>(
+    db,
+    "select id,position,declared_fields from expected_items where id=$1 for update",
+    [link.expected_item_id]
+  );
+  const order=await one(db,"select * from orders where id=$1 for update",[line.order_id]);
+  guard(["awaiting_samples","on_hold"].includes(order.state),
+    "ORDER_NOT_EDITABLE","Sample identity can only be verified before inspection begins.");
+  if(input.matches_advice) {
+    await db.query("update warehouse_items set identity_state='identified',custody_state='stored',revision=revision+1 where id=$1",[itemId]);
+    if(input.actual_label_info && Object.keys(input.actual_label_info).length) {
+      await db.query(
+        "update expected_items set declared_fields=declared_fields||jsonb_build_object('verified_label_info',$2::jsonb) where id=$1",
+        [expected.id,JSON.stringify(input.actual_label_info)]
+      );
+    }
+    await db.query(
+      "update order_blocks set resolved_at=now() where order_id=$1 and reason='identity_mismatch' and object_key=$2 and resolved_at is null",
+      [order.id,expected.id]
+    );
+    await db.query(
+      `update tickets set state='resolved',resolved_at=now(),next_action_at=null,revision=revision+1
+       where order_id=$1 and category='receipt_mismatch' and details->>'expected_item_id'=$2 and state in ('open','waiting_customer','waiting_internal')`,
+      [order.id,expected.id]
+    );
+    const remainingBlocks=(await db.query("select 1 from order_blocks where order_id=$1 and resolved_at is null",[order.id])).rowCount;
+    if(order.state==="on_hold" && !remainingBlocks) {
+      const fromState=(order.held_from_state as string|null)??"awaiting_samples";
+      await db.query(
+        `update orders set state=$2,
+           sla_due_at=case when sla_due_at is not null and held_at is not null then sla_due_at+greatest(now()-held_at,interval '0 seconds') else sla_due_at end,
+           held_at=null,held_from_state=null,hold_reason=null,revision=revision+1
+         where id=$1`,
+        [order.id,fromState]
+      );
+    }
+    await audit(db,actor,"identify_item","warehouse_items",itemId,{matches_advice:true,expected_item_id:expected.id});
+    await readyOrder(db,order.id);
+    const refreshed=await one<{state:string}>(db,"select state from orders where id=$1",[order.id]);
+    return {item_id:itemId,identity_state:"identified",order_id:order.id,order_state:refreshed.state,revision:item.revision+1};
+  }
+  const mismatchNote=(input.mismatch_note??"").trim();
+  guard(mismatchNote.length>=2,"VALIDATION_FAILED","Describe the label or sample discrepancy so the customer can respond.",422);
+  await db.query("update warehouse_items set identity_state='mismatch',custody_state='stored',revision=revision+1 where id=$1",[itemId]);
+  await db.query(
+    "update expected_items set declared_fields=declared_fields||jsonb_build_object('actual_label_info',$2::jsonb,'mismatch_note',$3::text) where id=$1",
+    [expected.id,JSON.stringify(input.actual_label_info??{}),mismatchNote]
+  );
+  await db.query(
+    `insert into order_blocks(id,order_id,reason,object_key,opened_at)
+     values($1,$2,'identity_mismatch',$3,now())
+     on conflict(order_id,reason,object_key) where resolved_at is null do nothing`,
+    [uuid(),order.id,expected.id]
+  );
+  if(order.state!=="on_hold") {
+    await db.query(
+      "update orders set state='on_hold',held_at=now(),held_from_state=state,hold_reason=$2,revision=revision+1 where id=$1",
+      [order.id,mismatchNote]
+    );
+  } else {
+    await db.query("update orders set hold_reason=$2,revision=revision+1 where id=$1",[order.id,mismatchNote]);
+  }
+  const ticketId=uuid();
+  const ticket=await one<{id:string;public_no:string}>(
+    db,
+    `insert into tickets(id,public_no,org_id,order_id,category,state,subject,details,next_action_at)
+     values($1,$2,$3,$4,'receipt_mismatch','waiting_customer',$5,$6,now()+interval '48 hours')
+     returning id,public_no`,
+    [
+      ticketId,
+      code("MIS-"),
+      initial.org_id,
+      order.id,
+      `Sample label or attribute mismatch on ${item.code}`,
+      {
+        item_id:itemId,
+        item_code:item.code,
+        expected_item_id:expected.id,
+        expected_position:expected.position,
+        order_line_id:line.id,
+        declared_fields:expected.declared_fields,
+        actual_label_info:input.actual_label_info??{},
+        mismatch_note:mismatchNote,
+        evidence_ids:evidenceIds,
+      },
+    ]
+  );
+  await db.query(
+    `insert into ticket_events(id,ticket_id,actor_type,actor_id,kind,body,media_ids)
+     values($1,$2,'staff',$3,'message',$4,$5)`,
+    [uuid(),ticket.id,actor.id,mismatchNote,evidenceIds.length?evidenceIds:null]
+  );
+  await audit(db,actor,"identify_item_mismatch","warehouse_items",itemId,{
+    expected_item_id:expected.id,
+    order_id:order.id,
+    ticket_id:ticket.id,
+    mismatch_note:mismatchNote,
+  });
+  await event(db,"order.identity_mismatch",{
+    order_id:order.id,
+    item_id:itemId,
+    expected_item_id:expected.id,
+    ticket_id:ticket.id,
+  });
+  return {
+    item_id:itemId,
+    identity_state:"mismatch",
+    order_id:order.id,
+    order_state:"on_hold",
+    ticket_id:ticket.id,
+    ticket_no:ticket.public_no,
+    revision:item.revision+1,
+  };
+}
+
 async function resolveQuarantineLocation(db:DB,requestedId?:string) {
   if(requestedId) {
     const loc=await one<{id:string;zone:string;active:boolean}>(db,"select id,zone,active from storage_locations where id=$1",[requestedId]);

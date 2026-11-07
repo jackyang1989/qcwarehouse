@@ -3,7 +3,8 @@ import { pool, type DB } from "../db";
 import { appOrigin, requireCustomerActive, requireStaffMfa } from "./auth";
 import { audit, code, event, guard, hash, isDemo, lock, one, organization, role, uuid, type Actor } from "./common";
 import { stripeSettings } from "./integrations";
-import { activatePaidOrder } from "./orders";
+import { activatePaidOrder, readyOrder } from "./orders";
+import { applyScopePositionsAndAdditions, type ScopeAddition } from "./operations";
 const refundApprovalMfaMinutes=15;
 
 export async function orderPayment(db:DB,actor:Actor,id:string) {
@@ -97,6 +98,25 @@ async function applyPayment(db:DB,pid:string,providerRef:string,details:object) 
   let confirmedOrderId:string|null=null;
   if(charge.purpose==="inspection") {
     const order=await one(db,`select o.* from orders o join inspection_quotes q on q.order_id=o.id where q.id=$1 for update of o`,[charge.inspection_quote_id]);
+    if(charge.scope_revision_id) {
+      const sr=await one(db,"select * from scope_revisions where id=$1 and order_id=$2 for update",[charge.scope_revision_id,order.id]);
+      const validScope=order.state==="awaiting_samples" && sr.accepted_at && sr.previous_snapshot?.order_revision===order.revision;
+      if(!validScope) {
+        await db.query("insert into tickets(id,public_no,org_id,order_id,category,subject,details) values($1,$2,$3,$4,'payment_refund',$5,$6)",
+          [uuid(),code("PAY-"),charge.org_id,order.id,"Reconcile late supplemental scope payment",{payment_id:pid,scope_revision_id:charge.scope_revision_id}]);
+        return;
+      }
+      const additions=(Array.isArray(sr.proposed_snapshot?.additions)?sr.proposed_snapshot.additions:[]) as ScopeAddition[];
+      await applyScopePositionsAndAdditions(db,order.id,sr.previous_snapshot.positions,sr.proposed_snapshot.positions,additions);
+      await db.query("update order_blocks set resolved_at=now() where order_id=$1 and reason='scope_payment_pending' and object_key=$2 and resolved_at is null",
+        [order.id,charge.scope_revision_id]);
+      await db.query("update orders set price_cents=coalesce(price_cents,0)+$2,revision=revision+1 where id=$1",[order.id,charge.amount_cents]);
+      await db.query("update charge_items set applied_payment_id=$2 where id=$1",[charge.id,pid]);
+      await readyOrder(db,order.id);
+      await audit(db,null,"payment_confirmed","charge_items",charge.id,{scope_revision_id:charge.scope_revision_id});
+      await event(db,"payment.confirmed",{charge_id:charge.id,order_id:order.id});
+      return;
+    }
     const heldForPayment=order.state==="on_hold" && order.held_from_state==="awaiting_payment" && order.submission_snapshot?.quote_id===charge.inspection_quote_id;
     if(!heldForPayment && (order.state!=="awaiting_payment" || order.submission_snapshot?.quote_id!==charge.inspection_quote_id)) {
       await db.query("insert into tickets(id,public_no,org_id,order_id,category,subject,details) values($1,$2,$3,$4,'payment_refund',$5,$6)",

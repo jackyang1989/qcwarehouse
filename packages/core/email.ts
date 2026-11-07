@@ -28,6 +28,18 @@ export function renderEmailContent(template: string, orderPublicNo: string | nul
         subject: `${prefix}Parcel received at QC Warehouse${ref}`,
         text: `Your parcel${ref} has been checked in at the warehouse. Open ${orderPublicNo ? `${origin}/orders/${orderPublicNo}/parcels` : `${origin}/parcels`} to review its status.`,
       };
+    case "order.ready":
+    case "samples_ready":
+      return {
+        subject: `${prefix}All samples received and queued for inspection${ref}`,
+        text: `All commissioned samples${ref} have been received and identified. Your order is now queued for inspection at ${orderPublicNo ? `${origin}/orders/${orderPublicNo}` : `${origin}/orders`}.`,
+      };
+    case "order.identity_mismatch":
+    case "sample_identity_issue":
+      return {
+        subject: `${prefix}Action needed: sample label or attribute mismatch${ref}`,
+        text: `A sample received for your order${ref} does not match your declared details. Your order is on hold until you confirm how to proceed at ${orderPublicNo ? `${origin}/orders/${orderPublicNo}/exceptions` : `${origin}/orders`}.`,
+      };
     case "report.published":
     case "report.amended":
       return {

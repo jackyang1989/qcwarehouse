@@ -26,6 +26,7 @@ const {pool}=await import("../packages/db");
 const {workOnce}=await import("../packages/core/worker");
 const {syncTrackingOnce}=await import("../packages/core/logistics");
 const {encryptSecret,decryptSecret,passwordHash}=await import("../packages/core/auth");
+const {businessDeadline}=await import("../packages/core/orders");
 
 before(async()=>{
   const actual=await pool.query<{name:string}>("select current_database() name");
@@ -3044,6 +3045,216 @@ test("intake quarantine, half-unpacking, suit components, post-pay & cross-order
     revision:quarResult.revision,items:[{code:"S-"+randomUUID().slice(0,8).toUpperCase(),location_id:r01.id}],
   },"POST",409);
   assert.equal(unpackQuarErr.error.code,"PACKAGE_QUARANTINED");
+});
+
+test("item identity mismatch, customer discrepancy response, 3-to-2 conversion, upward scope payment, and SLA calendar/hold/resume (TASK-061 to TASK-065)",async()=>{
+  const receiving=await staffLogin("receiving");
+  const {c,registration,terms}=await signCustomer();
+  const {locations}=await receiving.fetch("/staff/desk");
+  const r01=locations.find((l:{code:string})=>l.code==="R-01")??locations[0];
+
+  // 1. TASK-064 & T31: businessDeadline skips weekend and statutory holidays (and honors extra_workdays)
+  // Friday 2026-10-02 08:00 UTC (16:00 China time, Friday afternoon).
+  // Suppose Monday 2026-10-05 and Tuesday 2026-10-06 are statutory holidays, so 2 business days should land on Thursday 2026-10-08!
+  const friAfternoon=new Date("2026-10-02T08:00:00.000Z");
+  const dueWithHolidays=businessDeadline(friAfternoon,2,["2026-10-05","2026-10-06"],[]);
+  assert.equal(new Date(dueWithHolidays.valueOf()+8*3600000).toISOString().slice(0,10),"2026-10-08");
+
+  // 2. TASK-061 & TASK-062 (T14, T47): Mismatch identification -> order on_hold -> customer replace_sample & proceed_as_received
+  const cat=(await c.fetch("/catalog")).offers;
+  const inspOffer=cat.find((o:{sku_code:string})=>o.sku_code==="apparel-inspection-1");
+  const {draft:orderA}=await createAndPay(
+    c,
+    [{
+      category_id:inspOffer.category_id,
+      offer_id:inspOffer.offer_id,
+      quantity:1,
+      items:[{sample_code:"A-01",size_label:"M",color_declared:"Navy"}],
+    }],
+    terms
+  );
+
+  // Check in a parcel with 2 items (first item has wrong size label L instead of M; second item is the replacement)
+  const waybillA="ZTO"+randomUUID().slice(0,8).toUpperCase();
+  const adviceA=await c.fetch("/me/parcels",{
+    address_id:registration.warehouse_address.id,tracking_no:waybillA,carrier_code:"zto",order_ids:[orderA.id],
+  },"POST",201);
+  const pkgA=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:waybillA,advice_id:adviceA.id,carrier_code:"zto",outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+  const codeWrong="S-"+randomUUID().slice(0,8).toUpperCase();
+  const codeReplacement="S-"+randomUUID().slice(0,8).toUpperCase();
+  const unpackedA=await receiving.fetch(`/staff/packages/${pkgA.id}/items`,{
+    revision:pkgA.revision,
+    items:[{code:codeWrong,location_id:r01.id},{code:codeReplacement,location_id:r01.id}],
+  },"POST",201);
+  const [wrongItemId,replacementItemId]=unpackedA.item_ids;
+
+  const wrongLookup=await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:codeWrong}));
+  const posA=wrongLookup.positions.find((p:{public_no:string})=>p.public_no===orderA.public_no);
+  assert(posA);
+
+  // Identify wrongItemId as mismatch directly (TASK-061, PAGE-H06, T14)
+  const mismatchRes=await receiving.fetch(`/staff/items/${wrongItemId}/identify`,{
+    revision:1,
+    order_line_id:posA.order_line_id,
+    expected_item_id:posA.id,
+    matches_advice:false,
+    actual_label_info:{size_label:"XL",color_found:"Red"},
+    mismatch_note:"Tag reads XL Red instead of declared M Navy",
+    media_ids:[await receiving.photo("label_photo")],
+  });
+  assert.equal(mismatchRes.identity_state,"mismatch");
+  assert.equal(mismatchRes.order_state,"on_hold");
+  assert(mismatchRes.ticket_id);
+
+  // TASK-065 & T38: Duplicate outbox event for order.identity_mismatch produces only 1 notification and 1 email
+  await pool.query(
+    `insert into outbox_events(type,payload) values('order.identity_mismatch',$1)`,
+    [JSON.stringify({order_id:orderA.id,item_id:wrongItemId,expected_item_id:posA.id,ticket_id:mismatchRes.ticket_id})]
+  );
+  while(await workOnce()) {}
+  const mismatchNotifs=await pool.query(
+    `select id from notifications where order_id=$1 and template='order.identity_mismatch'`,
+    [orderA.id]
+  );
+  assert.equal(mismatchNotifs.rowCount,1);
+
+  // Customer responds with replace_sample (TASK-062, PAGE-C07/C08)
+  const respReplace=await c.fetch(`/orders/${orderA.id}/mismatch-response`,{
+    expected_item_id:posA.id,
+    decision:"replace_sample",
+    note:"Please unlink the wrong XL item and use the replacement sample in the parcel",
+  });
+  assert.equal(respReplace.state,"awaiting_samples");
+
+  // Now link replacementItemId and report mismatch first, then customer responds proceed_as_received
+  const repMismatch=await receiving.fetch(`/staff/samples/${replacementItemId}/identify`,{
+    revision:1,
+    order_line_id:posA.order_line_id,
+    expected_item_id:posA.id,
+    matches_advice:false,
+    actual_label_info:{size_label:"M",color_found:"Dark Navy"},
+    mismatch_note:"Shade is slightly darker navy than description",
+  });
+  assert.equal(repMismatch.order_state,"on_hold");
+
+  const respProceed=await c.fetch(`/orders/${orderA.id}/mismatch-response`,{
+    expected_item_id:posA.id,
+    decision:"proceed_as_received",
+    note:"Dark Navy is fine, please proceed with inspection",
+  });
+  assert.equal(respProceed.state,"queued");
+
+  // 3. TASK-064 & T32: Hold & resume on a queued order extends sla_due_at by the hold duration
+  const beforeHold=await c.fetch(`/orders/${orderA.id}`);
+  assert(beforeHold.sla_due_at);
+  await receiving.fetch(`/staff/orders/${orderA.id}/hold`,{reason:"Temporary equipment calibration check"});
+  // Backdate held_at by 2 hours in DB to verify deterministic SLA extension
+  await pool.query("update orders set held_at=now()-interval '2 hours' where id=$1",[orderA.id]);
+  const resumed=await receiving.fetch(`/staff/orders/${orderA.id}/resume`,{reason:"Calibration verified"});
+  assert.equal(resumed.state,"queued");
+  const afterResume=await c.fetch(`/orders/${orderA.id}`);
+  const deltaMs=new Date(afterResume.sla_due_at).valueOf()-new Date(beforeHold.sla_due_at).valueOf();
+  assert(deltaMs>=7100_000,"Expected sla_due_at to be extended by ~2 hours after hold/resume");
+
+  // 4. TASK-063 & T47: 3-to-2 comparison conversion (三改二差额只退一次，迟到件仍可追踪)
+  const cmp3Offer=cat.find((o:{sku_code:string})=>o.sku_code==="apparel-compare-3");
+  const {draft:cmpOrder}=await createAndPay(
+    c,
+    [{
+      category_id:cmp3Offer.category_id,
+      offer_id:cmp3Offer.offer_id,
+      quantity:3,
+      items:[
+        {sample_code:"CMP-A",size_label:"M",color_declared:"Black"},
+        {sample_code:"CMP-B",size_label:"M",color_declared:"Black"},
+        {sample_code:"CMP-C",size_label:"M",color_declared:"Black"},
+      ],
+    }],
+    terms
+  );
+  // Extend sample arrival window (POST /orders/{id}/extend)
+  const extRes=await c.fetch(`/orders/${cmpOrder.id}/extend`,{
+    revision:(await c.fetch(`/orders/${cmpOrder.id}`)).revision,
+    extend_days:5,
+    reason:"Supplier C delayed dispatch by 5 days",
+  });
+  assert(extRes.extended_until);
+  assert.equal(extRes.sla_due_at,null);
+
+  // Check in 2 items for CMP-A and CMP-B; CMP-C has not arrived yet
+  const cmpWaybill="YTO"+randomUUID().slice(0,8).toUpperCase();
+  const cmpAdvice=await c.fetch("/me/parcels",{
+    address_id:registration.warehouse_address.id,tracking_no:cmpWaybill,carrier_code:"yto",order_ids:[cmpOrder.id],
+  },"POST",201);
+  const cmpPkg=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:cmpWaybill,advice_id:cmpAdvice.id,carrier_code:"yto",outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+  const cmpCode1="S-"+randomUUID().slice(0,8).toUpperCase();
+  const cmpCode2="S-"+randomUUID().slice(0,8).toUpperCase();
+  const cmpUnpacked=await receiving.fetch(`/staff/packages/${cmpPkg.id}/items`,{
+    revision:cmpPkg.revision,
+    items:[{code:cmpCode1,location_id:r01.id},{code:cmpCode2,location_id:r01.id}],
+  },"POST",201);
+  const cmpPositions=(await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:cmpCode1}))).positions
+    .filter((p:{public_no:string})=>p.public_no===cmpOrder.public_no);
+  assert.equal(cmpPositions.length,3);
+  await receiving.fetch(`/staff/items/${cmpUnpacked.item_ids[0]}/assign`,{
+    revision:1,order_line_id:cmpPositions[0].order_line_id,expected_item_id:cmpPositions[0].id,evidence_ids:[await receiving.photo("label_photo")],
+  });
+  await receiving.fetch(`/staff/items/${cmpUnpacked.item_ids[1]}/assign`,{
+    revision:1,order_line_id:cmpPositions[1].order_line_id,expected_item_id:cmpPositions[1].id,evidence_ids:[await receiving.photo("label_photo")],
+  });
+
+  // Convert 3-to-2 by dropping the 3rd unreceived position (cmpPositions[2])
+  const conv=await c.fetch(`/orders/${cmpOrder.id}/convert-to-two`,{
+    expected_item_id:cmpPositions[2].id,
+    reason:"Sample C is delayed; proceed with 2-item comparison",
+  });
+  assert.equal(conv.state,"queued"); // 2 retained items are already identified -> immediately enters queued!
+  assert.equal(conv.adjustment_cents,-2000); // $59 - $79 = -$20.00
+  assert(conv.refund_ticket_id);
+
+  // Attempting convert-to-two a second time is rejected (差额只退一次)
+  const convAgain=await c.fetch(`/orders/${cmpOrder.id}/convert-to-two`,{
+    expected_item_id:cmpPositions[2].id,
+  },"POST",409);
+  assert.equal(convAgain.error.code,"CONVERT_TO_TWO_UNAVAILABLE");
+
+  // 5. TASK-063 & T84/T108: Upward scope revision requires supplemental payment before activating new positions; stale supplemental payment cannot activate old scope
+  const {draft:upOrder}=await createAndPay(
+    c,
+    [{category_id:inspOffer.category_id,offer_id:inspOffer.offer_id,quantity:2}],
+    terms
+  );
+  const upScopeView=await c.fetch(`/orders/${upOrder.id}/scope-revisions`);
+  const upPosIds=upScopeView.positions.map((p:{id:string})=>p.id);
+  const lineId=upScopeView.positions[0].line_id;
+
+  // Propose adding 1 extra item (+$29.00)
+  const upProp=await c.fetch(`/orders/${upOrder.id}/scope-additions`,{
+    revision:upScopeView.order.revision,
+    reason:"Add 1 extra sample sent by seller in the same box",
+    positions:upPosIds,
+    additions:[{order_line_id:lineId,count:1,declared_fields:[{sample_code:"EXTRA-03",size_label:"L",color_declared:"Black"}]}],
+  },"POST",201);
+  assert.equal(upProp.adjustment_cents,2900);
+
+  const upAccepted=await c.fetch(`/scope-revisions/${upProp.scope_revision_id}/accept`,{revision:upProp.revision});
+  assert.equal(upAccepted.state,"awaiting_supplemental_payment");
+
+  // Before paying the supplemental charge, positions count in scope is still 2
+  const afterAcceptView=await c.fetch(`/orders/${upOrder.id}/scope-revisions`);
+  assert.equal(afterAcceptView.positions.filter((p:{in_scope:boolean})=>p.in_scope).length,2);
+  const suppCharge=afterAcceptView.proposals[0].supplemental_charge;
+  assert(suppCharge && !suppCharge.paid);
+
+  // Pay supplemental charge -> activates the 3rd position and resolves scope_payment_pending block!
+  const suppCheckout=await c.fetch(`/charges/${suppCharge.id}/checkout`,{quote_revision:suppCharge.quote_revision});
+  await c.fetch(new URL(suppCheckout.checkout_url).pathname,{});
+  const afterSuppPayView=await c.fetch(`/orders/${upOrder.id}/scope-revisions`);
+  assert.equal(afterSuppPayView.positions.filter((p:{in_scope:boolean})=>p.in_scope).length,3);
 });
 
 test("all core operations have a validated success response",assertCoreCoverage);

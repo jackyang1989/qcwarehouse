@@ -248,12 +248,30 @@ export async function activatePaidOrder(db:DB,orderId:string) {
   await readyOrder(db,orderId);
 }
 
-function businessDeadline(start:Date,days:number) {
+function parseDateList(raw:string|null|undefined):Set<string> {
+  if(!raw) return new Set();
+  const trimmed=raw.trim();
+  if(!trimmed) return new Set();
+  try {
+    const parsed=JSON.parse(trimmed);
+    if(Array.isArray(parsed)) return new Set(parsed.map(x=>String(x).trim()).filter(Boolean));
+  } catch {
+    // Fallback to comma/space separated YYYY-MM-DD strings
+  }
+  return new Set(trimmed.split(/[\s,]+/).map(x=>x.trim()).filter(Boolean));
+}
+
+export function businessDeadline(start:Date,days:number,holidays:Iterable<string>=[],extraWorkdays:Iterable<string>=[]) {
+  const holidaySet=new Set(holidays);
+  const extraSet=new Set(extraWorkdays);
   const d=new Date(start);
   while(days>0) {
     d.setUTCDate(d.getUTCDate()+1);
-    const dow=new Date(d.valueOf()+8*3600000).getUTCDay();
-    if(dow!==0 && dow!==6) days--;
+    const cn=new Date(d.valueOf()+8*3600000);
+    const dateKey=cn.toISOString().slice(0,10);
+    const dow=cn.getUTCDay();
+    const isWorkday=extraSet.has(dateKey) || (dow!==0 && dow!==6 && !holidaySet.has(dateKey));
+    if(isWorkday) days--;
   }
   return d;
 }
@@ -267,6 +285,8 @@ export async function readyOrder(db:DB,id:string) {
   if(!counts.total || counts.total!==counts.ready || (await db.query("select 1 from order_blocks where order_id=$1 and resolved_at is null",[id])).rowCount) return;
   const lines=(await db.query(`select l.*,st.code service from order_lines l join service_offers o on o.id=l.offer_id join service_types st on st.id=o.service_type_id where l.order_id=$1`,[id])).rows;
   for(const line of lines) {
+    const inScopeCount=await one<{n:number}>(db,"select count(*)::int n from expected_items where order_line_id=$1 and in_scope",[line.id]);
+    if(!inScopeCount.n) continue;
     if(line.service==="inspection") {
       await db.query(`insert into inspection_tasks(order_line_id,template_version_id,assignment_id,state)
         select a.order_line_id,$2,a.id,'READY' from order_line_item_links a join expected_items e on e.id=a.expected_item_id
@@ -288,8 +308,17 @@ export async function readyOrder(db:DB,id:string) {
     if(referenceId) await db.query("insert into reference_reservations(id,reference_id,group_id,reserved_at) values($1,$2,$3,now())",[uuid(),referenceId,group.id]);
     await db.query("insert into inspection_tasks(order_line_id,template_version_id,group_id,state) values($1,$2,$3,'READY')",[line.id,line.template_version_id,group.id]);
   }
+  const calendarRows=(await db.query<{key:string;value:string}>("select key,value from app_config where key in ('calendar.holidays','business_holidays','calendar.extra_workdays')")).rows;
+  const holidays=new Set<string>();
+  const extraWorkdays=new Set<string>();
+  for(const row of calendarRows) {
+    const parsed=parseDateList(row.value);
+    if(row.key==="calendar.extra_workdays") parsed.forEach(d=>extraWorkdays.add(d));
+    else parsed.forEach(d=>holidays.add(d));
+  }
   const days=Math.max(...order.submission_snapshot.lines.map((x:{business_days:number})=>x.business_days));
-  await db.query("update orders set state='queued',samples_ready_at=coalesce(samples_ready_at,now()),sla_due_at=$2,revision=revision+1 where id=$1",[id,businessDeadline(new Date(),days)]);
+  await db.query("update orders set state='queued',samples_ready_at=coalesce(samples_ready_at,now()),sla_due_at=coalesce(sla_due_at,$2),revision=revision+1 where id=$1",
+    [id,businessDeadline(new Date(),days,holidays,extraWorkdays)]);
   await event(db,"order.ready",{order_id:id});
 }
 export async function orderDetail(db:DB,actor:Actor,id:string) {
@@ -298,12 +327,14 @@ export async function orderDetail(db:DB,actor:Actor,id:string) {
     so.title,so.sku_code,st.code service
     from order_lines l join service_offers so on so.id=l.offer_id join service_types st on st.id=so.service_type_id
     where l.order_id=$1 order by l.id`,[id])).rows;
-  const rows=(await db.query(`select e.id,e.position,e.declared_fields,l.id as order_line_id,l.quantity,so.title, w.id item_id,w.code,w.custody_state,w.storage_until,
+  const rows=(await db.query(`select e.id,e.position,e.declared_fields,e.in_scope,l.id as order_line_id,l.quantity,so.title,st.code service,
+    w.id item_id,w.code,w.identity_state,w.condition_state,w.custody_state,w.storage_until,
     (select max(p.ends_at) from storage_periods p where p.item_id=w.id) paid_storage_until,
     (select jsonb_build_object('id',d.id,'action',d.action,'state',d.state,
       'awaiting_batch',d.action<>'retain' and not exists(select 1 from dispatch_batch_items bi where bi.disposition_id=d.id and bi.released_at is null))
       from disposition_requests d where d.item_id=w.id and d.org_id=w.org_id and d.state not in ('completed','cancelled')) instruction
-    from order_lines l join service_offers so on so.id=l.offer_id left join expected_items e on e.order_line_id=l.id and e.in_scope
+    from order_lines l join service_offers so on so.id=l.offer_id join service_types st on st.id=so.service_type_id
+    left join expected_items e on e.order_line_id=l.id and e.in_scope
     left join order_line_item_links a on a.expected_item_id=e.id and a.unlinked_at is null
     left join warehouse_items w on w.id=a.item_id where l.order_id=$1 order by l.id,e.position`,[id])).rows;
   const report=(await db.query("select published_version from reports where order_id=$1",[id])).rows[0];

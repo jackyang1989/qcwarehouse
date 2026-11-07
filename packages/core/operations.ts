@@ -49,17 +49,21 @@ export async function resumeOrder(db:DB,actor:Actor,id:string,reason:string) {
   const o=await one(db,"select * from orders where id=$1 for update",[id]);
   guard(o.state==="on_hold" && o.held_from_state,"ORDER_NOT_ON_HOLD","This order is not currently on hold.");
   await db.query("update order_blocks set resolved_at=now() where order_id=$1 and reason='staff_hold' and resolved_at is null",[id]);
+  const openBlocks=(await db.query("select reason from order_blocks where order_id=$1 and resolved_at is null",[id])).rowCount;
+  guard(!openBlocks,"ORDER_BLOCKED","Resolve all active order blocks before resuming.");
   const fromState=o.held_from_state as string;
   const paidWhileHeld=fromState==="awaiting_payment" && o.submission_snapshot?.quote_id &&
     (await db.query(`select 1 from charge_items where inspection_quote_id=$1 and voided_at is null
       and (applied_payment_id is not null or free_authorization is not null)`,[o.submission_snapshot.quote_id])).rowCount;
-  await db.query("update orders set state=$2,held_at=null,held_from_state=null,hold_reason=null,revision=revision+1 where id=$1",[id,fromState]);
+  await db.query(`update orders set state=$2,
+    sla_due_at=case when sla_due_at is not null and held_at is not null then sla_due_at+greatest(now()-held_at,interval '0 seconds') else sla_due_at end,
+    held_at=null,held_from_state=null,hold_reason=null,revision=revision+1 where id=$1`,[id,fromState]);
   if(paidWhileHeld) {
     await activatePaidOrder(db,id);
   } else if(fromState==="awaiting_samples") {
     await readyOrder(db,id);
   }
-  const updated=await one(db,"select id,state,revision from orders where id=$1",[id]);
+  const updated=await one(db,"select id,state,revision,sla_due_at from orders where id=$1",[id]);
   await audit(db,actor,"resume_order","orders",id,{reason:reason.trim(),resumed_state:updated.state});
   await event(db,"order.resumed",{order_id:id});
   return updated;
@@ -217,40 +221,79 @@ export async function moveItem(db:DB,actor:Actor,id:string,rev:number,location:s
   await audit(db,actor,"move_item","warehouse_items",id,{location_id:location});
   return {id,revision:rev+1};
 }
-export async function scopeProposal(db:DB,actor:Actor,id:string,input:{revision:number;reason:string;positions:string[]}) {
+export type ScopeAddition={order_line_id:string;count:number;declared_fields?:Record<string,unknown>[]};
+export async function scopeProposal(
+  db:DB,
+  actor:Actor,
+  id:string,
+  input:{revision:number;reason:string;positions:string[];additions?:ScopeAddition[]}
+) {
   if(actor.kind==="staff") role(actor,"support","super_admin");
   const first=await one(db,"select org_id from orders where id=$1 and ($2::uuid is null or org_id=$2)",[id,actor.org]);
   await lock(db,"org:"+first.org_id);
   const o=await one(db,"select * from orders where id=$1 for update",[id]);
   revision(o.revision,input.revision);
   guard(o.state==="awaiting_samples","SCOPE_UNAVAILABLE","Scope can change before inspection begins.");
-  const positions=(await db.query(`select e.id,e.order_line_id,l.options,st.code service from expected_items e join order_lines l on l.id=e.order_line_id
-    join service_offers so on so.id=l.offer_id join service_types st on st.id=so.service_type_id where l.order_id=$1 and e.in_scope`,[id])).rows;
+  const allPositions=(await db.query<{id:string;order_line_id:string;in_scope:boolean;options:unknown;service:string}>(
+    `select e.id,e.order_line_id,e.in_scope,l.options,st.code service
+     from expected_items e join order_lines l on l.id=e.order_line_id
+     join service_offers so on so.id=l.offer_id join service_types st on st.id=so.service_type_id
+     where l.order_id=$1`,
+    [id]
+  )).rows;
+  const currentInScope=allPositions.filter(p=>p.in_scope);
+  const currentInScopeIds=new Set(currentInScope.map(p=>p.id));
   const ids=new Set(input.positions);
-  guard(ids.size===input.positions.length && ids.size<positions.length && input.positions.every(p=>positions.some(x=>x.id===p)),
-    "SCOPE_UNAVAILABLE","Choose the exact set of items to retain.");
-  const base=o.submission_snapshot.lines as {order_line_id:string;quantity:number;amount_cents:number}[];
+  const additions=(input.additions??[]).filter(a=>a.count>0);
+  const hasAdditions=additions.length>0;
+  const changedPositions=ids.size!==currentInScopeIds.size || [...ids].some(pid=>!currentInScopeIds.has(pid));
+  guard(
+    ids.size===input.positions.length &&
+      (changedPositions || hasAdditions) &&
+      input.positions.every(p=>allPositions.some(x=>x.id===p)),
+    "SCOPE_UNAVAILABLE",
+    "Choose the exact set of items to retain or add."
+  );
+  const base=o.submission_snapshot.lines as {order_line_id:string;quantity:number;amount_cents:number;business_days?:number}[];
+  const addByLine=new Map<string,ScopeAddition>();
+  for(const add of additions) {
+    guard(!addByLine.has(add.order_line_id) && base.some(l=>l.order_line_id===add.order_line_id),
+      "SCOPE_UNAVAILABLE","Specify valid order lines for added positions.",422);
+    addByLine.set(add.order_line_id,add);
+  }
   let adjustment=0;
   for(const l of base) {
-    const existing=positions.filter(x=>x.order_line_id===l.order_line_id);
-    const next=existing.filter(x=>ids.has(x.id)).length;
-    if(next===existing.length) continue;
-    guard(existing[0]?.service==="inspection","SCOPE_REVIEW_REQUIRED","A comparison or reference scope change requires staff pricing.");
-    adjustment-=Math.floor(l.amount_cents*(existing.length-next)/l.quantity);
+    const lineAll=allPositions.filter(x=>x.order_line_id===l.order_line_id);
+    const existing=lineAll.filter(x=>x.in_scope);
+    const next=lineAll.filter(x=>ids.has(x.id)).length;
+    const addCount=addByLine.get(l.order_line_id)?.count??0;
+    if(next===existing.length && addCount===0) continue;
+    guard(lineAll[0]?.service==="inspection","SCOPE_REVIEW_REQUIRED","A comparison or reference scope change requires staff pricing.");
+    const unitCents=Math.floor(l.amount_cents/l.quantity);
+    adjustment+=(next-existing.length+addCount)*unitCents;
   }
   const seq=await one<{n:number}>(db,"select coalesce(max(revision),0)::int+1 n from scope_revisions where order_id=$1",[id]);
   const row=await one(db,`insert into scope_revisions(id,order_id,revision,previous_snapshot,proposed_snapshot,reason,adjustment_cents)
     values($1,$2,$3,$4,$5,$6,$7) returning id as scope_revision_id,adjustment_cents,revision`,
-    [uuid(),id,seq.n,{positions:positions.map(x=>x.id),order_revision:o.revision},{positions:input.positions},input.reason,adjustment]);
-  await audit(db,actor,"propose_scope","orders",id);
+    [
+      uuid(),
+      id,
+      seq.n,
+      {positions:currentInScope.map(x=>x.id),order_revision:o.revision},
+      {positions:input.positions,...(hasAdditions?{additions}:{})},
+      input.reason,
+      adjustment,
+    ]);
+  await audit(db,actor,"propose_scope","orders",id,{scope_revision_id:row.scope_revision_id,adjustment_cents:adjustment});
   return row;
 }
 export async function scopeReview(db:DB,actor:Actor,id:string) {
   const org=actor.kind==="customer"?organization(actor):null;
   if(org===null)role(actor,"support","super_admin");
-  const order=await one<{id:string;revision:number;state:string;public_no:string}>(db,
-    "select id,revision,state,public_no from orders where id=$1 and ($2::uuid is null or org_id=$2)",[id,org]);
-  const positions=(await db.query(`select e.id,e.position,e.in_scope,l.id line_id,s.title,st.code service,w.code item_code
+  const order=await one<{id:string;revision:number;state:string;public_no:string;hold_reason:string|null}>(db,
+    "select id,revision,state,public_no,hold_reason from orders where id=$1 and ($2::uuid is null or org_id=$2)",[id,org]);
+  const positions=(await db.query(`select e.id,e.position,e.in_scope,e.declared_fields,l.id line_id,s.title,st.code service,
+    w.id item_id,w.code item_code,w.identity_state
     from expected_items e join order_lines l on l.id=e.order_line_id join service_offers s on s.id=l.offer_id
     join service_types st on st.id=s.service_type_id
     left join order_line_item_links a on a.expected_item_id=e.id and a.unlinked_at is null
@@ -258,31 +301,383 @@ export async function scopeReview(db:DB,actor:Actor,id:string) {
     where l.order_id=$1 order by l.id,e.position`,[id])).rows;
   const proposals=(await db.query(`select s.id,s.revision,s.reason,s.adjustment_cents,s.accepted_at,
     s.previous_snapshot->'positions' previous_positions,s.proposed_snapshot->'positions' proposed_positions,
+    coalesce(s.proposed_snapshot->'additions','[]'::jsonb) proposed_additions,
     case when s.accepted_at is not null then 'accepted'
       when $2='awaiting_samples' and s.previous_snapshot->>'order_revision'=$3::text then 'pending' else 'stale' end state,
     (select jsonb_build_object('id',k.id,'state',k.state) from tickets k
       where k.order_id=s.order_id and k.category='payment_refund' and k.details->>'scope_revision_id'=s.id::text
-      order by k.created_at desc limit 1) refund_case
+      order by k.created_at desc limit 1) refund_case,
+    (select jsonb_build_object(
+      'id',c.id,'amount_cents',c.amount_cents,'quote_revision',q.revision,'expires_at',q.expires_at,
+      'paid',c.applied_payment_id is not null or c.free_authorization is not null,
+      'voided',c.voided_at is not null
+    ) from charge_items c join inspection_quotes q on q.id=c.inspection_quote_id
+      where c.scope_revision_id=s.id limit 1) supplemental_charge
     from scope_revisions s where s.order_id=$1 order by s.revision desc`,[id,order.state,order.revision])).rows;
   return {order,positions,proposals};
 }
+
+export async function applyScopePositionsAndAdditions(
+  db:DB,
+  orderId:string,
+  previousPositions:string[],
+  proposedPositions:string[],
+  additions:ScopeAddition[]=[]
+) {
+  const dropped=previousPositions.filter((p:string)=>!proposedPositions.includes(p));
+  if(dropped.length) {
+    await db.query("update expected_items set in_scope=false where id=any($1::uuid[])",[dropped]);
+    await db.query("update order_line_item_links set unlinked_at=now(),reason='scope_reduced' where expected_item_id=any($1::uuid[]) and unlinked_at is null",[dropped]);
+  }
+  const restored=proposedPositions.filter((p:string)=>!previousPositions.includes(p));
+  if(restored.length) {
+    await db.query("update expected_items set in_scope=true where id=any($1::uuid[])",[restored]);
+  }
+  for(const add of additions) {
+    if(!add.count || add.count<=0) continue;
+    const maxPos=await one<{m:number}>(db,"select coalesce(max(position),0)::int m from expected_items where order_line_id=$1",[add.order_line_id]);
+    for(let i=0;i<add.count;i++) {
+      const pos=maxPos.m+i+1;
+      const fields=(add.declared_fields?.[i]??{}) as Record<string,unknown>;
+      await db.query(
+        "insert into expected_items(order_line_id,position,declared_fields,in_scope) values($1,$2,$3,true)",
+        [add.order_line_id,pos,JSON.stringify({position:pos,sample_code:fields.sample_code??`ADD-P${String(pos).padStart(2,"0")}`,...fields})]
+      );
+    }
+    await db.query("update order_lines set quantity=quantity+$2 where id=$1",[add.order_line_id,add.count]);
+  }
+}
+
 export async function acceptScope(db:DB,actor:Actor,id:string,rev:number) {
   const org=organization(actor);
   await lock(db,"org:"+org);
-  const row=await one(db,`select s.*,o.revision order_revision,o.state from scope_revisions s join orders o on o.id=s.order_id where s.id=$1 and o.org_id=$2 for update of s,o`,[id,org]);
+  const row=await one(db,`select s.*,o.revision order_revision,o.state,o.submission_snapshot from scope_revisions s join orders o on o.id=s.order_id where s.id=$1 and o.org_id=$2 for update of s,o`,[id,org]);
   revision(row.revision,rev);
-  guard(!row.accepted_at && row.state==="awaiting_samples" && row.previous_snapshot.order_revision===row.order_revision && row.adjustment_cents<=0,
+  guard(!row.accepted_at && row.state==="awaiting_samples" && row.previous_snapshot.order_revision===row.order_revision,
     "SCOPE_UNAVAILABLE","This scope proposal is no longer applicable.");
-  const dropped=row.previous_snapshot.positions.filter((p:string)=>!row.proposed_snapshot.positions.includes(p));
-  await db.query("update expected_items set in_scope=false where id=any($1::uuid[])",[dropped]);
-  await db.query("update order_line_item_links set unlinked_at=now(),reason='scope_reduced' where expected_item_id=any($1::uuid[]) and unlinked_at is null",[dropped]);
+  await db.query(
+    `update charge_items set voided_at=now()
+     where scope_revision_id in (select id from scope_revisions where order_id=$1)
+       and applied_payment_id is null and voided_at is null`,
+    [row.order_id]
+  );
+  await db.query(
+    "update order_blocks set resolved_at=now() where order_id=$1 and reason='scope_payment_pending' and resolved_at is null",
+    [row.order_id]
+  );
+  const additions=(Array.isArray(row.proposed_snapshot.additions)?row.proposed_snapshot.additions:[]) as ScopeAddition[];
+  if(row.adjustment_cents>0) {
+    await db.query("update scope_revisions set accepted_at=now(),accepted_by=$2 where id=$1",[id,actor.id]);
+    const nextQuote=await one<{n:number}>(db,"select coalesce(max(revision),0)::int+1 n from inspection_quotes where order_id=$1",[row.order_id]);
+    const quote=await one<{id:string;revision:number;expires_at:string}>(
+      db,
+      `insert into inspection_quotes(id,order_id,revision,line_snapshot,terms_snapshot,amount_cents,currency,expires_at,accepted_at)
+       values($1,$2,$3,$4,$5,$6,'USD',now()+interval '30 minutes',now())
+       returning id,revision,expires_at`,
+      [
+        uuid(),
+        row.order_id,
+        nextQuote.n,
+        JSON.stringify(row.submission_snapshot?.lines??[]),
+        JSON.stringify({scope_revision_id:id,order_revision:row.order_revision}),
+        row.adjustment_cents,
+      ]
+    );
+    const charge=await one<{id:string}>(
+      db,
+      `insert into charge_items(id,org_id,purpose,inspection_quote_id,scope_revision_id,amount_cents,currency,snapshot)
+       values($1,$2,'inspection',$3,$4,$5,'USD',$6)
+       returning id`,
+      [uuid(),org,quote.id,id,row.adjustment_cents,{order_id:row.order_id,scope_revision_id:id,quote_revision:quote.revision}]
+    );
+    await db.query(
+      `insert into order_blocks(id,order_id,reason,object_key,opened_at)
+       values($1,$2,'scope_payment_pending',$3,now())
+       on conflict(order_id,reason,object_key) where resolved_at is null do nothing`,
+      [uuid(),row.order_id,id]
+    );
+    await audit(db,actor,"accept_upward_scope","orders",row.order_id,{scope_revision_id:id,charge_item_id:charge.id,amount_cents:row.adjustment_cents});
+    return {
+      scope_revision_id:id,
+      state:"awaiting_supplemental_payment",
+    };
+  }
+  await applyScopePositionsAndAdditions(db,row.order_id,row.previous_snapshot.positions,row.proposed_snapshot.positions,additions);
   await db.query("update scope_revisions set accepted_at=now(),accepted_by=$2 where id=$1",[id,actor.id]);
   await db.query("update orders set revision=revision+1 where id=$1",[row.order_id]);
   if(row.adjustment_cents<0) await db.query(`insert into tickets(id,public_no,org_id,order_id,category,subject,details)
     values($1,$2,$3,$4,'payment_refund','Scope reduction refund review',$5)`,[uuid(),code("C-"),org,row.order_id,{scope_revision_id:id,amount_cents:-row.adjustment_cents}]);
-  await audit(db,actor,"accept_scope","orders",row.order_id);
+  await audit(db,actor,"accept_scope","orders",row.order_id,{scope_revision_id:id});
   await readyOrder(db,row.order_id);
   return {scope_revision_id:id,state:"accepted"};
+}
+
+export async function respondOrderMismatch(
+  db:DB,
+  actor:Actor,
+  orderId:string,
+  input:{
+    revision?:number;
+    expected_item_id?:string;
+    sample_label?:string;
+    item_id?:string;
+    decision:"proceed_as_received"|"replace_sample"|"return_sample";
+    note?:string;
+  }
+) {
+  const org=organization(actor);
+  await lock(db,"org:"+org);
+  const order=await one(db,"select * from orders where id=$1 and org_id=$2 for update",[orderId,org]);
+  if(input.revision!==undefined) revision(order.revision,input.revision);
+  guard(["awaiting_samples","on_hold"].includes(order.state),"ORDER_NOT_EDITABLE","Mismatch responses can only be submitted before inspection begins.");
+  const candidates=(await db.query<{
+    expected_item_id:string;
+    position:number;
+    declared_fields:Record<string,unknown>;
+    order_line_id:string;
+    assignment_id:string;
+    item_id:string;
+    item_code:string;
+    identity_state:string;
+  }>(
+    `select e.id as expected_item_id,e.position,e.declared_fields,l.id as order_line_id,
+            a.id as assignment_id,w.id as item_id,w.code as item_code,w.identity_state
+     from order_lines l
+     join expected_items e on e.order_line_id=l.id and e.in_scope
+     join order_line_item_links a on a.expected_item_id=e.id and a.unlinked_at is null
+     join warehouse_items w on w.id=a.item_id
+     where l.order_id=$1
+     order by l.id,e.position`,
+    [orderId]
+  )).rows;
+  const label=(input.sample_label??"").trim();
+  const target=candidates.find(c=>{
+    if(input.expected_item_id && c.expected_item_id===input.expected_item_id) return true;
+    if(input.item_id && c.item_id===input.item_id) return true;
+    if(label && (c.item_code===label || c.declared_fields?.sample_code===label || c.declared_fields?.label===label || String(c.position)===label)) return true;
+    return false;
+  }) ?? (candidates.filter(c=>c.identity_state==="mismatch").length===1?candidates.find(c=>c.identity_state==="mismatch"):undefined);
+  guard(target,"MISMATCH_NOT_FOUND","Select the mismatched sample position to respond to.",422);
+  const blockCount=(await db.query(
+    "select 1 from order_blocks where order_id=$1 and reason='identity_mismatch' and object_key=$2 and resolved_at is null",
+    [orderId,target.expected_item_id]
+  )).rowCount;
+  guard(target.identity_state==="mismatch" || Boolean(blockCount),"MISMATCH_NOT_FOUND","This sample position does not have an open identity mismatch.",409);
+  await db.query(
+    "update order_blocks set resolved_at=now() where order_id=$1 and reason='identity_mismatch' and object_key=$2 and resolved_at is null",
+    [orderId,target.expected_item_id]
+  );
+  if(input.decision==="proceed_as_received") {
+    await db.query("update warehouse_items set identity_state='identified',custody_state='stored',revision=revision+1 where id=$1",[target.item_id]);
+    await db.query(
+      "update expected_items set declared_fields=declared_fields||jsonb_build_object('accepted_mismatch',true,'mismatch_decision','proceed_as_received') where id=$1",
+      [target.expected_item_id]
+    );
+  } else {
+    const unlinkReason=input.decision==="replace_sample"?"mismatch_replace":"mismatch_return";
+    await db.query("update order_line_item_links set unlinked_at=now(),reason=$2 where id=$1",[target.assignment_id,unlinkReason]);
+    await db.query("update warehouse_items set identity_state='identified',custody_state='stored',revision=revision+1 where id=$1",[target.item_id]);
+    await db.query(
+      "update expected_items set declared_fields=(declared_fields - 'actual_label_info' - 'mismatch_note')||jsonb_build_object('mismatch_decision',$2::text) where id=$1",
+      [target.expected_item_id,input.decision]
+    );
+  }
+  const openTicket=(await db.query<{id:string}>(
+    `select id from tickets where order_id=$1 and category='receipt_mismatch'
+       and details->>'expected_item_id'=$2 and state in ('open','waiting_customer','waiting_internal')
+     order by created_at desc limit 1 for update`,
+    [orderId,target.expected_item_id]
+  )).rows[0];
+  if(openTicket) {
+    await db.query(
+      `update tickets set state='resolved',resolved_at=now(),next_action_at=null,revision=revision+1,
+         details=details||$2::jsonb where id=$1`,
+      [openTicket.id,{customer_decision:input.decision,customer_note:input.note??null}]
+    );
+    await db.query(
+      `insert into ticket_events(id,ticket_id,actor_type,actor_id,kind,body)
+       values($1,$2,'customer',$3,'message',$4)`,
+      [uuid(),openTicket.id,actor.id,input.note?.trim()||`Customer selected: ${input.decision}`]
+    );
+  }
+  const remainingBlocks=(await db.query("select 1 from order_blocks where order_id=$1 and resolved_at is null",[orderId])).rowCount;
+  if(order.state==="on_hold" && !remainingBlocks) {
+    const fromState=(order.held_from_state as string|null)??"awaiting_samples";
+    await db.query(
+      `update orders set state=$2,
+         sla_due_at=case when sla_due_at is not null and held_at is not null then sla_due_at+greatest(now()-held_at,interval '0 seconds') else sla_due_at end,
+         held_at=null,held_from_state=null,hold_reason=null,revision=revision+1
+       where id=$1`,
+      [orderId,fromState]
+    );
+  } else {
+    await db.query("update orders set revision=revision+1 where id=$1",[orderId]);
+  }
+  await audit(db,actor,"respond_order_mismatch","orders",orderId,{
+    expected_item_id:target.expected_item_id,
+    item_id:target.item_id,
+    decision:input.decision,
+  });
+  await readyOrder(db,orderId);
+  const updated=await one<{id:string;state:string;revision:number}>(db,"select id,state,revision from orders where id=$1",[orderId]);
+  return {
+    order_id:updated.id,
+    state:updated.state,
+    revision:updated.revision,
+    expected_item_id:target.expected_item_id,
+    item_id:target.item_id,
+    decision:input.decision,
+  };
+}
+
+export async function extendOrderArrival(
+  db:DB,
+  actor:Actor,
+  orderId:string,
+  input:{revision:number;extend_days:number;reason:string}
+) {
+  const org=organization(actor);
+  await lock(db,"org:"+org);
+  const order=await one(db,"select * from orders where id=$1 and org_id=$2 for update",[orderId,org]);
+  revision(order.revision,input.revision);
+  guard(order.state==="awaiting_samples","EXTENSION_UNAVAILABLE","Sample arrival windows can only be extended while awaiting samples.");
+  const extendedUntil=new Date(Date.now()+input.extend_days*86400_000).toISOString();
+  const nextSource={...(order.source??{}),arrival_extension:{extend_days:input.extend_days,reason:input.reason.trim(),extended_until:extendedUntil,requested_at:new Date().toISOString()}};
+  const updated=await one<{id:string;state:string;revision:number;sla_due_at:string|null}>(
+    db,
+    "update orders set source=$2,revision=revision+1,updated_at=now() where id=$1 returning id,state,revision,sla_due_at",
+    [orderId,nextSource]
+  );
+  await audit(db,actor,"extend_order_arrival","orders",orderId,{extend_days:input.extend_days,reason:input.reason.trim(),extended_until:extendedUntil});
+  return {...updated,extended_until:extendedUntil};
+}
+
+export async function convertOrderToTwo(
+  db:DB,
+  actor:Actor,
+  orderId:string,
+  input:{revision?:number;expected_item_id?:string;drop_label?:string;reason?:string}
+) {
+  const org=actor.kind==="customer"?organization(actor):null;
+  if(org===null) role(actor,"support","super_admin");
+  const initial=await one<{org_id:string}>(db,"select org_id from orders where id=$1 and ($2::uuid is null or org_id=$2)",[orderId,org]);
+  await lock(db,"org:"+initial.org_id);
+  const order=await one(db,"select * from orders where id=$1 for update",[orderId]);
+  if(input.revision!==undefined) revision(order.revision,input.revision);
+  guard(order.state==="awaiting_samples","CONVERT_TO_TWO_UNAVAILABLE","Three-to-two conversion is only available while awaiting samples before inspection starts.");
+  const comparePositions=(await db.query<{
+    id:string;
+    position:number;
+    declared_fields:Record<string,unknown>;
+    order_line_id:string;
+    category_id:string;
+    offer_id:string;
+    template_version_id:string;
+    service_type_id:string;
+    linked_item_id:string|null;
+  }>(
+    `select e.id,e.position,e.declared_fields,l.id as order_line_id,l.category_id,l.offer_id,l.template_version_id,
+            so.service_type_id,a.item_id as linked_item_id
+     from order_lines l
+     join service_offers so on so.id=l.offer_id
+     join service_types st on st.id=so.service_type_id
+     join expected_items e on e.order_line_id=l.id and e.in_scope
+     left join order_line_item_links a on a.expected_item_id=e.id and a.unlinked_at is null
+     where l.order_id=$1 and st.code='compare'
+     order by l.id,e.position`,
+    [orderId]
+  )).rows;
+  guard(comparePositions.length===3,"CONVERT_TO_TWO_UNAVAILABLE","Three-to-two conversion requires an active 3-item comparison line.");
+  const dropLabel=(input.drop_label??"").trim();
+  const dropped=comparePositions.find(p=>{
+    if(input.expected_item_id && p.id===input.expected_item_id) return true;
+    if(dropLabel && (p.declared_fields?.sample_code===dropLabel || p.declared_fields?.label===dropLabel || String(p.position)===dropLabel || ["A","B","C"][p.position-1]===dropLabel.toUpperCase())) return true;
+    return false;
+  }) ?? (comparePositions.filter(p=>!p.linked_item_id).length===1?comparePositions.find(p=>!p.linked_item_id):undefined);
+  guard(dropped,"CONVERT_TO_TWO_UNAVAILABLE","Select the unreceived sample position to drop.",422);
+  guard(!dropped.linked_item_id,"CONVERT_TO_TWO_UNAVAILABLE","Only a sample position that has not yet arrived can be dropped in a 3-to-2 conversion.");
+  const lineId=dropped.order_line_id;
+  const alreadyConverted=(await db.query(
+    "select 1 from scope_revisions where order_id=$1 and accepted_at is not null and proposed_snapshot->>'conversion'='three_to_two' and proposed_snapshot->>'order_line_id'=$2",
+    [orderId,lineId]
+  )).rowCount;
+  guard(!alreadyConverted,"CONVERT_TO_TWO_UNAVAILABLE","This comparison line has already been converted from 3 to 2 items.");
+  const snapshotLines=(order.submission_snapshot?.lines??[]) as {order_line_id:string;quantity:number;amount_cents:number}[];
+  const origLine=snapshotLines.find(l=>l.order_line_id===lineId);
+  guard(origLine,"CONVERT_TO_TWO_UNAVAILABLE","Original line price snapshot is missing.");
+  const twoOffer=(await db.query<{offer_id:string;rules:{package_cents?:number;unit_cents?:number}}>(
+    `select so.id as offer_id,sp.rules
+     from service_offers so
+     join offer_templates ot on ot.offer_id=so.id and ot.category_id=$1 and ot.service_type_id=$2 and ot.template_version_id=$3
+     join lateral (
+       select rules from sku_prices p
+       where p.offer_id=so.id and p.effective_from<=coalesce($4::timestamptz,now())
+       order by p.effective_from desc,p.version desc limit 1
+     ) sp on true
+     where (sp.rules->>'minimum')::int<=2 and (sp.rules->>'maximum')::int>=2
+     order by (sp.rules->>'minimum')::int desc limit 1`,
+    [dropped.category_id,dropped.service_type_id,dropped.template_version_id,order.paid_at??order.created_at]
+  )).rows[0];
+  const twoCents=twoOffer
+    ?(twoOffer.rules.package_cents??(twoOffer.rules.unit_cents!*2))
+    :Math.floor((origLine.amount_cents*2)/3);
+  const adjustmentCents=Math.min(0,twoCents-origLine.amount_cents);
+  await db.query("update expected_items set in_scope=false where id=$1",[dropped.id]);
+  await db.query("update order_lines set quantity=2,offer_id=coalesce($2,offer_id) where id=$1",[lineId,twoOffer?.offer_id??null]);
+  const allInScope=(await db.query<{id:string}>(
+    "select e.id from expected_items e join order_lines l on l.id=e.order_line_id where l.order_id=$1 and e.in_scope",
+    [orderId]
+  )).rows.map(r=>r.id);
+  const seq=await one<{n:number}>(db,"select coalesce(max(revision),0)::int+1 n from scope_revisions where order_id=$1",[orderId]);
+  const revId=uuid();
+  const reason=(input.reason??"Convert 3-item comparison to 2-item comparison for unreceived sample").trim();
+  await db.query(
+    `insert into scope_revisions(id,order_id,revision,previous_snapshot,proposed_snapshot,reason,accepted_by,accepted_at,adjustment_cents)
+     values($1,$2,$3,$4,$5,$6,$7,now(),$8)`,
+    [
+      revId,
+      orderId,
+      seq.n,
+      {positions:[...allInScope,dropped.id],order_revision:order.revision,offer_id:dropped.offer_id},
+      {positions:allInScope,conversion:"three_to_two",order_line_id:lineId,dropped_expected_item_id:dropped.id,offer_id:twoOffer?.offer_id??dropped.offer_id},
+      reason,
+      actor.id,
+      adjustmentCents,
+    ]
+  );
+  let refundTicketId:string|null=null;
+  if(adjustmentCents<0) {
+    refundTicketId=uuid();
+    await db.query(
+      `insert into tickets(id,public_no,org_id,order_id,category,subject,details)
+       values($1,$2,$3,$4,'payment_refund','3-to-2 comparison conversion refund review',$5)`,
+      [
+        refundTicketId,
+        code("C-"),
+        initial.org_id,
+        orderId,
+        {scope_revision_id:revId,order_line_id:lineId,dropped_expected_item_id:dropped.id,amount_cents:-adjustmentCents},
+      ]
+    );
+  }
+  await db.query("update orders set revision=revision+1 where id=$1",[orderId]);
+  await audit(db,actor,"convert_order_to_two","orders",orderId,{
+    scope_revision_id:revId,
+    dropped_expected_item_id:dropped.id,
+    adjustment_cents:adjustmentCents,
+    refund_ticket_id:refundTicketId,
+  });
+  await readyOrder(db,orderId);
+  const updated=await one<{id:string;state:string;revision:number}>(db,"select id,state,revision from orders where id=$1",[orderId]);
+  return {
+    order_id:updated.id,
+    state:updated.state,
+    revision:updated.revision,
+    scope_revision_id:revId,
+    dropped_expected_item_id:dropped.id,
+    adjustment_cents:adjustmentCents,
+    refund_ticket_id:refundTicketId,
+  };
 }
 export const staffSchemas={
   address:z.object({address_zh:z.string().min(3).max(500),address_en:z.string().min(3).max(500),contact_name:z.string().min(1).max(100),contact_phone:z.string().min(5).max(30)}),

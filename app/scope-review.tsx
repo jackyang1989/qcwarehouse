@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect } from "react";
-import { Action, Empty, ErrorBlock, Form, Panel, request, stamp, text, useLoad, usd, type Row } from "./ui";
+import { Action, Empty, ErrorBlock, Field, Form, Panel, Select, request, stamp, text, useLoad, usd, type Row } from "./ui";
 
 export function ScopeReview({orderId,staff=false,onSave}:{orderId:string;staff?:boolean;onSave:()=>void}) {
   const {data,error,reload}=useLoad("/orders/"+orderId+"/scope-revisions");
@@ -14,14 +14,46 @@ export function ScopeReview({orderId,staff=false,onSave}:{orderId:string;staff?:
       document.getElementById(anchor)?.scrollIntoView({block:"start"});
   },[data]);
   const positions:Row[]=data?.positions??[];
+  const mismatchedPositions=positions.filter(p=>p.in_scope&&(p.identity_state==="mismatch"||p.declared_fields?.mismatch_note));
+  const comparePositions=positions.filter(p=>p.in_scope&&p.service==="compare");
+  const unreceivedCompare=comparePositions.filter(p=>!p.item_code);
   const nameOf=(id:string)=>{
     const item=positions.find(p=>p.id===id);
     return item?(staff?item.title["zh-CN"]??item.title.en:item.title.en)+" · "+item.position+(item.item_code?" · "+item.item_code:""):id;
   };
-  return <Panel title={staff?"委托范围变更":"Inspection scope changes"}>
+  return <Panel title={staff?"委托范围变更与收货差异":"Inspection scope & sample discrepancies"}>
     {error&&<ErrorBlock error={error}/>}
     {!data&&!error&&<p role="status">{staff?"正在读取范围…":"Loading scope changes…"}</p>}
     {data&&!error&&<>
+      {mismatchedPositions.length>0&&<div className="card">
+        <h3>{staff?"收货身份不符待确认":"Action needed: sample discrepancy reported"}</h3>
+        {mismatchedPositions.map((m:Row)=><div key={m.id} className="notice">
+          <p><strong>{nameOf(m.id)}</strong></p>
+          <p className="small">
+            {staff?"申报：":"Declared: "}
+            {m.declared_fields?.size_label??m.declared_fields?.size??"—"} / {m.declared_fields?.color_declared??m.declared_fields?.color??"—"}
+            {" · "}
+            {staff?"实收标签：":"Received label: "}
+            {m.declared_fields?.actual_label_info?.size_label??"—"} / {m.declared_fields?.actual_label_info?.color_found??"—"}
+          </p>
+          {m.declared_fields?.mismatch_note&&<p className="bad">{m.declared_fields.mismatch_note}</p>}
+          {!staff&&<Form label="Submit discrepancy decision" run={async f=>{
+            await request("/orders/"+orderId+"/mismatch-response","POST",{
+              expected_item_id:m.id,
+              decision:text(f,"decision"),
+              note:text(f,"note")||undefined,
+            });
+            updated();
+          }}>
+            <Select name="decision" label="How should we proceed with this sample?" choices={[
+              {id:"proceed_as_received",label:"Inspect the received sample as-is"},
+              {id:"replace_sample",label:"Hold position open for a replacement sample"},
+              {id:"return_sample",label:"Unlink this sample for return to seller"},
+            ]}/>
+            <Field name="note" label="Note for warehouse / support (optional)" required={false}/>
+          </Form>}
+        </div>)}
+      </div>}
       {data.proposals.length===0&&<Empty>{staff?"暂无范围变更。":"No scope changes have been proposed."}</Empty>}
       {data.proposals.map((p:Row)=><div className="card" id={"scope-"+p.id} key={p.id}>
         <h3>{staff?"变更版本":"Change"} {p.revision} · {staff?({pending:"待客户确认",accepted:"已接受",stale:"已失效"} as Row)[p.state]:
@@ -30,15 +62,40 @@ export function ScopeReview({orderId,staff=false,onSave}:{orderId:string;staff?:
         <p>{staff?"保留检查位":"Retained inspection positions"}</p><ul>{p.proposed_positions.map((id:string)=><li key={id}>{nameOf(id)}</li>)}</ul>
         <p>{staff?"取消检查位":"Removed inspection positions"}</p><ul>{p.previous_positions.filter((id:string)=>!p.proposed_positions.includes(id))
           .map((id:string)=><li key={id}>{nameOf(id)}</li>)}</ul>
-        <p>{staff?"拟审核退费金额":"Proposed refund for review"} · <strong>{usd(-p.adjustment_cents)}</strong></p>
+        {p.adjustment_cents<=0
+          ?<p>{staff?"拟审核退费金额":"Proposed refund for review"} · <strong>{usd(-p.adjustment_cents)}</strong></p>
+          :<p>{staff?"需补付服务费差额":"Supplemental inspection charge"} · <strong>{usd(p.adjustment_cents)}</strong></p>}
         {p.accepted_at&&<p>{staff?"接受时间":"Accepted"} {stamp(p.accepted_at)}</p>}
         {p.refund_case&&<p><Link href={(staff?"/admin/tickets/":"/support/cases/")+p.refund_case.id}>
           {staff?"查看退款审核工单":"View refund review case"}</Link></p>}
+        {!staff&&p.supplemental_charge&&!p.supplemental_charge.paid&&!p.supplemental_charge.voided&&<Action primary run={async()=>{
+          const res=await request("/charges/"+p.supplemental_charge.id+"/checkout","POST",{quote_revision:p.supplemental_charge.quote_revision});
+          if(res.checkout_url) location.assign(res.checkout_url);
+          else updated();
+        }}>Pay supplemental charge ({usd(p.supplemental_charge.amount_cents)})</Action>}
         {!staff&&p.state==="pending"&&<Action primary run={async()=>{
-          if(!window.confirm("Accept these exact inspection positions and the proposed refund review?"))return;
+          if(!window.confirm("Accept these exact inspection positions and the proposed price adjustment?"))return;
           await request("/scope-revisions/"+p.id+"/accept","POST",{revision:p.revision});updated();
         }}>Accept scope change</Action>}
       </div>)}
+      {data.order.state==="awaiting_samples"&&comparePositions.length===3&&unreceivedCompare.length>=1&&<details className="card">
+        <summary>{staff?"三件对比改两件对比（3-to-2）":"Convert 3-item comparison to 2-item comparison"}</summary>
+        <p className="muted">
+          {staff?"当第三件对比样品迟迟未到且尚未开检时，可剔除未到样品改为两件对比，差额进入退款审核。":
+            "If one of your 3 comparison samples is delayed, you can drop the unreceived position and proceed with a 2-item comparison. The price difference will be queued for refund review."}
+        </p>
+        <Form label={staff?"确认三改二":"Convert to 2-item comparison"} run={async f=>{
+          await request("/orders/"+orderId+"/convert-to-two","POST",{
+            revision:data.order.revision,
+            expected_item_id:text(f,"expected_item_id"),
+            reason:text(f,"reason")||undefined,
+          });
+          updated();
+        }}>
+          <Select name="expected_item_id" label={staff?"剔除未到样品位置":"Unreceived position to drop"} choices={unreceivedCompare.map(p=>({id:p.id,label:nameOf(p.id)}))}/>
+          <Field name="reason" label={staff?"变更说明":"Reason (optional)"} required={false}/>
+        </Form>
+      </details>}
       {data.order.state==="awaiting_samples"&&<details className="card">
         <summary>{staff?"提出标准质检范围调整":"Propose a change to item-by-item inspection"}</summary>
         <p>{staff?"勾选继续质检的位置。对比和确认样服务需客服另行核价。":"Select the positions to retain. Comparison and reference services require a separate support review."}</p>
@@ -53,6 +110,20 @@ export function ScopeReview({orderId,staff=false,onSave}:{orderId:string;staff?:
             <input type="checkbox" name="positions" value={p.id} defaultChecked/>{nameOf(p.id)}
           </label>:<p key={p.id}>{nameOf(p.id)} · {staff?"保留原服务":"Original service retained"}</p>)}
           <label>{staff?"客户可见英文变更原因":"Reason for the change"}<textarea name="reason" required maxLength={1000}/></label>
+        </Form>
+      </details>}
+      {!staff&&data.order.state==="awaiting_samples"&&<details className="card">
+        <summary>Extend sample arrival window</summary>
+        <Form label="Request arrival extension" run={async f=>{
+          await request("/orders/"+orderId+"/extend","POST",{
+            revision:data.order.revision,
+            extend_days:Number(text(f,"extend_days")),
+            reason:text(f,"reason"),
+          });
+          updated();
+        }}>
+          <Field name="extend_days" label="Additional days needed (1–30)" type="number" min={1} max={30} value={7}/>
+          <Field name="reason" label="Reason for extension"/>
         </Form>
       </details>}
     </>}

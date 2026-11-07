@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { DB } from "../db";
 import { audit, code, event, guard, hash, lock, one, organization, revision, role, uuid, type Actor } from "./common";
+import { integrationPreflight } from "./integrations";
 import { activatePaidOrder, priceSchema, readyOrder, templateSchema } from "./orders";
 import { assertItemNotFrozen, requireSpace } from "./storage";
 
@@ -1324,6 +1325,280 @@ export async function recordRecoveryDrill(
   return {...row,replayed};
 }
 
+export const REHEARSAL_SCENARIOS=[
+  "set_1_standard",
+  "set_2_weak_network",
+  "set_3_return_retain",
+  "set_4_recovery_alerts",
+  "three_carrier_30_items",
+] as const;
+export type RehearsalScenario=(typeof REHEARSAL_SCENARIOS)[number];
+
+export interface RehearsalRunEntry {
+  id:string;
+  scenario:RehearsalScenario;
+  environment:"staging"|"real_warehouse";
+  order_ids:string[];
+  package_ids:string[];
+  shipment_ids:string[];
+  media_count:number;
+  carrier_codes:string[];
+  reverified:boolean;
+  passed:boolean;
+  notes:string;
+  recorded_by:string;
+  recorded_at:string;
+}
+
+export async function recordRehearsalRun(
+  db:DB,
+  actor:Actor,
+  input:{
+    scenario:RehearsalScenario;
+    environment:"staging"|"real_warehouse";
+    order_ids?:string[];
+    package_ids?:string[];
+    shipment_ids?:string[];
+    media_count?:number;
+    carrier_codes?:string[];
+    reverified?:boolean;
+    passed:boolean;
+    notes:string;
+  }
+) {
+  role(actor,"warehouse_admin","super_admin");
+  await lock(db,"launch:rehearsal_runs");
+  const existingRow=(await db.query<{value:unknown}>("select value from app_config where key='launch.rehearsal_runs'")).rows[0];
+  const existing=Array.isArray(existingRow?.value)?(existingRow.value as RehearsalRunEntry[]):[];
+  const entry:RehearsalRunEntry={
+    id:uuid(),
+    scenario:input.scenario,
+    environment:input.environment,
+    order_ids:input.order_ids??[],
+    package_ids:input.package_ids??[],
+    shipment_ids:input.shipment_ids??[],
+    media_count:input.media_count??0,
+    carrier_codes:input.carrier_codes??[],
+    reverified:Boolean(input.reverified),
+    passed:Boolean(input.passed),
+    notes:input.notes.trim(),
+    recorded_by:actor.id,
+    recorded_at:new Date().toISOString(),
+  };
+  const updated=[entry,...existing].slice(0,100);
+  await db.query(
+    `insert into app_config(key,value,updated_by,updated_at)
+     values('launch.rehearsal_runs',$1::jsonb,$2,now())
+     on conflict(key) do update set value=excluded.value,updated_by=excluded.updated_by,updated_at=now()`,
+    [JSON.stringify(updated),actor.id]
+  );
+  await audit(db,actor,"record_rehearsal_run","app_config",entry.id,{
+    code:entry.scenario,
+    active:entry.passed,
+    count:entry.media_count,
+  });
+  return entry;
+}
+
+export async function configureLegalEntity(
+  db:DB,
+  actor:Actor,
+  input:{
+    entity_name:string;
+    entity_address:string;
+    br_number:string;
+    support_email:string;
+  }
+) {
+  role(actor,"super_admin");
+  await lock(db,"launch:legal_entity");
+  const payload={
+    entity_name:input.entity_name.trim(),
+    entity_address:input.entity_address.trim(),
+    br_number:input.br_number.trim(),
+    support_email:input.support_email.trim().toLowerCase(),
+    updated_by:actor.id,
+    updated_at:new Date().toISOString(),
+  };
+  await db.query(
+    `insert into app_config(key,value,updated_by,updated_at)
+     values('legal.entity',$1::jsonb,$2,now())
+     on conflict(key) do update set value=excluded.value,updated_by=excluded.updated_by,updated_at=now()`,
+    [JSON.stringify(payload),actor.id]
+  );
+  await audit(db,actor,"configure_legal_entity","app_config",null,{
+    code:payload.br_number,
+    active:true,
+  });
+  return payload;
+}
+
+export async function evaluateLaunchReadiness(db:DB,actor:Actor) {
+  role(actor,"super_admin","warehouse_admin","support","finance");
+  const preflight=integrationPreflight();
+  const counts=await one<{
+    default_address_count:number;
+    published_terms_kinds:number;
+    shipping_rates_count:number;
+    unadmitted_enabled_offers:number;
+    active_categories_count:number;
+    recovery_drills_count:number;
+    in_flight_orders:number;
+    in_flight_batches:number;
+    stored_items:number;
+    open_disputes:number;
+    exhausted_jobs:number;
+  }>(
+    db,
+    `select
+       (select count(*)::int from warehouse_addresses where active and is_default) default_address_count,
+       (select count(distinct kind)::int from terms_versions where effective_at is not null and effective_at<=now()) published_terms_kinds,
+       (select count(*)::int from shipping_rate_versions) shipping_rates_count,
+       (select count(*)::int from service_offers o
+         join offer_templates ot on ot.offer_id=o.id
+         join categories c on c.id=ot.category_id
+         where o.enabled and c.status<>'ACTIVE') unadmitted_enabled_offers,
+       (select count(*)::int from categories where status='ACTIVE') active_categories_count,
+       (select count(*)::int from recovery_runs where coalesce((reconciliation->>'verified')::boolean,true)=true) recovery_drills_count,
+       (select count(*)::int from orders where state not in ('draft','closed','cancelled')) in_flight_orders,
+       (select count(*)::int from dispatch_batches where state not in ('draft','closed','cancelled')) in_flight_batches,
+       (select count(*)::int from warehouse_items where custody_state in ('received','stored','packed')) stored_items,
+       (select count(*)::int from payment_disputes where state='open') open_disputes,
+       (select count(*)::int from outbox_events where processed_at is null and attempts>=5) exhausted_jobs`
+  );
+  const cfgRows=(await db.query<{key:string;value:unknown}>(
+    "select key,value from app_config where key in ('legal.entity','launch.rehearsal_runs','launch.signoff','disposal.production_execution_enabled')"
+  )).rows;
+  const cfgMap=new Map(cfgRows.map(r=>[r.key,r.value]));
+  const legalEntity=(cfgMap.get("legal.entity") as {
+    entity_name?:string;
+    entity_address?:string;
+    br_number?:string;
+    support_email?:string;
+    updated_at?:string;
+  }|undefined)??null;
+  const rehearsalRuns=Array.isArray(cfgMap.get("launch.rehearsal_runs"))
+    ?(cfgMap.get("launch.rehearsal_runs") as RehearsalRunEntry[])
+    :[];
+  const signoff=(cfgMap.get("launch.signoff") as {
+    target_mode:"staging_only"|"production";
+    effective_mode:"staging_only"|"production";
+    rollback_contact:string;
+    first_order_invite_enabled:boolean;
+    live_penny_test_ref?:string|null;
+    notes:string;
+    signed_by:string;
+    signed_at:string;
+  }|undefined)??null;
+  const passedScenarios=new Set(
+    rehearsalRuns.filter(r=>r.passed).map(r=>r.scenario)
+  );
+  const reverifiedRuns=rehearsalRuns.filter(r=>r.passed && r.reverified);
+  const gates={
+    warehouse_address:counts.default_address_count===1,
+    legal_terms:counts.published_terms_kinds>=4,
+    shipping_rates:counts.shipping_rates_count>=1,
+    catalog_purity:counts.active_categories_count>=1 && counts.unadmitted_enabled_offers===0,
+    legal_entity_configured:Boolean(
+      legalEntity?.entity_name &&
+      legalEntity?.entity_address &&
+      legalEntity?.br_number &&
+      legalEntity?.support_email
+    ),
+    recovery_drill_verified:counts.recovery_drills_count>=1,
+    rehearsal_sets_completed:REHEARSAL_SCENARIOS.every(s=>passedScenarios.has(s)) && reverifiedRuns.length>=1,
+    no_exhausted_jobs:counts.exhausted_jobs===0,
+    oidc_configured:Boolean(preflight.google.configured && preflight.microsoft.configured),
+    postmark_live:Boolean(preflight.postmark.enabled),
+    stripe_live:Boolean(preflight.stripe.mode==="live" && preflight.stripe.webhookConfigured && preflight.stripe.liveEnabled),
+    kuaidi100_live:Boolean(preflight.kuaidi100.queryConfigured && preflight.kuaidi100.httpsCallbackConfigured),
+  };
+  const missingGates=Object.entries(gates)
+    .filter(([,ok])=>!ok)
+    .map(([name])=>name);
+  const allGatesSatisfied=missingGates.length===0;
+  const effectiveMode:"staging_only"|"production"=
+    allGatesSatisfied && signoff?.target_mode==="production"?"production":"staging_only";
+  return {
+    checked_at:new Date().toISOString(),
+    gates,
+    missing_gates:missingGates,
+    all_gates_satisfied:allGatesSatisfied,
+    effective_mode:effectiveMode,
+    in_flight_summary:{
+      in_flight_orders:counts.in_flight_orders,
+      in_flight_batches:counts.in_flight_batches,
+      stored_items:counts.stored_items,
+      open_disputes:counts.open_disputes,
+      exhausted_jobs:counts.exhausted_jobs,
+    },
+    legal_entity:legalEntity,
+    rehearsal_runs:rehearsalRuns,
+    rehearsal_coverage:{
+      required_scenarios:REHEARSAL_SCENARIOS,
+      completed_scenarios:REHEARSAL_SCENARIOS.filter(s=>passedScenarios.has(s)),
+      missing_scenarios:REHEARSAL_SCENARIOS.filter(s=>!passedScenarios.has(s)),
+      reverified_count:reverifiedRuns.length,
+    },
+    signoff,
+    integrations:preflight,
+  };
+}
+
+export async function recordLaunchSignoff(
+  db:DB,
+  actor:Actor,
+  input:{
+    target_mode:"staging_only"|"production";
+    rollback_contact:string;
+    first_order_invite_enabled?:boolean;
+    live_penny_test_ref?:string;
+    notes:string;
+  }
+) {
+  role(actor,"super_admin");
+  await lock(db,"launch:signoff");
+  const readiness=await evaluateLaunchReadiness(db,actor);
+  if(input.target_mode==="production") {
+    guard(
+      readiness.all_gates_satisfied,
+      "LAUNCH_GATES_INCOMPLETE",
+      `Cannot open production mode while §23 launch gates are incomplete (${readiness.missing_gates.join(", ")}); system remains in staging_only.`,
+      409
+    );
+  }
+  const effectiveMode:"staging_only"|"production"=
+    input.target_mode==="production" && readiness.all_gates_satisfied?"production":"staging_only";
+  const signoff={
+    target_mode:input.target_mode,
+    effective_mode:effectiveMode,
+    rollback_contact:input.rollback_contact.trim(),
+    first_order_invite_enabled:Boolean(input.first_order_invite_enabled),
+    live_penny_test_ref:input.live_penny_test_ref?.trim()||null,
+    notes:input.notes.trim(),
+    missing_gates_at_signoff:readiness.missing_gates,
+    signed_by:actor.id,
+    signed_at:new Date().toISOString(),
+  };
+  await db.query(
+    `insert into app_config(key,value,updated_by,updated_at)
+     values('launch.signoff',$1::jsonb,$2,now())
+     on conflict(key) do update set value=excluded.value,updated_by=excluded.updated_by,updated_at=now()`,
+    [JSON.stringify(signoff),actor.id]
+  );
+  await audit(db,actor,"record_launch_signoff","app_config",null,{
+    code:effectiveMode,
+    active:effectiveMode==="production",
+    count:readiness.missing_gates.length,
+  });
+  return {
+    signoff,
+    effective_mode:effectiveMode,
+    missing_gates:readiness.missing_gates,
+    all_gates_satisfied:readiness.all_gates_satisfied,
+  };
+}
+
 export const staffSchemas={
   address:z.object({
     address_zh:z.string().min(3).max(500),
@@ -1389,4 +1664,29 @@ export const staffSchemas={
     title:z.object({en:z.string().trim().min(1).max(120),"zh-CN":z.string().trim().min(1).max(100)}),
     enabled:z.boolean().optional(),rules:priceSchema}),
   referenceRelease:z.object({terms_version_id:z.string().uuid(),reason:z.string().trim().max(300).optional()}),
+  rehearsalRun:z.object({
+    scenario:z.enum(REHEARSAL_SCENARIOS),
+    environment:z.enum(["staging","real_warehouse"]),
+    order_ids:z.array(z.string().uuid()).max(100).optional(),
+    package_ids:z.array(z.string().uuid()).max(100).optional(),
+    shipment_ids:z.array(z.string().uuid()).max(100).optional(),
+    media_count:z.number().int().min(0).max(10_000).optional(),
+    carrier_codes:z.array(z.string().trim().min(1).max(40)).max(20).optional(),
+    reverified:z.boolean().optional(),
+    passed:z.boolean(),
+    notes:z.string().trim().min(4).max(2000),
+  }),
+  legalEntity:z.object({
+    entity_name:z.string().trim().min(2).max(200),
+    entity_address:z.string().trim().min(5).max(500),
+    br_number:z.string().trim().min(3).max(100),
+    support_email:z.string().email().max(200),
+  }),
+  launchSignoff:z.object({
+    target_mode:z.enum(["staging_only","production"]),
+    rollback_contact:z.string().trim().min(3).max(200),
+    first_order_invite_enabled:z.boolean().optional(),
+    live_penny_test_ref:z.string().trim().max(200).optional(),
+    notes:z.string().trim().min(4).max(2000),
+  }),
 };

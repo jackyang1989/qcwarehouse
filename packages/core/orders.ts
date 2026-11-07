@@ -279,8 +279,12 @@ export async function activatePaidOrder(db:DB,orderId:string) {
   await readyOrder(db,orderId);
 }
 
-function parseDateList(raw:string|null|undefined):Set<string> {
+function parseDateList(raw:unknown):Set<string> {
   if(!raw) return new Set();
+  if(Array.isArray(raw)) {
+    return new Set(raw.map(x=>String(x).trim()).filter(Boolean));
+  }
+  if(typeof raw!=="string") return new Set();
   const trimmed=raw.trim();
   if(!trimmed) return new Set();
   try {

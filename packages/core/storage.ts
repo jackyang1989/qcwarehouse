@@ -181,8 +181,8 @@ export async function scanStocktakeItem(
 
   // T102: Detect concurrent movement or outbound handover after snapshot_at
   const movedAfterSnapshot=(await db.query(
-    "select 1 from storage_events where item_id=$1 and created_at>$2 limit 1",
-    [item.id,st.snapshot_at]
+    "select 1 from storage_events where item_id=$1 and created_at>(select snapshot_at from stocktakes where id=$2) limit 1",
+    [item.id,stocktakeId]
   )).rowCount;
   if(input.status==="missing" && (item.revision>si.revision || Boolean(movedAfterSnapshot))) {
     const nextExpected=item.custody_state==="outbound"?null:item.location_id;

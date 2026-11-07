@@ -22,7 +22,7 @@ import { customerDestination, withDestination } from "./portal-routes";
 import { orderFulfillmentRecord } from "./fulfillment-reads";
 import { canReadCasePhoto, caseDetail, createPublicInquiry, customerTicketMessage, inquiryCategories, publicInquiry, replyToCase, staffTicketEvent, staffTicketQueue, writeStaffTicket } from "./tickets";
 import { approveDisposalCase, approveIncidentResolution, approveStocktake, createDisposalCase, createIncident, createLocations, createStocktake, customerReadIncident, customerRespondIncident, executeDisposalCase, listIncidents, listOverdueAndRestrictedQueue, listStocktakes, locationBatchSchema, locationMaster, proposeIncidentResolution, resolveIncidentCompensation, scanStocktakeItem, setLocationActive, storageMovementDesk, submitStocktake } from "./storage";
-import { acceptScope, approveCapability, cancelOrder, computeOrderRefundStage, convertOrderToTwo, createCapability, createCategory, createTermsVersion, exportCustomerPrivacyData, extendOrderArrival, holdOrder, moveItem, newTemplate, orderCaseCategory, publishSkuPrice, publishTemplate, publishTermsVersion, recordRecoveryDrill, reportIssue, requestCustomerPrivacyAction, requestOrderAfterSales, respondOrderMismatch, resumeOrder, revokeCapability, scopeProposal, scopeReview, setAddress, setDisposalExecutionSwitch, staffSchemas, systemHealthAndBackupCheck, updateBusinessCalendar, updateCategoryStatus, updateWarehouseAddress, upsertOffer } from "./operations";
+import { acceptScope, approveCapability, cancelOrder, computeOrderRefundStage, configureLegalEntity, convertOrderToTwo, createCapability, createCategory, createTermsVersion, evaluateLaunchReadiness, exportCustomerPrivacyData, extendOrderArrival, holdOrder, moveItem, newTemplate, orderCaseCategory, publishSkuPrice, publishTemplate, publishTermsVersion, recordLaunchSignoff, recordRecoveryDrill, recordRehearsalRun, reportIssue, requestCustomerPrivacyAction, requestOrderAfterSales, respondOrderMismatch, resumeOrder, revokeCapability, scopeProposal, scopeReview, setAddress, setDisposalExecutionSwitch, staffSchemas, systemHealthAndBackupCheck, updateBusinessCalendar, updateCategoryStatus, updateWarehouseAddress, upsertOffer } from "./operations";
 import { createReportShare, listPublishedReports, listReportShares, readSharedPhoto, readSharedReport, reportSharingEnabled, revokeReportShare, shareInput, shareTokenPattern } from "./report-shares";
 import { auditFilters, readAudit } from "./audit-read";
 import { completeMediaUpload, createMediaReadUrl, createMediaUploadUrl, putMediaStaging, readMediaBinary, uploadUrlInputSchema } from "./media";
@@ -728,6 +728,14 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   }),(db,a,b)=>executeDisposalCase(db,a,idSchema.parse(disposalExecute[1]),b));
   if(method==="POST" && path==="/staff/admin/disposal-execution-switch")
     return extraWrite(req,path,actor,staffSchemas.disposalSwitch,setDisposalExecutionSwitch);
+  if(method==="GET" && path==="/staff/admin/launch-readiness")
+    return json(await transaction(db=>evaluateLaunchReadiness(db,actorRequired(actor))));
+  if(method==="POST" && path==="/staff/admin/rehearsal-runs")
+    return extraWrite(req,path,actor,staffSchemas.rehearsalRun,recordRehearsalRun,201);
+  if(method==="POST" && path==="/staff/admin/legal-entity")
+    return extraWrite(req,path,actor,staffSchemas.legalEntity,configureLegalEntity);
+  if(method==="POST" && path==="/staff/admin/launch-signoff")
+    return extraWrite(req,path,actor,staffSchemas.launchSignoff,recordLaunchSignoff);
   const manual=path.match(/^\/orders\/([a-f0-9-]{36})\/manual-quote-request$/i);
   if(method==="POST" && manual) return extraWrite(req,path,actor,z.object({revision:revSchema,reason:z.string().trim().min(4).max(1200)}),
     (db,a,b)=>requestManualQuote(db,a,idSchema.parse(manual[1]),b.revision,b.reason));
@@ -1075,7 +1083,7 @@ export async function handle(req:Request,path:string) {
     }),status);
   } catch(e) {
     if(e instanceof Problem) {
-      if(e.status===403 || ["INCOMPATIBLE_SAMPLES","SELF_REVIEW_FORBIDDEN","CATEGORY_ADMISSION_INCOMPLETE","REFERENCE_UNAVAILABLE","REFERENCE_RELEASE_REQUIRED","SIGNATURE_INVALID","PAYMENT_MODE_MISMATCH","PAYMENT_AMOUNT_MISMATCH","LAST_LOGIN_METHOD","IDENTITY_ALREADY_LINKED","EMAIL_CHANGE_CONFLICT","ACCOUNT_HAS_ACTIVE_OBLIGATIONS","RECOVERY_COOLDOWN_ACTIVE"].includes(e.code)) {
+      if(e.status===403 || ["INCOMPATIBLE_SAMPLES","SELF_REVIEW_FORBIDDEN","CATEGORY_ADMISSION_INCOMPLETE","REFERENCE_UNAVAILABLE","REFERENCE_RELEASE_REQUIRED","SIGNATURE_INVALID","PAYMENT_MODE_MISMATCH","PAYMENT_AMOUNT_MISMATCH","LAST_LOGIN_METHOD","IDENTITY_ALREADY_LINKED","EMAIL_CHANGE_CONFLICT","ACCOUNT_HAS_ACTIVE_OBLIGATIONS","RECOVERY_COOLDOWN_ACTIVE","LAUNCH_GATES_INCOMPLETE"].includes(e.code)) {
         await audit(pool,actor,"rejected_"+e.code.toLowerCase(),"http_request",null,{code:e.code,reason:e.message}).catch(()=>undefined);
       }
       const response=json({error:{code:e.code,message:e.message}},e.status);

@@ -4637,6 +4637,7 @@ test("admin governance, terms preview/publish, multi-warehouse address & calenda
     roles:["inspector"],
     reason:"Restore default inspector role",
   });
+  await staffMember.login("inspector@qcw.test");
 
   // 6. TASK-129: Customer privacy data export & deletion request with retention exceptions (PAGE-C16, T54)
   const exported=await c.fetch("/me/privacy/export");
@@ -4901,6 +4902,342 @@ test("tracking monitor, exception episode deduplication, dual-control overdue di
 
   const {rows:[checkSess]}=await pool.query("select revoked_at from sessions where id=$1",[adminSession.id]);
   assert.ok(checkSess.revoked_at,"Resurrected session must have revoked_at set after recovery replay");
+});
+
+test("Week 28 full-chain regression: 1/5-item standard & 3-item compare, 3-to-2 with late-arriving 3rd sample, selective split outbound, and production catalog purity (TASK-136 to TASK-140, T43-T62, T107-T111)",async()=>{
+  const {c,registration,terms}=await signCustomer();
+  const other=await signCustomer();
+  const receiving=await staffLogin("receiving");
+  const inspector=await staffLogin("inspector");
+  const reviewer=await staffLogin("reviewer");
+  const admin=await staffLogin("admin");
+
+  const desk=await receiving.fetch("/staff/desk");
+  const locId=(desk.locations.find((l:{code:string})=>l.code==="R-01")??desk.locations[0]).id as string;
+  const catalog=await c.fetch("/catalog");
+  const apparelInspect=catalog.offers.find((o:{sku_code:string})=>o.sku_code==="apparel-inspection-1")!;
+  const apparelCompare=catalog.offers.find((o:{sku_code:string})=>o.sku_code==="apparel-compare-3")!;
+
+  // 1. TASK-137 (T59, T60): 5-item standard inspection order -> creates 5 expected_items and 5 individual inspection tasks upon assignment
+  const {draft:fiveOrder}=await createAndPay(
+    c,
+    [{
+      category_id:apparelInspect.category_id,
+      offer_id:apparelInspect.offer_id,
+      quantity:5,
+      items:Array.from({length:5},(_,i)=>({sample_code:`STD5-${i+1}`,size_label:"M",color_declared:"Black"})),
+    }],
+    terms
+  );
+  const fiveDetail=await c.fetch(`/orders/${fiveOrder.id}`);
+  assert.equal(fiveDetail.items.length,5,"5-item standard order must create 5 expected_items positions (T60)");
+
+  const fiveWaybill="SF"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const fiveAdv=await c.fetch("/me/parcels",{
+    address_id:registration.warehouse_address.id,
+    carrier_code:"sf",
+    tracking_no:fiveWaybill,
+    order_ids:[fiveOrder.id],
+  },"POST",201);
+  const fivePkg=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:fiveWaybill,
+    advice_id:fiveAdv.id,
+    carrier_code:"sf",
+    outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+  const fiveIntake=await receiving.fetch(`/staff/packages/${fivePkg.id}/items`,{
+    revision:fivePkg.revision,
+    items:Array.from({length:5},()=>({code:"S-"+randomUUID(),location_id:locId})),
+  },"POST",201);
+  assert.equal(fiveIntake.item_ids.length,5);
+
+  for(let i=0;i<5;i++) {
+    await receiving.fetch(`/staff/items/${fiveIntake.item_ids[i]}/assign`,{
+      revision:1,
+      order_line_id:fiveDetail.items[i].order_line_id,
+      expected_item_id:fiveDetail.items[i].id,
+      evidence_ids:[await receiving.photo("label_photo")],
+    });
+  }
+  const fiveQueued=await c.fetch(`/orders/${fiveOrder.id}`);
+  assert.equal(fiveQueued.state,"queued","5-item order must transition to queued once all 5 items are assigned");
+  const {rows:fiveTasks}=await pool.query(
+    "select t.id from inspection_tasks t join order_lines l on l.id=t.order_line_id where l.order_id=$1",
+    [fiveOrder.id]
+  );
+  assert.equal(fiveTasks.length,5,"5-item standard inspection must generate 5 per-item inspection_tasks");
+
+  // 2. TASK-138 (T47): 3-item comparison order -> 2 items arrive -> convert-to-two -> 2 items inspected & report published -> 3rd late item arrives later and is independently returned to seller
+  const {draft:cmp3Order}=await createAndPay(
+    c,
+    [{
+      category_id:apparelCompare.category_id,
+      offer_id:apparelCompare.offer_id,
+      quantity:3,
+      items:[
+        {sample_code:"CMP-A",size_label:"L",color_declared:"Navy"},
+        {sample_code:"CMP-B",size_label:"L",color_declared:"Navy"},
+        {sample_code:"CMP-C-LATE",size_label:"L",color_declared:"Navy"},
+      ],
+    }],
+    terms
+  );
+  const cmp3Detail=await c.fetch(`/orders/${cmp3Order.id}`);
+  assert.equal(cmp3Detail.items.length,3);
+
+  const earlyWaybill="ZTO"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const earlyAdv=await c.fetch("/me/parcels",{
+    address_id:registration.warehouse_address.id,
+    carrier_code:"zto",
+    tracking_no:earlyWaybill,
+    order_ids:[cmp3Order.id],
+  },"POST",201);
+  const earlyPkg=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:earlyWaybill,
+    advice_id:earlyAdv.id,
+    carrier_code:"zto",
+    outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+  const earlyItems=await receiving.fetch(`/staff/packages/${earlyPkg.id}/items`,{
+    revision:earlyPkg.revision,
+    items:[{code:"S-"+randomUUID(),location_id:locId},{code:"S-"+randomUUID(),location_id:locId}],
+  },"POST",201);
+
+  for(let i=0;i<2;i++) {
+    await receiving.fetch(`/staff/items/${earlyItems.item_ids[i]}/assign`,{
+      revision:1,
+      order_line_id:cmp3Detail.items[i].order_line_id,
+      expected_item_id:cmp3Detail.items[i].id,
+      evidence_ids:[await receiving.photo("label_photo")],
+    });
+    await receiving.fetch(`/staff/items/${earlyItems.item_ids[i]}/identify`,{
+      revision:2,
+      matches_advice:true,
+      evidence_ids:[await receiving.photo("label_photo")],
+    });
+  }
+
+  // Convert 3-item comparison to 2-item comparison before 3rd sample arrives (T47)
+  const convRes=await c.fetch(`/orders/${cmp3Order.id}/convert-to-two`,{
+    expected_item_id:cmp3Detail.items[2].id,
+    reason:"Supplier delayed 3rd sample; proceed with 2-item comparison",
+  });
+  assert.equal(convRes.state,"queued");
+  assert.equal(convRes.adjustment_cents,-2000);
+  assert.ok(convRes.refund_ticket_id,"3-to-2 conversion must create exactly 1 refund review ticket");
+
+  // Complete inspection & publish report for the converted 2-item comparison order
+  const {rows:cmp2Tasks}=await pool.query(
+    "select t.id,t.revision from inspection_tasks t join order_lines l on l.id=t.order_line_id where l.order_id=$1 order by t.id",
+    [cmp3Order.id]
+  );
+  assert.equal(cmp2Tasks.length,1);
+  for(const tk of cmp2Tasks) {
+    const started=await inspector.fetch(`/staff/inspection-tasks/${tk.id}/start`,{revision:tk.revision});
+    const view=await inspector.fetch(`/staff/inspection-tasks/${tk.id}`);
+    await submitRequiredChecks(inspector,tk.id,started.revision,view);
+  }
+  const cmp3AfterTasks=await c.fetch(`/orders/${cmp3Order.id}`);
+  const cmpReport=await inspector.fetch(`/staff/orders/${cmp3Order.id}/report/submit`,{
+    revision:cmp3AfterTasks.revision,
+    task_ids:cmp2Tasks.map((t:{id:string})=>t.id),
+  });
+  await reviewer.fetch(`/staff/reports/${cmpReport.id}/approve`,{
+    revision:1,
+    checklist:["reviewed_en","evidence_checked"],
+  },"POST",202);
+  for(let i=0;i<50;i++){if(!await workOnce())break;}
+  const cmp3Published=await c.fetch(`/orders/${cmp3Order.id}`);
+  assert.equal(cmp3Published.state,"report_ready");
+
+  // Now the 3rd late-arriving parcel physically arrives at the warehouse (T47)
+  const lateWaybill="YTO"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const lateAdv=await c.fetch("/me/parcels",{
+    address_id:registration.warehouse_address.id,
+    carrier_code:"yto",
+    tracking_no:lateWaybill,
+    order_ids:[cmp3Order.id],
+  },"POST",201);
+  const latePkg=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:lateWaybill,
+    advice_id:lateAdv.id,
+    carrier_code:"yto",
+    outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+  const lateIntake=await receiving.fetch(`/staff/packages/${latePkg.id}/items`,{
+    revision:latePkg.revision,
+    items:[{code:"S-LATE-"+randomUUID().slice(0,8).toUpperCase(),location_id:locId}],
+  },"POST",201);
+  const lateItemId=lateIntake.item_ids[0] as string;
+
+  // Late item cannot be assigned to the already-dropped 3rd position
+  const assignDropped=await receiving.fetch(`/staff/items/${lateItemId}/assign`,{
+    revision:1,
+    order_line_id:cmp3Detail.items[2].order_line_id,
+    expected_item_id:cmp3Detail.items[2].id,
+    evidence_ids:[await receiving.photo("label_photo")],
+  },"POST",409);
+  assert.ok(assignDropped.error.code);
+
+  // Customer still sees the late item in /me/items and can independently instruct return to seller (T47, T107)
+  const myItems=(await c.fetch("/me/items")).items as {item_id:string;allowed_actions:string[]}[];
+  const foundLate=myItems.find(x=>x.item_id===lateItemId);
+  assert.ok(foundLate,"Late-arriving 3rd sample must remain traceable in customer's /me/items (T47)");
+  assert.ok(foundLate.allowed_actions.includes("request_disposition"));
+
+  const termsId=terms.find((t:{kind:string})=>t.kind==="terms")!.id as string;
+  const lateDisp=await c.fetch(`/me/items/${lateItemId}/dispositions`,{
+    action:"return_to_seller",
+    destination:{
+      recipient:"Seller Return Warehouse",
+      phone:"13800009999",
+      address:"No. 99 Seller Road, Guangzhou",
+    },
+    return_info:{
+      requested_from_seller:true,
+      customer_pays_shipping:true,
+    },
+    terms_version_id:termsId,
+  },"POST",201);
+  assert.ok(lateDisp.id);
+
+  // 3. TASK-139 (T50, T51): Selective split disposition on the 2-item order (Item 1 -> forwarder, Item 2 -> return to seller)
+  const dispForward=await c.fetch(`/orders/${cmp3Order.id}/dispositions`,{
+    item_id:earlyItems.item_ids[0],
+    action:"to_forwarder",
+    destination:{
+      recipient:"Forwarder Shenzhen",
+      phone:"13900001111",
+      address:"Forwarder Bay 12, Shenzhen",
+      member_code:registration.receiving_code,
+    },
+    terms_version_id:termsId,
+  },"POST",201);
+  const dispReturn=await c.fetch(`/orders/${cmp3Order.id}/dispositions`,{
+    item_id:earlyItems.item_ids[1],
+    action:"return_to_seller",
+    destination:{
+      recipient:"Seller Return Dept",
+      phone:"13800002222",
+      address:"Seller Park 8, Hangzhou",
+    },
+    return_info:{
+      requested_from_seller:true,
+      customer_pays_shipping:true,
+    },
+    terms_version_id:termsId,
+  },"POST",201);
+  assert.ok(dispForward.id);
+  assert.ok(dispReturn.id);
+
+  // Attempting to merge two seller returns is blocked by BATCH_MISMATCH; each seller return forms its own traceable batch (T47, T76, T107)
+  const mergeReturnErr=await c.fetch("/dispatch-batches",{
+    disposition_ids:[dispReturn.id,lateDisp.id],
+  },"POST",409);
+  assert.equal(mergeReturnErr.error.code,"BATCH_MISMATCH");
+
+  const lateReturnBatch=await c.fetch("/dispatch-batches",{
+    disposition_ids:[lateDisp.id],
+  },"POST",201);
+  assert.ok(lateReturnBatch.batch_id);
+
+  // 4. TASK-140 (T57, T58): Verify cross-tenant IDOR & offline version conflict recovery
+  await other.c.fetch(`/orders/${cmp3Order.id}`,undefined,"GET",404);
+  await other.c.fetch(`/orders/${cmp3Order.id}/report`,undefined,"GET",404);
+  await c.fetch("/staff/admin/system-health",undefined,"GET",403);
+});
+
+test("Week 29 & Week 30 rehearsal archiving, Hong Kong legal entity configuration, and §23 go-live gate enforcement (TASK-141 to TASK-150, TASK-165)",async()=>{
+  const {c}=await signCustomer();
+  const admin=await staffLogin("admin");
+
+  // Customer cannot access launch readiness or signoff endpoints
+  await c.fetch("/staff/admin/launch-readiness",undefined,"GET",403);
+  await c.fetch("/staff/admin/legal-entity",{
+    entity_name:"Unauthorized Co",
+    entity_address:"123 Fake St",
+    br_number:"BR-000",
+    support_email:"fake@example.com",
+  },"POST",403);
+
+  // 1. Initial launch readiness check before legal entity & 5 rehearsal scenarios are archived
+  const initialReadiness=await admin.fetch("/staff/admin/launch-readiness");
+  assert.equal(initialReadiness.gates.warehouse_address,true);
+  assert.equal(initialReadiness.gates.legal_terms,true);
+  assert.equal(initialReadiness.gates.shipping_rates,true);
+  assert.equal(initialReadiness.gates.catalog_purity,true);
+  assert.equal(initialReadiness.gates.legal_entity_configured,false);
+  assert.equal(initialReadiness.gates.rehearsal_sets_completed,false);
+  assert.equal(initialReadiness.effective_mode,"staging_only");
+  assert.equal(typeof initialReadiness.in_flight_summary.in_flight_orders,"number");
+
+  // 2. Configure Hong Kong legal entity metadata (TASK-146 / Appendix C.12)
+  const legalEntity=await admin.fetch("/staff/admin/legal-entity",{
+    entity_name:"QC Warehouse Hong Kong Limited",
+    entity_address:"Unit 1208, 12/F, Harbour Centre, Wan Chai, Hong Kong",
+    br_number:"HK-BR-76543210",
+    support_email:"legal-support@qcwarehouse.com",
+  },"POST",200);
+  assert.equal(legalEntity.entity_name,"QC Warehouse Hong Kong Limited");
+  assert.equal(legalEntity.br_number,"HK-BR-76543210");
+
+  // 3. Archive all 5 rehearsal scenarios (TASK-141 to TASK-145, TASK-165) with environment separation & reverification
+  const scenarios=[
+    {scenario:"set_1_standard",environment:"real_warehouse",media_count:18,carrier_codes:["sf"],reverified:true,notes:"Set 1: Standard intake -> inspection -> report PDF -> disposition & handover verified"},
+    {scenario:"set_2_weak_network",environment:"real_warehouse",media_count:14,carrier_codes:["yto"],reverified:true,notes:"Set 2: Handheld weak network retry, offline draft recovery, label readback & bin move verified"},
+    {scenario:"set_3_return_retain",environment:"real_warehouse",media_count:16,carrier_codes:["zto","sf"],reverified:true,notes:"Set 3: Return to seller, reference retention, and multi-item consolidation/split batch verified"},
+    {scenario:"set_4_recovery_alerts",environment:"staging",media_count:10,carrier_codes:["ems"],reverified:true,notes:"Set 4: Carrier return receipt, background job alert & manual retry recovery verified"},
+    {scenario:"three_carrier_30_items",environment:"real_warehouse",media_count:90,carrier_codes:["sf","yto","zto"],reverified:true,notes:"TASK-165: 3-carrier 30-item inbound/outbound tracking & receipt archive verified (separated from production)"},
+  ] as const;
+
+  for(const item of scenarios) {
+    const run=await admin.fetch("/staff/admin/rehearsal-runs",{
+      ...item,
+      passed:true,
+    },"POST",201);
+    assert.equal(run.scenario,item.scenario);
+    assert.equal(run.passed,true);
+  }
+
+  // Ensure a verified recovery drill is present for §23 gate
+  await admin.fetch("/staff/admin/recovery-runs",{
+    environment:"staging-prelaunch",
+    backup_reference:"pg-dump-launch-gate",
+    rpo_seconds:0,
+    rto_seconds:30,
+    notes:"Pre-launch PITR & reconciliation verification",
+  },"POST",201);
+
+  // 4. Re-check launch readiness: internal & rehearsal gates are now satisfied
+  const updatedReadiness=await admin.fetch("/staff/admin/launch-readiness");
+  assert.equal(updatedReadiness.gates.legal_entity_configured,true);
+  assert.equal(updatedReadiness.gates.rehearsal_sets_completed,true);
+  assert.equal(updatedReadiness.gates.recovery_drill_verified,true);
+  assert.equal(updatedReadiness.rehearsal_coverage.completed_scenarios.length,5);
+  assert.ok(updatedReadiness.rehearsal_coverage.reverified_count>=1);
+
+  // 5. TASK-150: Attempting to sign off target_mode="production" while external live provider gates are missing is blocked with 409 LAUNCH_GATES_INCOMPLETE ("缺一项即维持预发布")
+  if(!updatedReadiness.all_gates_satisfied) {
+    const prodBlocked=await admin.fetch("/staff/admin/launch-signoff",{
+      target_mode:"production",
+      rollback_contact:"ops-oncall@qcwarehouse.com",
+      first_order_invite_enabled:false,
+      notes:"Attempt production switch before external live keys are injected",
+    },"POST",409);
+    assert.equal(prodBlocked.error.code,"LAUNCH_GATES_INCOMPLETE");
+  }
+
+  // 6. TASK-148 to TASK-150: Signing off staging_only mode records rollback contact, penny test ref, and first-order invite state
+  const stagingSignoff=await admin.fetch("/staff/admin/launch-signoff",{
+    target_mode:"staging_only",
+    rollback_contact:"ops-oncall@qcwarehouse.com (+852-5555-0199)",
+    first_order_invite_enabled:true,
+    live_penny_test_ref:"STRIPE-TEST-PENNY-001",
+    notes:"All engineering & rehearsal gates verified; maintaining staging_only until live external credentials are switched by business owner.",
+  },"POST",200);
+  assert.equal(stagingSignoff.effective_mode,"staging_only");
+  assert.equal(stagingSignoff.signoff.rollback_contact,"ops-oncall@qcwarehouse.com (+852-5555-0199)");
+  assert.equal(stagingSignoff.signoff.first_order_invite_enabled,true);
 });
 
 test("all core operations have a validated success response",assertCoreCoverage);

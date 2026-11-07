@@ -368,7 +368,41 @@ export async function adminDesk(db:DB,actor:Actor) {
     warehouseAddressAlert:actor.roles.includes("super_admin")?(await db.query(`select 1 from notifications
       where user_id=$1 and template='warehouse.address_required'
       and not exists(select 1 from warehouse_addresses where is_default and active) limit 1`,[actor.id])).rowCount===1:false,
-    addresses:actor.roles.includes("super_admin")?(await db.query("select id,address_zh,address_en,contact_name,contact_phone,is_default from warehouse_addresses order by created_at desc")).rows:[],
+    addresses:actor.roles.includes("super_admin")?(await db.query(
+      `select w.id,w.address_zh,w.address_en,w.contact_name,w.contact_phone,w.active,w.is_default,w.created_at,
+              (select count(*)::int from package_advices pa where pa.address_id=w.id) advice_count
+       from warehouse_addresses w
+       order by w.is_default desc,w.active desc,w.created_at desc`
+    )).rows:[],
+    calendar:actor.roles.includes("super_admin")?await (async()=>{
+      const cfg=(await db.query<{key:string;value:unknown}>("select key,value from app_config where key in ('calendar.holidays','business_holidays','calendar.extra_workdays')")).rows;
+      const holidays=new Set<string>();
+      const extraWorkdays=new Set<string>();
+      for(const r of cfg) {
+        if((r.key==="calendar.holidays"||r.key==="business_holidays")&&Array.isArray(r.value)) {
+          for(const d of r.value) if(typeof d==="string") holidays.add(d);
+        }
+        if(r.key==="calendar.extra_workdays"&&Array.isArray(r.value)) {
+          for(const d of r.value) if(typeof d==="string") extraWorkdays.add(d);
+        }
+      }
+      return {holidays:[...holidays].sort(),extra_workdays:[...extraWorkdays].sort()};
+    })():{holidays:[],extra_workdays:[]},
+    termsVersions:actor.roles.includes("super_admin")?(await db.query(
+      `select id,kind,version,effective_at,content_md,content_hash,
+              case when effective_at is not null and effective_at<=now() then 'published' else 'draft' end state
+       from terms_versions
+       order by kind,effective_at desc nulls first,version desc`
+    )).rows:[],
+    staffUsers:actor.roles.includes("super_admin")?(await db.query(
+      `select u.id,u.display_name,u.status,u.auth_version,u.created_at,u.updated_at,
+              (select ue.original_email from user_emails ue where ue.user_id=u.id order by ue.is_primary desc,ue.id limit 1) email,
+              coalesce(array(select sr.role from staff_roles sr where sr.user_id=u.id order by sr.role), array[]::text[]) roles
+       from users u
+       where exists(select 1 from staff_roles sr where sr.user_id=u.id)
+          or u.mfa_secret_enc is not null
+       order by u.created_at asc`
+    )).rows:[],
     templates:templates?(await db.query(`select t.id,t.template_key,t.category_id,t.service_type_id,t.version,t.state,t.content,
       t.content_hash,t.author_id,t.reviewer_id,t.published_at,
       array(select c.code from template_capabilities tc join capabilities c on c.id=tc.capability_id

@@ -763,12 +763,110 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
       <FinanceReconciliationPanel/>
     </>}
     {page==="settings"&&<>
-      {superAdmin&&<Panel title="公共收件仓址">
-        <Table headers={["中文地址","英文地址","收件人","状态"]} rows={data.addresses.map((a:Row)=>[a.address_zh,a.address_en,a.contact_name,a.is_default?"默认":"历史"])}/>
-        <Form label="发布新默认仓址" run={async f=>{await request("/staff/admin/warehouse-addresses","POST",Object.fromEntries(f));reload();}}>
+      {superAdmin&&<Panel title="公共收件仓址与默认切换（PAGE-M11 / TASK-123）">
+        <Table headers={["中文地址","英文地址","收件人/电话","关联预报数","状态","操作"]} rows={data.addresses.map((a:Row)=>[
+          a.address_zh,
+          a.address_en,
+          `${a.contact_name} (${a.contact_phone})`,
+          a.advice_count??0,
+          <Tag>{a.is_default?"唯一默认":a.active?"候选启用":"已停用(历史保留)"}</Tag>,
+          <div className="actions">
+            {!a.is_default&&<Action run={async()=>{
+              await request("/staff/admin/warehouse-addresses/"+a.id,"POST",{is_default:true});
+              reload();
+            }}>设为默认</Action>}
+            {!a.is_default&&<Action run={async()=>{
+              await request("/staff/admin/warehouse-addresses/"+a.id,"POST",{active:!a.active});
+              reload();
+            }}>{a.active?"停用":"启用"}</Action>}
+          </div>,
+        ])}/>
+        <Form label="新增公共收件仓址" run={async f=>{
+          await request("/staff/admin/warehouse-addresses","POST",{
+            address_zh:text(f,"address_zh"),
+            address_en:text(f,"address_en"),
+            contact_name:text(f,"contact_name"),
+            contact_phone:text(f,"contact_phone"),
+            is_default:text(f,"is_default")==="true",
+          });
+          reload();
+        }}>
           <Field name="address_zh" label="中文地址"/><Field name="address_en" label="英文地址"/>
           <Field name="contact_name" label="仓库收件人"/><Field name="contact_phone" label="仓库电话"/>
+          <Select name="is_default" label="是否立即设为唯一默认" choices={[{id:"true",label:"设为唯一默认"},{id:"false",label:"作为候选仓址保存"}]}/>
         </Form>
+      </Panel>}
+      {superAdmin&&<Panel title="工作日历与节假日配置（PAGE-M11 / TASK-123）">
+        <p className="muted">当前节假日：{(data.calendar?.holidays??[]).join(", ")||"未配置"} · 调休上班日：{(data.calendar?.extra_workdays??[]).join(", ")||"未配置"}</p>
+        <Form inline label="保存工作日历" run={async f=>{
+          const holidays=text(f,"holidays").split(",").map(s=>s.trim()).filter(Boolean);
+          const extra=f.get("extra_workdays")?.toString().split(",").map(s=>s.trim()).filter(Boolean)??[];
+          await request("/staff/admin/calendar","POST",{holidays,extra_workdays:extra});
+          reload();
+        }}>
+          <Field name="holidays" label="法定节假日 (YYYY-MM-DD 逗号分隔)" required={false} value={(data.calendar?.holidays??[]).join(",")}/>
+          <Field name="extra_workdays" label="调休补班日 (YYYY-MM-DD 逗号分隔)" required={false} value={(data.calendar?.extra_workdays??[]).join(",")}/>
+        </Form>
+      </Panel>}
+      {superAdmin&&<Panel title="条款与隐私政策预览与发布（PAGE-M12 / TASK-122）">
+        <Table headers={["类型","版本号","状态","生效时间","内容哈希","操作"]} rows={(data.termsVersions??[]).map((t:Row)=>[
+          <span className="code">{t.kind}</span>,
+          <span className="code">{t.version}</span>,
+          <Tag>{t.state}</Tag>,
+          t.effective_at?stamp(t.effective_at):"草稿待发布",
+          <span className="code">{String(t.content_hash??"").slice(0,12)}</span>,
+          <div className="actions">
+            {t.state==="draft"&&<Action primary run={async()=>{
+              await request("/staff/admin/terms/"+t.id+"/publish","POST",{});
+              reload();
+            }}>发布生效</Action>}
+          </div>,
+        ])} empty="暂无条款版本。"/>
+        <Form label="创建条款版本（预览或直接发布）" run={async f=>{
+          await request("/staff/admin/terms","POST",{
+            kind:text(f,"kind"),
+            version:text(f,"version"),
+            content_md:text(f,"content_md"),
+            publish_now:text(f,"publish_now")==="true",
+          });
+          reload();
+        }}>
+          <Select name="kind" label="条款类型" choices={[
+            {id:"terms",label:"服务条款 (terms)"},
+            {id:"privacy",label:"隐私政策 (privacy)"},
+            {id:"restricted_items",label:"禁限寄说明 (restricted_items)"},
+            {id:"report_notice",label:"报告使用声明 (report_notice)"},
+          ]}/>
+          <Field name="version" label="版本号 (如 2026.2)"/>
+          <Select name="publish_now" label="发布方式" choices={[
+            {id:"false",label:"先保存草稿预览"},
+            {id:"true",label:"立即发布生效"},
+          ]}/>
+          <label>Markdown 正文<textarea name="content_md" required minLength={10}/></label>
+        </Form>
+      </Panel>}
+      {superAdmin&&<Panel title="员工权限、停用与恢复（PAGE-M13 / TASK-124）">
+        <Table headers={["员工","邮箱","状态","当前角色","权限与状态操作"]} rows={(data.staffUsers??[]).map((u:Row)=>[
+          <strong>{u.display_name??u.id.slice(0,8)}</strong>,
+          <span className="code">{u.email??"—"}</span>,
+          <Tag>{u.status}</Tag>,
+          (u.roles??[]).join(", ")||"无角色",
+          <div className="actions">
+            <Form inline label="更新角色" run={async f=>{
+              const roles=text(f,"roles").split(",").map(s=>s.trim()).filter(Boolean);
+              await request("/staff/users/"+u.id+"/roles","POST",{roles,reason:text(f,"reason")});
+              reload();
+            }}>
+              <Field name="roles" label="角色列表(逗号分隔)" value={(u.roles??[]).join(",")}/>
+              <Field name="reason" label="变更原因"/>
+            </Form>
+            {u.id!==actor.id&&<Action run={async()=>{
+              const nextStatus=u.status==="disabled"?"active":"disabled";
+              await request("/staff/users/"+u.id+"/status","POST",{status:nextStatus,reason:nextStatus==="disabled"?"后台停用员工账号":"后台恢复员工账号"});
+              reload();
+            }}>{u.status==="disabled"?"恢复账号":"停用账号"}</Action>}
+          </div>,
+        ])} empty="暂无员工账号。"/>
       </Panel>}
       <Panel title="品类准入与开关（PAGE-M09）">
         <Table headers={["标识","中文名称","英文名称","状态","准入材料","操作"]} rows={data.categories.map((c:Row)=>[

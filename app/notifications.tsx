@@ -11,6 +11,7 @@ const noticeTitles:Record<string,string>={
   "payment.confirmed":"Payment confirmed",
   "package.received":"The warehouse received your parcel",
   "order.ready":"Your items are ready for inspection",
+  "order.identity_mismatch":"Action required: Sample identity mismatch detected",
   "order.cancelled":"Inspection cancelled",
   "dispatch.quoted":"Your shipping quote is ready",
   "quote.offered":"A manual inspection quote is ready",

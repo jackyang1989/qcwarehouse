@@ -788,6 +788,20 @@ function AccountSecurity({receivingCode}:{receivingCode:string}) {
         await request("/me/sessions/revoke-others","POST",{});sessions.reload();
       }}>Sign out all other devices</Action>}
     </Panel>
+    <Panel title="Privacy, data export &amp; retention policy (PAGE-C16)">
+      <p className="muted">Download a machine-readable archive of your account, orders, items, charges, and consent records, or submit a formal privacy request.</p>
+      <div className="actions">
+        <a className="button" href="/api/v1/me/privacy/export" target="_blank" rel="noreferrer">Download personal data JSON</a>
+        <Action run={async()=>{
+          await request("/me/privacy/requests","POST",{kind:"export",note:"Customer requested personal data archive"});
+          refreshAll();
+        }}>Request formal data export</Action>
+        <Action run={async()=>{
+          await request("/me/privacy/requests","POST",{kind:"deletion",note:"Customer requested account deletion review"});
+          refreshAll();
+        }}>Request data deletion review</Action>
+      </div>
+    </Panel>
     <Panel title="Close account">
       <p className="muted">You can close your account when there are no active orders, stored warehouse items, or unpaid charges. Historical audit and financial records are retained per policy.</p>
       <Action run={async()=>{

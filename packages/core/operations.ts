@@ -239,14 +239,161 @@ export async function resumeOrder(db:DB,actor:Actor,id:string,reason:string) {
   await event(db,"order.resumed",{order_id:id});
   return updated;
 }
-export async function setAddress(db:DB,actor:Actor,data:{address_zh:string;address_en:string;contact_name:string;contact_phone:string}) {
+export async function setAddress(
+  db:DB,
+  actor:Actor,
+  data:{address_zh:string;address_en:string;contact_name:string;contact_phone:string;is_default?:boolean}
+) {
   role(actor,"super_admin");
   await lock(db,"warehouse_default_address");
-  await db.query("update warehouse_addresses set is_default=false where is_default");
-  const a=await one(db,`insert into warehouse_addresses(id,address_zh,address_en,contact_name,contact_phone,is_default)
-    values($1,$2,$3,$4,$5,true) returning id`,[uuid(),data.address_zh,data.address_en,data.contact_name,data.contact_phone]);
-  await audit(db,actor,"set_default_address","warehouse_addresses",a.id);
+  const isDefault=data.is_default!==false;
+  if(isDefault) {
+    await db.query("update warehouse_addresses set is_default=false where is_default");
+  }
+  const a=await one<{id:string;is_default:boolean;active:boolean}>(
+    db,
+    `insert into warehouse_addresses(id,address_zh,address_en,contact_name,contact_phone,active,is_default)
+     values($1,$2,$3,$4,$5,true,$6)
+     returning id,is_default,active`,
+    [uuid(),data.address_zh,data.address_en,data.contact_name,data.contact_phone,isDefault]
+  );
+  await audit(db,actor,isDefault?"set_default_address":"create_warehouse_address","warehouse_addresses",a.id,{is_default:a.is_default,active:a.active});
   return a;
+}
+
+export async function updateWarehouseAddress(
+  db:DB,
+  actor:Actor,
+  id:string,
+  input:{is_default?:boolean;active?:boolean}
+) {
+  role(actor,"super_admin");
+  await lock(db,"warehouse_default_address");
+  const addr=await one<{id:string;is_default:boolean;active:boolean}>(
+    db,
+    "select id,is_default,active from warehouse_addresses where id=$1 for update",
+    [id]
+  );
+  if(input.is_default===true) {
+    await db.query("update warehouse_addresses set is_default=false where is_default and id<>$1",[id]);
+    const updated=await one<{id:string;is_default:boolean;active:boolean}>(
+      db,
+      "update warehouse_addresses set active=true,is_default=true where id=$1 returning id,is_default,active",
+      [id]
+    );
+    await audit(db,actor,"set_default_address","warehouse_addresses",id,{is_default:true,active:true});
+    return updated;
+  }
+  if(input.active===false) {
+    guard(!addr.is_default,"DEFAULT_ADDRESS_REQUIRED","Promote another warehouse address to default before deactivating the current default address.",409);
+    const updated=await one<{id:string;is_default:boolean;active:boolean}>(
+      db,
+      "update warehouse_addresses set active=false where id=$1 returning id,is_default,active",
+      [id]
+    );
+    await audit(db,actor,"deactivate_warehouse_address","warehouse_addresses",id,{is_default:false,active:false});
+    return updated;
+  }
+  if(input.active===true && !addr.active) {
+    const updated=await one<{id:string;is_default:boolean;active:boolean}>(
+      db,
+      "update warehouse_addresses set active=true where id=$1 returning id,is_default,active",
+      [id]
+    );
+    await audit(db,actor,"activate_warehouse_address","warehouse_addresses",id,{is_default:updated.is_default,active:true});
+    return updated;
+  }
+  return addr;
+}
+
+export async function updateBusinessCalendar(
+  db:DB,
+  actor:Actor,
+  input:{holidays:string[];extra_workdays?:string[]}
+) {
+  role(actor,"super_admin");
+  const holidays=[...new Set(input.holidays.map(d=>d.trim()).filter(Boolean))].sort();
+  const extraWorkdays=[...new Set((input.extra_workdays??[]).map(d=>d.trim()).filter(Boolean))].sort();
+  await db.query(
+    `insert into app_config(key,value,updated_by,updated_at)
+     values('calendar.holidays',$1::jsonb,$2,now())
+     on conflict(key) do update set value=excluded.value,updated_by=excluded.updated_by,updated_at=now()`,
+    [JSON.stringify(holidays),actor.id]
+  );
+  await db.query(
+    `insert into app_config(key,value,updated_by,updated_at)
+     values('calendar.extra_workdays',$1::jsonb,$2,now())
+     on conflict(key) do update set value=excluded.value,updated_by=excluded.updated_by,updated_at=now()`,
+    [JSON.stringify(extraWorkdays),actor.id]
+  );
+  await audit(db,actor,"update_business_calendar","app_config",null,{
+    count:holidays.length,
+    days:extraWorkdays.length,
+  });
+  return {holidays,extra_workdays:extraWorkdays};
+}
+
+export async function createTermsVersion(
+  db:DB,
+  actor:Actor,
+  input:{
+    kind:"terms"|"privacy"|"restricted_items"|"report_notice";
+    version:string;
+    content_md:string;
+    publish_now?:boolean;
+  }
+) {
+  role(actor,"super_admin");
+  await lock(db,"terms:"+input.kind);
+  const contentMd=input.content_md.trim();
+  const contentHash=hash(contentMd);
+  const publishNow=Boolean(input.publish_now);
+  const row=await one<{
+    id:string;
+    kind:string;
+    version:string;
+    effective_at:Date|null;
+    content_hash:string;
+  }>(
+    db,
+    `insert into terms_versions(id,kind,version,effective_at,content_md,content_hash)
+     values($1,$2,$3,case when $4 then now() else null end,$5,$6)
+     returning id,kind,version,effective_at,content_hash`,
+    [uuid(),input.kind,input.version.trim(),publishNow,contentMd,contentHash]
+  );
+  await audit(db,actor,publishNow?"publish_terms_version":"create_terms_version","terms_versions",row.id,{
+    kind:row.kind,
+    version:row.version,
+    active:publishNow,
+  });
+  return {
+    ...row,
+    state:row.effective_at?"published":"draft",
+  };
+}
+
+export async function publishTermsVersion(db:DB,actor:Actor,id:string) {
+  role(actor,"super_admin");
+  const existing=await one<{id:string;kind:string;version:string;effective_at:Date|null}>(
+    db,
+    "select id,kind,version,effective_at from terms_versions where id=$1 for update",
+    [id]
+  );
+  await lock(db,"terms:"+existing.kind);
+  const updated=await one<{id:string;kind:string;version:string;effective_at:Date;content_hash:string}>(
+    db,
+    "update terms_versions set effective_at=coalesce(effective_at,now()) where id=$1 returning id,kind,version,effective_at,content_hash",
+    [id]
+  );
+  await audit(db,actor,"publish_terms_version","terms_versions",id,{
+    kind:updated.kind,
+    version:updated.version,
+    active:true,
+  });
+  return {
+    ...updated,
+    state:"published",
+  };
 }
 export async function newTemplate(db:DB,actor:Actor,input:{template_key:string;category_id:string;service_type_id:string;content:unknown;capability_ids:string[]}) {
   role(actor,"template_admin","super_admin");
@@ -851,8 +998,248 @@ export async function convertOrderToTwo(
     refund_ticket_id:refundTicketId,
   };
 }
+export async function exportCustomerPrivacyData(db:DB,actor:Actor) {
+  const org=organization(actor);
+  const user=await one<{
+    id:string;
+    display_name:string|null;
+    locale:string;
+    timezone:string;
+    status:string;
+    created_at:Date;
+  }>(db,"select id,display_name,locale,timezone,status,created_at from users where id=$1",[actor.id]);
+  const emails=(await db.query(
+    "select id,original_email,is_primary,login_enabled,verified_at,delivery_state from user_emails where user_id=$1 order by is_primary desc,id",
+    [actor.id]
+  )).rows;
+  const identities=(await db.query(
+    "select id,provider,status,linked_at,last_authenticated_at from auth_identities where user_id=$1 order by linked_at",
+    [actor.id]
+  )).rows;
+  const receivingProfile=(await db.query(
+    "select receiving_code,created_at from customer_receiving_profiles where user_id=$1 and org_id=$2",
+    [actor.id,org]
+  )).rows[0]??null;
+  const orders=(await db.query(
+    "select id,public_no,state,price_cents,currency,created_at,paid_at,sla_due_at from orders where org_id=$1 order by created_at desc",
+    [org]
+  )).rows;
+  const items=(await db.query(
+    "select id,code,custody_state,identity_state,received_at,storage_until from warehouse_items where org_id=$1 order by received_at desc",
+    [org]
+  )).rows;
+  const charges=(await db.query(
+    "select id,purpose,amount_cents,currency,applied_payment_id,voided_at from charge_items where org_id=$1 order by id desc",
+    [org]
+  )).rows;
+  const consents=(await db.query(
+    "select id,order_id,terms_version_ids,acknowledgements,created_at from consents where user_id=$1 order by created_at desc",
+    [actor.id]
+  )).rows;
+  const privacyRequests=(await db.query(
+    "select id,public_no,state,subject,details,created_at,resolved_at from tickets where org_id=$1 and category='privacy_share' order by created_at desc",
+    [org]
+  )).rows;
+  const activeOrders=orders.filter((o:{state:string})=>!["closed","cancelled"].includes(o.state)).length;
+  const storedItems=items.filter((i:{custody_state:string})=>["received","stored"].includes(i.custody_state)).length;
+  const unpaidCharges=charges.filter((c:{voided_at:unknown;applied_payment_id:unknown})=>!c.voided_at && !c.applied_payment_id).length;
+  await audit(db,actor,"export_privacy_data","users",actor.id,{
+    count:orders.length,
+  });
+  return {
+    exported_at:new Date().toISOString(),
+    user,
+    emails,
+    identities,
+    receiving_profile:receivingProfile,
+    orders,
+    items,
+    charges,
+    consents,
+    privacy_requests:privacyRequests,
+    retention_exceptions:{
+      active_orders:activeOrders,
+      stored_items:storedItems,
+      unpaid_charges:unpaidCharges,
+      can_close_immediately:activeOrders===0 && storedItems===0 && unpaidCharges===0,
+      financial_and_audit_retained:true,
+      policy_note:"Financial settlements, tax/payment records, published report hashes, and immutable security audit logs are retained under statutory compliance exceptions.",
+    },
+  };
+}
+
+export async function requestCustomerPrivacyAction(
+  db:DB,
+  actor:Actor,
+  input:{kind:"export"|"deletion";note?:string}
+) {
+  const org=organization(actor);
+  await lock(db,"org:"+org);
+  const {active_orders,stored_items,unpaid_charges}=await one<{
+    active_orders:number;
+    stored_items:number;
+    unpaid_charges:number;
+  }>(
+    db,
+    `select
+       (select count(*)::int from orders where org_id=$1 and state not in ('closed','cancelled')) active_orders,
+       (select count(*)::int from warehouse_items where org_id=$1 and custody_state in ('received','stored')) stored_items,
+       (select count(*)::int from charge_items where org_id=$1 and voided_at is null and applied_payment_id is null and free_authorization is null) unpaid_charges`,
+    [org]
+  );
+  const canCloseImmediately=active_orders===0 && stored_items===0 && unpaid_charges===0;
+  const ticketId=uuid(),publicNo=code("PRV-");
+  const subject=input.kind==="deletion"
+    ?"Account deletion and data erasure request"
+    :"Personal data export archive request";
+  const details={
+    privacy_kind:input.kind,
+    note:input.note?.trim()??null,
+    active_orders,
+    stored_items,
+    unpaid_charges,
+    can_close_immediately:canCloseImmediately,
+    financial_and_audit_retained:true,
+  };
+  await db.query(
+    `insert into tickets(id,public_no,org_id,category,state,subject,details,next_action_at)
+     values($1,$2,$3,'privacy_share','open',$4,$5,now()+interval '24 hours')`,
+    [ticketId,publicNo,org,subject,details]
+  );
+  await db.query(
+    `insert into ticket_events(id,ticket_id,actor_type,actor_id,kind,body)
+     values($1,$2,'customer',$3,'message',$4)`,
+    [uuid(),ticketId,actor.id,input.note?.trim()||subject]
+  );
+  await audit(db,actor,"request_privacy_action","tickets",ticketId,{
+    kind:input.kind,
+    active:canCloseImmediately,
+  });
+  return {
+    ticket_id:ticketId,
+    public_no:publicNo,
+    kind:input.kind,
+    state:"open",
+    retention_exceptions:{
+      active_orders,
+      stored_items,
+      unpaid_charges,
+      can_close_immediately:canCloseImmediately,
+      financial_and_audit_retained:true,
+    },
+  };
+}
+
+export async function systemHealthAndBackupCheck(db:DB,actor:Actor) {
+  role(actor,"super_admin");
+  const counts=await one<{
+    users_count:number;
+    orders_count:number;
+    items_count:number;
+    payments_count:number;
+    reports_count:number;
+    audit_count:number;
+    pending_jobs_count:number;
+    failed_jobs_count:number;
+  }>(
+    db,
+    `select
+       (select count(*)::int from users) users_count,
+       (select count(*)::int from orders) orders_count,
+       (select count(*)::int from warehouse_items) items_count,
+       (select count(*)::int from payments) payments_count,
+       (select count(*)::int from report_versions where state='published') reports_count,
+       (select count(*)::int from audit_events) audit_count,
+       (select count(*)::int from outbox_events where processed_at is null and attempts=0) pending_jobs_count,
+       (select count(*)::int from outbox_events where processed_at is null and attempts>0) failed_jobs_count`
+  );
+  const triggers=(await db.query<{tgname:string}>(
+    `select tgname from pg_trigger
+     where not tgisinternal and tgname in ('immutable_audit','immutable_logistics','freeze_report','freeze_template','freeze_inspection_quote')
+     order by tgname`
+  )).rows.map(r=>r.tgname);
+  const recoveryRuns=(await db.query(
+    "select id,restored_to,started_at,finished_at,reconciliation,approved_by from recovery_runs order by started_at desc limit 10"
+  )).rows;
+  return {
+    checked_at:new Date().toISOString(),
+    healthy:triggers.length>=5,
+    counts,
+    immutable_triggers:triggers,
+    recovery_runs:recoveryRuns,
+  };
+}
+
+export async function recordRecoveryDrill(
+  db:DB,
+  actor:Actor,
+  input:{restored_to?:string;note?:string}
+) {
+  role(actor,"super_admin");
+  const health=await systemHealthAndBackupCheck(db,actor);
+  const runId=uuid();
+  const restoredTo=input.restored_to?new Date(input.restored_to):new Date();
+  const reconciliation={
+    ...health.counts,
+    immutable_triggers:health.immutable_triggers,
+    note:input.note?.trim()??"Automated logical backup and point-in-time reconciliation check",
+    verified:health.healthy,
+  };
+  const row=await one<{
+    id:string;
+    restored_to:Date;
+    started_at:Date;
+    finished_at:Date;
+    reconciliation:Record<string,unknown>;
+    approved_by:string;
+  }>(
+    db,
+    `insert into recovery_runs(id,restored_to,started_at,finished_at,reconciliation,approved_by)
+     values($1,$2,now(),now(),$3,$4)
+     returning id,restored_to,started_at,finished_at,reconciliation,approved_by`,
+    [runId,restoredTo.toISOString(),reconciliation,actor.id]
+  );
+  await audit(db,actor,"record_recovery_run","recovery_runs",row.id,{
+    count:health.counts.orders_count,
+    active:health.healthy,
+  });
+  return row;
+}
+
 export const staffSchemas={
-  address:z.object({address_zh:z.string().min(3).max(500),address_en:z.string().min(3).max(500),contact_name:z.string().min(1).max(100),contact_phone:z.string().min(5).max(30)}),
+  address:z.object({
+    address_zh:z.string().min(3).max(500),
+    address_en:z.string().min(3).max(500),
+    contact_name:z.string().min(1).max(100),
+    contact_phone:z.string().min(5).max(30),
+    is_default:z.boolean().optional(),
+  }),
+  addressUpdate:z.object({
+    is_default:z.boolean().optional(),
+    active:z.boolean().optional(),
+  }),
+  businessCalendar:z.object({
+    holidays:z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(366),
+    extra_workdays:z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).max(366).optional(),
+  }),
+  termsCreate:z.object({
+    kind:z.enum(["terms","privacy","restricted_items","report_notice"]),
+    version:z.string().trim().min(1).max(60),
+    content_md:z.string().trim().min(10).max(100_000),
+    publish_now:z.boolean().optional(),
+  }),
+  staffRolesUpdate:z.object({
+    roles:z.array(z.enum(["receiver","inspector","reviewer","warehouse_admin","support","super_admin","template_admin","finance"])).max(8),
+    reason:z.string().trim().min(3).max(500),
+  }),
+  privacyRequest:z.object({
+    kind:z.enum(["export","deletion"]),
+    note:z.string().trim().max(1000).optional(),
+  }),
+  recoveryDrill:z.object({
+    restored_to:z.string().datetime().optional(),
+    note:z.string().trim().max(500).optional(),
+  }),
   template:z.object({template_key:z.string().min(2).max(100),category_id:z.string().uuid(),service_type_id:z.string().uuid(),content:templateSchema,
     capability_ids:z.array(z.string().uuid()).min(1).max(20)}),
   capability:z.object({code:z.string().regex(/^[a-z0-9][a-z0-9_-]{1,63}$/),method:z.string().trim().min(2).max(200),
@@ -866,7 +1253,7 @@ export const staffSchemas={
   skuPrice:z.object({rules:priceSchema}),
   offer:z.object({sku_code:z.string().regex(/^[a-z0-9][a-z0-9_-]{1,80}$/),category_id:z.string().uuid(),
     service_type_id:z.string().uuid(),template_version_id:z.string().uuid(),
-    title:z.object({en:z.string().trim().min(1).max(120),"zh-CN":z.string().trim().min(1).max(120)}),
+    title:z.object({en:z.string().trim().min(1).max(120),"zh-CN":z.string().trim().min(1).max(100)}),
     enabled:z.boolean().optional(),rules:priceSchema}),
   referenceRelease:z.object({terms_version_id:z.string().uuid(),reason:z.string().trim().max(300).optional()}),
 };

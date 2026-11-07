@@ -5,7 +5,7 @@ import addFormats from "ajv-formats";
 import { parse } from "yaml";
 import { z } from "zod";
 import { transaction, pool, type DB } from "../db";
-import { actorFrom, appOrigin, closeCustomerAccount, completeRegistration, confirmEmailChange, cookie, csrfCookie, csrfTokenFor, currentTerms, decideAccountRecovery, executeAccountRecovery, finishProvider, getCookie, linkProviderIdentity, listIdentities, listSessions, pendingProvider, publicPolicy, readAccountRecoveryStatus, reportDownloadSignature, reportShareToken, requestAccountRecovery, requestEmailChange, revokeOtherSessions, revokeSession, staffSignIn, staffUpdateUserStatus, startCustomerReauth, startOtp, startProvider, unlinkIdentity, verifyCsrfToken, verifyCustomerReauth, verifyOtp, verifyReportDownload } from "./auth";
+import { actorFrom, appOrigin, closeCustomerAccount, completeRegistration, confirmEmailChange, cookie, csrfCookie, csrfTokenFor, currentTerms, decideAccountRecovery, executeAccountRecovery, finishProvider, getCookie, linkProviderIdentity, listIdentities, listSessions, pendingProvider, publicPolicy, readAccountRecoveryStatus, reportDownloadSignature, reportShareToken, requestAccountRecovery, requestEmailChange, revokeOtherSessions, revokeSession, staffSignIn, staffUpdateUserRoles, staffUpdateUserStatus, startCustomerReauth, startOtp, startProvider, unlinkIdentity, verifyCsrfToken, verifyCustomerReauth, verifyOtp, verifyReportDownload } from "./auth";
 import { Problem, audit, guard, hash, idempotent, isDemo, one, organization, role, uuid, type Actor } from "./common";
 import { integrationPreflight, signInMethods } from "./integrations";
 import { failedJobs, retryFailedJob } from "./worker";
@@ -22,7 +22,7 @@ import { customerDestination, withDestination } from "./portal-routes";
 import { orderFulfillmentRecord } from "./fulfillment-reads";
 import { canReadCasePhoto, caseDetail, createPublicInquiry, customerTicketMessage, inquiryCategories, publicInquiry, replyToCase, staffTicketEvent, staffTicketQueue, writeStaffTicket } from "./tickets";
 import { approveIncidentResolution, approveStocktake, createIncident, createLocations, createStocktake, customerReadIncident, customerRespondIncident, listIncidents, listStocktakes, locationBatchSchema, locationMaster, proposeIncidentResolution, resolveIncidentCompensation, scanStocktakeItem, setLocationActive, storageMovementDesk, submitStocktake } from "./storage";
-import { acceptScope, approveCapability, cancelOrder, computeOrderRefundStage, convertOrderToTwo, createCapability, createCategory, extendOrderArrival, holdOrder, moveItem, newTemplate, orderCaseCategory, publishSkuPrice, publishTemplate, reportIssue, requestOrderAfterSales, respondOrderMismatch, resumeOrder, revokeCapability, scopeProposal, scopeReview, setAddress, staffSchemas, updateCategoryStatus, upsertOffer } from "./operations";
+import { acceptScope, approveCapability, cancelOrder, computeOrderRefundStage, convertOrderToTwo, createCapability, createCategory, createTermsVersion, exportCustomerPrivacyData, extendOrderArrival, holdOrder, moveItem, newTemplate, orderCaseCategory, publishSkuPrice, publishTemplate, publishTermsVersion, recordRecoveryDrill, reportIssue, requestCustomerPrivacyAction, requestOrderAfterSales, respondOrderMismatch, resumeOrder, revokeCapability, scopeProposal, scopeReview, setAddress, staffSchemas, systemHealthAndBackupCheck, updateBusinessCalendar, updateCategoryStatus, updateWarehouseAddress, upsertOffer } from "./operations";
 import { createReportShare, listPublishedReports, listReportShares, readSharedPhoto, readSharedReport, reportSharingEnabled, revokeReportShare, shareInput, shareTokenPattern } from "./report-shares";
 import { auditFilters, readAudit } from "./audit-read";
 import { completeMediaUpload, createMediaReadUrl, createMediaUploadUrl, putMediaStaging, readMediaBinary, uploadUrlInputSchema } from "./media";
@@ -331,6 +331,9 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   if(method==="GET" && path==="/me") return json({actor:actorRequired(actor)});
   if(method==="GET" && path==="/me/desk") return json(await transaction(db=>customerDesk(db,actorRequired(actor))));
   if(method==="GET" && path==="/me/email-delivery-status") return json(await transaction(db=>customerEmailDeliveryStatus(db,actorRequired(actor))));
+  if(method==="GET" && path==="/me/privacy/export") return json(await transaction(db=>exportCustomerPrivacyData(db,actorRequired(actor))));
+  if(method==="POST" && path==="/me/privacy/requests")
+    return extraWrite(req,path,actor,staffSchemas.privacyRequest,requestCustomerPrivacyAction,201);
   if(method==="GET"&&path==="/me/notifications") {
     const unread=z.enum(["1","0"]).nullable().parse(url.searchParams.get("unread"))==="1";
     const before=idSchema.nullable().parse(url.searchParams.get("before"));
@@ -414,6 +417,9 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   const packageCode=path.match(/^\/staff\/packages\/by-code\/(P-[A-Z0-9-]{1,64})$/);
   if(method==="GET"&&packageCode) return json(await transaction(db=>warehousePackage(db,actorRequired(actor),packageCode[1],true)));
   if(method==="GET" && path==="/staff/admin/desk") return json(await transaction(db=>adminDesk(db,actorRequired(actor))));
+  if(method==="GET" && path==="/staff/admin/system-health") return json(await transaction(db=>systemHealthAndBackupCheck(db,actorRequired(actor))));
+  if(method==="POST" && path==="/staff/admin/recovery-runs")
+    return extraWrite(req,path,actor,staffSchemas.recoveryDrill,recordRecoveryDrill,201);
   if(method==="GET"&&path==="/staff/audit") {
     const filters=auditFilters.parse(Object.fromEntries([...url.searchParams].filter(([,value])=>value!=="")));
     return json(await transaction(db=>readAudit(db,actorRequired(actor),filters)));
@@ -696,6 +702,19 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   }
   if(method==="POST" && path==="/staff/admin/warehouse-addresses")
     return extraWrite(req,path,actor,staffSchemas.address,setAddress);
+  const warehouseAddrUpdate=path.match(/^\/staff\/admin\/warehouse-addresses\/([a-f0-9-]{36})$/i);
+  if(method==="POST" && warehouseAddrUpdate)
+    return extraWrite(req,path,actor,staffSchemas.addressUpdate,(db,a,b)=>updateWarehouseAddress(db,a,idSchema.parse(warehouseAddrUpdate[1]),b));
+  if(method==="POST" && path==="/staff/admin/calendar")
+    return extraWrite(req,path,actor,staffSchemas.businessCalendar,updateBusinessCalendar);
+  if(method==="POST" && path==="/staff/admin/terms")
+    return extraWrite(req,path,actor,staffSchemas.termsCreate,createTermsVersion,201);
+  const termsPublish=path.match(/^\/staff\/admin\/terms\/([a-f0-9-]{36})\/publish$/i);
+  if(method==="POST" && termsPublish)
+    return extraWrite(req,path,actor,z.object({}),(db,a)=>publishTermsVersion(db,a,idSchema.parse(termsPublish[1])));
+  const staffRolesRoute=path.match(/^\/staff\/users\/([a-f0-9-]{36})\/roles$/i);
+  if(method==="POST" && staffRolesRoute)
+    return extraWrite(req,path,actor,staffSchemas.staffRolesUpdate,(db,a,b)=>staffUpdateUserRoles(db,a,idSchema.parse(staffRolesRoute[1]),b,hash(getCookie(req,"session"))));
   if(method==="POST" && path==="/staff/admin/templates")
     return extraWrite(req,path,actor,staffSchemas.template,newTemplate);
   const publish=path.match(/^\/staff\/admin\/templates\/([a-f0-9-]{36})\/publish$/i);

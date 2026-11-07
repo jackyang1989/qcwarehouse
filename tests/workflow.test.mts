@@ -4515,4 +4515,164 @@ test("tickets queue assignment, linked incidents, work-hours contribution, and 3
   assert.ok(csvRes.csv.includes("SUMMARY,TOTAL,0,ALL,ALL"));
 });
 
+test("admin governance, terms preview/publish, multi-warehouse address & calendar, staff roles, privacy export/retention & backup drill (TASK-121..130, T04, T26, T27, T30, T37, T38, T40, T54)",async()=>{
+  const {c,terms}=await signCustomer();
+  const stdOffer=(await c.fetch("/catalog")).offers.find((o:{sku_code:string})=>o.sku_code==="apparel-inspection-1")!;
+  const admin=await staffLogin("admin");
+  const staffMember=await staffLogin("inspector");
+  const adminMe=(await admin.fetch("/me")).actor as {id:string};
+  const staffMemberMe=(await staffMember.fetch("/me")).actor as {id:string};
+  const initialAddr=(await c.fetch("/me/receiving-address")).warehouse_address as {id:string};
+
+  // 1. Create an order and submit under initial terms & initial SKU price (T27/T30/T40)
+  const {draft:o1,quote:q1}=await createAndPay(
+    c,
+    [{category_id:stdOffer.category_id,offer_id:stdOffer.offer_id,quantity:1,attributes:{name:"Gov Historical Item"}}],
+    terms
+  );
+
+  // Register an inbound parcel on initialAddr (T04)
+  const trk="SF"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const adv1=await c.fetch("/me/parcels",{
+    address_id:initialAddr.id,
+    tracking_no:trk,
+    carrier_code:"sf",
+    order_ids:[o1.id],
+  },"POST",201);
+
+  // 2. TASK-121: Publish a new SKU price version and verify o1 retains its historical price snapshot (T27/T40)
+  const newPrice=await admin.fetch("/staff/admin/skus/apparel-inspection-1/prices",{
+    rules:{minimum:1,maximum:1,package_cents:2900,business_days:2},
+  });
+  assert.ok(newPrice.version>=2);
+  const o1Detail=await c.fetch(`/orders/${o1.id}`);
+  assert.equal(o1Detail.price_cents,q1.amount_cents,"Historical order must retain original quoted price (T27/T40)");
+  // Restore apparel-inspection-1 price to original rules so subsequent tests see standard baseline price
+  await admin.fetch("/staff/admin/skus/apparel-inspection-1/prices",{
+    rules:stdOffer.rules,
+  });
+
+  // 3. TASK-122: Create a draft terms version (preview), verify it's not yet in /public/terms, then publish it and verify old order consent snapshot is preserved (T30)
+  const draftTerms=await admin.fetch("/staff/admin/terms",{
+    kind:"terms",
+    version:"2026.9-"+randomUUID().slice(0,8),
+    content_md:"# Updated Terms 2026.9\n\nPreview draft content before effective publication.",
+    publish_now:false,
+  },"POST",201);
+  assert.equal(draftTerms.state,"draft");
+  const pubBefore=await c.fetch("/public/terms");
+  assert.ok(!pubBefore.terms.some((t:{id:string})=>t.id===draftTerms.id),"Draft terms must not be active in /public/terms before publication");
+
+  const publishedTerms=await admin.fetch(`/staff/admin/terms/${draftTerms.id}/publish`,{});
+  assert.equal(publishedTerms.state,"published");
+  const pubAfter=await c.fetch("/public/terms");
+  assert.ok(pubAfter.terms.some((t:{id:string})=>t.id===draftTerms.id),"Published terms must become active in /public/terms");
+
+  const oldConsent=(await pool.query("select terms_version_ids from consents where order_id=$1",[o1.id])).rows[0];
+  assert.ok(!oldConsent.terms_version_ids.includes(draftTerms.id),"Historical order consent must retain original terms_version_ids (T30)");
+
+  // 4. TASK-123: Multi-warehouse addresses (candidate + unique default switch + historical advice preservation) & business calendar (T04)
+  const candidateAddr=await admin.fetch("/staff/admin/warehouse-addresses",{
+    address_zh:"浙江省杭州市萧山区候选仓 88 号",
+    address_en:"No. 88 Candidate Warehouse, Xiaoshan, Hangzhou",
+    contact_name:"Candidate Receiver",
+    contact_phone:"13900008888",
+    is_default:false,
+  });
+  assert.equal(candidateAddr.is_default,false);
+  assert.equal(candidateAddr.active,true);
+
+  // Switch candidateAddr to unique default
+  const promotedAddr=await admin.fetch(`/staff/admin/warehouse-addresses/${candidateAddr.id}`,{
+    is_default:true,
+  });
+  assert.equal(promotedAddr.is_default,true);
+  const currentDefault=await c.fetch("/me/receiving-address");
+  assert.equal(currentDefault.warehouse_address.id,candidateAddr.id);
+
+  // Cannot deactivate current default address without promoting another first
+  const deactDefault=await admin.fetch(`/staff/admin/warehouse-addresses/${candidateAddr.id}`,{active:false},"POST",409);
+  assert.equal(deactDefault.error.code,"DEFAULT_ADDRESS_REQUIRED");
+
+  // Restore original default address and deactivate candidateAddr while verifying adv1 still references initialAddr
+  await admin.fetch(`/staff/admin/warehouse-addresses/${initialAddr.id}`,{is_default:true});
+  const deactivated=await admin.fetch(`/staff/admin/warehouse-addresses/${candidateAddr.id}`,{active:false});
+  assert.equal(deactivated.active,false);
+  const advRow=(await pool.query("select address_id from package_advices where id=$1",[adv1.id])).rows[0];
+  assert.equal(advRow.address_id,initialAddr.id,"Historical parcel advice must retain its original address_id (T04)");
+
+  // Configure business calendar
+  const cal=await admin.fetch("/staff/admin/calendar",{
+    holidays:["2026-10-01","2026-10-02"],
+    extra_workdays:["2026-10-10"],
+  });
+  assert.deepEqual(cal.holidays,["2026-10-01","2026-10-02"]);
+  assert.deepEqual(cal.extra_workdays,["2026-10-10"]);
+
+  // 5. TASK-124: Staff role assignment, self-lockout guard, and disable/restore (T26)
+  const selfStrip=await admin.fetch(`/staff/users/${adminMe.id}/roles`,{
+    roles:["support"],
+    reason:"Attempt to strip own super_admin",
+  },"POST",409);
+  assert.equal(selfStrip.error.code,"SELF_LOCKOUT_FORBIDDEN","Super admin must not strip own super_admin role");
+
+  const updatedRoles=await admin.fetch(`/staff/users/${staffMemberMe.id}/roles`,{
+    roles:["inspector","reviewer"],
+    reason:"Grant reviewer role after qualification",
+  });
+  assert.deepEqual(updatedRoles.roles,["inspector","reviewer"]);
+
+  // Disable staffMember and verify active session is immediately rejected (T26)
+  await admin.fetch(`/staff/users/${staffMemberMe.id}/status`,{
+    status:"disabled",
+    reason:"Temporary leave",
+  });
+  await staffMember.fetch("/staff/desk",undefined,"GET",401);
+
+  await admin.fetch(`/staff/users/${staffMemberMe.id}/status`,{
+    status:"active",
+    reason:"Returned from leave",
+  });
+  await admin.fetch(`/staff/users/${staffMemberMe.id}/roles`,{
+    roles:["inspector"],
+    reason:"Restore default inspector role",
+  });
+
+  // 6. TASK-129: Customer privacy data export & deletion request with retention exceptions (PAGE-C16, T54)
+  const exported=await c.fetch("/me/privacy/export");
+  assert.ok(exported.orders.some((o:{id:string})=>o.id===o1.id));
+  assert.equal(exported.retention_exceptions.active_orders,1);
+  assert.equal(exported.retention_exceptions.can_close_immediately,false);
+  assert.equal(exported.retention_exceptions.financial_and_audit_retained,true);
+
+  const delReq=await c.fetch("/me/privacy/requests",{
+    kind:"deletion",
+    note:"Please review account deletion and retention obligations",
+  },"POST",201);
+  assert.match(delReq.public_no,/^PRV-/);
+  assert.equal(delReq.retention_exceptions.active_orders,1);
+  assert.equal(delReq.retention_exceptions.can_close_immediately,false);
+
+  // Attempting immediate account closure while o1 is active must be blocked with 409
+  const reauthStart=await c.fetch("/auth/reauth/start",{},"POST",202);
+  await c.fetch("/auth/reauth/verify",{challenge_id:reauthStart.challenge_id,code:reauthStart.demo_code});
+  const closeBlocked=await c.fetch("/me/account/close",{},"POST",409);
+  assert.equal(closeBlocked.error.code,"ACCOUNT_HAS_ACTIVE_OBLIGATIONS");
+
+  // 7. TASK-125 & TASK-130: System health check, recovery drill, and immutable audit log query
+  const health=await admin.fetch("/staff/admin/system-health");
+  assert.equal(health.healthy,true);
+  assert.ok(health.immutable_triggers.includes("immutable_audit"));
+  assert.ok(health.immutable_triggers.includes("freeze_report"));
+
+  const drill=await admin.fetch("/staff/admin/recovery-runs",{
+    note:"Scheduled point-in-time recovery verification drill",
+  },"POST",201);
+  assert.ok(drill.id);
+  assert.equal(drill.reconciliation.verified,true);
+
+  const auditRes=await admin.fetch(`/staff/audit?actor_id=${adminMe.id}&action=record_recovery_run`);
+  assert.ok(auditRes.rows.some((r:{entity_id:string;action:string})=>r.entity_id===drill.id && r.action==="record_recovery_run"));
+});
+
 test("all core operations have a validated success response",assertCoreCoverage);

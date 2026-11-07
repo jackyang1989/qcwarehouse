@@ -13,7 +13,7 @@ export const auditFilters=z.object({
 
 const visibleFields=["reason","decision","count","task_count","base_version","version","days",
   "job_id","type","previous_attempts","previous_error","code","zone","capacity","active","location_id",
-  "event_id","assignment_id","quote_id","tracking_id","carrier"] as const;
+  "event_id","assignment_id","quote_id","tracking_id","carrier","status","previous_status","kind","is_default"] as const;
 function auditDetails(value:Record<string,unknown>|null) {
   return Object.fromEntries(visibleFields.flatMap(key=>{
     const field=value?.[key];

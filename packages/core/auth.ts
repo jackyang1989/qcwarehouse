@@ -753,5 +753,35 @@ export async function staffUpdateUserStatus(
   return {user_id:targetUserId,status:input.status};
 }
 
+export async function staffUpdateUserRoles(
+  db:DB,
+  actor:Actor,
+  targetUserId:string,
+  input:{roles:("receiver"|"inspector"|"reviewer"|"warehouse_admin"|"support"|"super_admin"|"template_admin"|"finance")[];reason:string},
+  sessionHash:string
+) {
+  role(actor,"super_admin");
+  await requireStaffMfa(db,actor,sessionHash,15);
+  await one(db,"select id from users where id=$1 for update",[targetUserId]);
+  const nextRoles=[...new Set(input.roles)];
+  guard(actor.id!==targetUserId || nextRoles.includes("super_admin"),
+    "SELF_LOCKOUT_FORBIDDEN","Super administrators cannot remove their own super_admin role.",409);
+  const prev=(await db.query<{role:string}>("select role from staff_roles where user_id=$1 order by role",[targetUserId])).rows.map(r=>r.role);
+  await db.query("delete from staff_roles where user_id=$1",[targetUserId]);
+  for(const r of nextRoles) {
+    await db.query("insert into staff_roles(user_id,role) values($1,$2)",[targetUserId,r]);
+  }
+  await db.query("update users set auth_version=auth_version+1,updated_at=now() where id=$1",[targetUserId]);
+  await db.query("insert into account_security_events(user_id,actor_id,kind,outcome,request_id) values($1,$2,'staff_roles_updated','succeeded',$3)",
+    [targetUserId,actor.id,uuid()]);
+  await audit(db,actor,"staff_update_user_roles","users",targetUserId,{
+    reason:input.reason.trim(),
+    count:nextRoles.length,
+    before_roles:prev,
+    after_roles:nextRoles,
+  });
+  return {user_id:targetUserId,roles:nextRoles};
+}
+
 export { seal as encryptSecret };
 export { unseal as decryptSecret };

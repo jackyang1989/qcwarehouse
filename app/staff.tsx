@@ -563,20 +563,63 @@ export function TaskView({id,actor}:{id:string;actor:Row}) {
 }
 export function LogisticsDesk() {
   const {data,error,reload}=useLoad("/staff/tracking");
-  return <><div className="page-head"><p className="eyebrow">Tracking / Operations</p><h1>物流监控</h1><p className="muted">查看入仓、退商家及寄集运仓的承运商中文轨迹。</p></div>{error&&<ErrorBlock error={error}/>}<Panel title="入仓与寄出运输">
-    <button type="button" onClick={reload}>刷新</button>
-    {data?.rows.map((r:Row)=><details className="card" key={r.id}><summary>{r.tracking_norm} · {label(r.transport_state)} · {label(r.sync_state)}</summary>
-      <p className="muted">最近同步 {stamp(r.last_success_at)}</p>
-      {r.events?.length?<ol className="timeline">{r.events.map((e:Row)=><li key={e.id}>{stamp(e.occurred_at)} · {e.text}</li>)}</ol>:<Empty>暂无承运商中文轨迹。</Empty>}
-    </details>)}
-  </Panel></>;
+  const monitor=useLoad("/staff/tracking/monitor");
+  return <><div className="page-head"><p className="eyebrow">Tracking / Operations</p><h1>物流监控（PAGE-M16）</h1><p className="muted">查看入仓、退商家及寄集运仓的承运商中文轨迹、24h 配额告警、签收未实收包裹与异常 Episode 队列。</p></div>
+    {error&&<ErrorBlock error={error}/>}
+    {monitor.error&&<ErrorBlock error={monitor.error}/>}
+    {monitor.data&&<>
+      <div className="metric-strip" aria-label="物流监控指标">
+        <div className="metric"><span>24h 查询请求</span><strong>{monitor.data.quota_summary.queries_24h}</strong><small>活跃订阅 {monitor.data.quota_summary.active_subscriptions}</small></div>
+        <div className="metric"><span>限频 / 额度告警</span><strong>{monitor.data.quota_summary.rate_limited_24h + monitor.data.quota_summary.quota_exhausted_24h}</strong><small>鉴权异常 {monitor.data.quota_summary.auth_errors_24h}</small></div>
+        <div className="metric"><span>异常 Episode 队列</span><strong>{monitor.data.alerts.filter((a:Row)=>a.state!=="resolved").length}</strong><small>超期未处理 {monitor.data.alerts.filter((a:Row)=>a.overdue).length}</small></div>
+        <div className="metric"><span>承运商已签收未实收</span><strong>{monitor.data.delivered_unreceived.length}</strong><small>T69 / T78 实物核查队列</small></div>
+      </div>
+      <div className="ops-columns">
+        <Panel title="异常 Episode 告警队列（TASK-159 / T77）">
+          <Table headers={["运单号","方向","异常类型 / Episode","状态","截止时间","操作"]} rows={monitor.data.alerts.map((a:Row)=>[
+            <strong className="code">{a.tracking_norm}</strong>,
+            label(a.direction),
+            <span>{a.kind} · <Tag>Ep #{a.episode}</Tag></span>,
+            <Tag>{a.state}{a.overdue?" (超期)":""}</Tag>,
+            stamp(a.due_at),
+            a.state!=="resolved"?<div className="row" style={{gap:6}}>
+              {a.state==="open"&&<Action run={async()=>{
+                await request(`/staff/tracking-alerts/${a.id}`,"POST",{action:"acknowledge",note:"Acknowledged by staff"});
+                monitor.reload();
+              }}>认领跟进</Action>}
+              <Action run={async()=>{
+                await request(`/staff/tracking-alerts/${a.id}`,"POST",{action:"resolve",note:"Resolved after carrier check"});
+                monitor.reload();
+              }}>标记解除</Action>
+            </div>:"已解除",
+          ])} empty="当前无物流异常告警。"/>
+        </Panel>
+        <Panel title="承运商已签收但仓库未实收（T69 / T78）">
+          <Table headers={["运单号","承运商","订单号","签收时间","最后轨迹摘要"]} rows={monitor.data.delivered_unreceived.map((d:Row)=>[
+            <strong className="code">{d.tracking_norm}</strong>,
+            d.carrier_code,
+            d.order_no??"—",
+            stamp(d.delivered_at),
+            d.latest_cn??"—",
+          ])} empty="所有承运商签收包裹均已登记实收。"/>
+        </Panel>
+      </div>
+    </>}
+    <Panel title="入仓与寄出运输">
+      <button type="button" onClick={()=>{reload();monitor.reload();}}>刷新</button>
+      {data?.rows.map((r:Row)=><details className="card" key={r.id}><summary>{r.tracking_norm} · {label(r.transport_state)} · {label(r.sync_state)}</summary>
+        <p className="muted">最近同步 {stamp(r.last_success_at)}</p>
+        {r.events?.length?<ol className="timeline">{r.events.map((e:Row)=><li key={e.id}>{stamp(e.occurred_at)} · {e.text}</li>)}</ol>:<Empty>暂无承运商中文轨迹。</Empty>}
+      </details>)}
+    </Panel></>;
 }
 export function LogisticsConfiguration() {
   const {data,error,reload}=useLoad("/staff/admin/tracking/health");
-  return <><div className="page-head"><p className="eyebrow">Tracking / Configuration</p><h1>物流接入</h1><p className="muted">核对自动查询、订阅回调与后台同步的当前配置状态。</p></div>
+  const monitor=useLoad("/staff/tracking/monitor");
+  return <><div className="page-head"><p className="eyebrow">Tracking / Configuration</p><h1>物流接入与承运商配置（PAGE-M17）</h1><p className="muted">核对自动查询、订阅回调、手机号脱敏校验及后台同步状态。</p></div>
     <Panel title="快递100配置预检">
       <p>状态来自当前应用配置。承运商覆盖、接口连通性和额度需用实际账号联调确认。</p>
-      <button type="button" onClick={reload}>重新读取配置</button>
+      <button type="button" onClick={()=>{reload();monitor.reload();}}>重新读取配置</button>
       {error?<ErrorBlock error={error}/>:data?<Table headers={["检查项","配置状态"]} rows={[
         ["运单查询",data.queryConfigured?"已配置":"未配置"],
         ["HTTPS 回调地址",data.httpsCallbackConfigured?"已配置":"未配置"],
@@ -584,6 +627,15 @@ export function LogisticsConfiguration() {
         ["自动同步配置",data.workerEnabled?"已启用":"未启用"],
       ]}/>:<p role="status">正在读取配置…</p>}
     </Panel>
+    {monitor.data&&<Panel title="首发承运商字典与手机号校验规则（TASK-158）">
+      <Table headers={["承运商编码","中文名称","英文名称","手机号尾号要求","状态"]} rows={monitor.data.carriers.map((c:Row)=>[
+        <strong className="code">{c.code}</strong>,
+        c.name_zh,
+        c.name_en,
+        c.requires_phone?<Tag>需收/寄件人手机号后4位</Tag>:"免手机号",
+        <Tag>{c.active?"已启用":"已停用"}</Tag>,
+      ])} empty="暂无承运商配置。"/>
+    </Panel>}
   </>;
 }
 export function AdminDesk({actor,path}:{actor:Row;path:string}) {

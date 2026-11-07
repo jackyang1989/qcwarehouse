@@ -51,6 +51,11 @@ export function renderEmailContent(template: string, orderPublicNo: string | nul
         subject: `${prefix}Shipment handed over to carrier${ref}`,
         text: `Your outbound parcel${ref} has been handed over to the carrier. Open ${orderPublicNo ? `${origin}/orders/${orderPublicNo}` : `${origin}/account`} to view tracking updates.`,
       };
+    case "tracking.exception_opened":
+      return {
+        subject: `${prefix}Carrier reported a delivery exception${ref}`,
+        text: `A carrier exception or return update was reported for your parcel${ref}. Open ${origin}/parcels to review the tracking status.`,
+      };
     case "ticket.reply":
       return {
         subject: `${prefix}New support reply${ref}`,

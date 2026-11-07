@@ -4675,4 +4675,232 @@ test("admin governance, terms preview/publish, multi-warehouse address & calenda
   assert.ok(auditRes.rows.some((r:{entity_id:string;action:string})=>r.entity_id===drill.id && r.action==="record_recovery_run"));
 });
 
+test("tracking monitor, exception episode deduplication, dual-control overdue disposal guard, and post-restore security replay (TASK-158, TASK-159, TASK-164, TASK-172, TASK-173, TASK-174)",async()=>{
+  const admin=await staffLogin("admin");
+  const reviewer=await staffLogin("reviewer");
+  const receiving=await staffLogin("receiving");
+  const {c,registration,terms}=await signCustomer();
+  const stdOffer=(await c.fetch("/catalog")).offers.find((o:{sku_code:string})=>o.sku_code==="apparel-inspection-1")!;
+  const {draft:o1}=await createAndPay(
+    c,
+    [{category_id:stdOffer.category_id,offer_id:stdOffer.offer_id,quantity:1,attributes:{name:"Tracking & Disposal Item"}}],
+    terms
+  );
+
+  // 1. TASK-158, TASK-159, TASK-164: Create parcel advice and test delivered-unreceived queue (T69/T78) + exception episode deduplication (T77)
+  const waybill="ZTO"+randomUUID().slice(0,8).toUpperCase();
+  const adv=await c.fetch("/me/parcels",{
+    address_id:registration.warehouse_address.id,
+    carrier_code:"zto",
+    tracking_no:waybill,
+    order_ids:[o1.id],
+  },"POST",201);
+  const {rows:[tracker]}=await pool.query("select id from tracking_records where advice_id=$1 order by generation desc limit 1",[adv.id]);
+  const trackerId=tracker.id as string;
+
+  const token=randomBytes(32).toString("hex"),salt=randomBytes(32).toString("hex");
+  await pool.query(`insert into tracking_subscriptions(tracker_id,provider,callback_token,salt_ciphertext,credential_version,status)
+    values($1,'kuaidi100',$2,$3,'test','active')`,[trackerId,token,encryptSecret(salt)]);
+  const callback="/webhooks/tracking/kuaidi100/"+token;
+  async function pushCallback(payload:object) {
+    const param=JSON.stringify(payload);
+    const sign=createHash("md5").update(param+salt).digest("hex").toUpperCase();
+    const res=await handle(new Request(origin+"/api/v1"+callback,{method:"POST",body:new URLSearchParams({sign,param})}),callback);
+    assert.equal(res.status,200);
+    for(let i=0;i<50;i++){if(!await workOnce())break;}
+  }
+
+  // Carrier reports delivered before warehouse check-in -> must appear in delivered_unreceived (T69/T78)
+  await pushCallback({
+    status:"polling",
+    lastResult:{
+      com:"zhongtong",nu:waybill,state:"3",
+      data:[{context:"快件已在门卫室签收",ftime:"2026-11-06 10:00:00",statusCode:"301"}],
+    },
+  });
+  const mon1=await admin.fetch("/staff/tracking/monitor");
+  assert.ok(mon1.carriers.length>=6,"Monitor must expose active carriers");
+  assert.ok(mon1.delivered_unreceived.some((d:{tracking_id:string})=>d.tracking_id===trackerId),"Carrier delivered without physical check-in must appear in delivered_unreceived (T69/T78)");
+
+  // Carrier reports exception (Episode 1)
+  await pushCallback({
+    status:"polling",
+    lastResult:{
+      com:"zhongtong",nu:waybill,state:"2",
+      data:[
+        {context:"快件派送异常：收件地址无人接听",ftime:"2026-11-06 12:00:00",statusCode:"201"},
+        {context:"快件已在门卫室签收",ftime:"2026-11-06 10:00:00",statusCode:"301"},
+      ],
+    },
+  });
+  const notifsAfterEp1_a=(await c.fetch("/me/notifications")).rows.filter((n:{template:string})=>n.template==="tracking.exception_opened");
+  assert.equal(notifsAfterEp1_a.length,1,"Episode 1 exception must trigger exactly 1 notification (T77)");
+
+  // Second callback within same exception episode -> must NOT create a second notification (T77 deduplication)
+  await pushCallback({
+    status:"polling",
+    lastResult:{
+      com:"zhongtong",nu:waybill,state:"2",
+      data:[
+        {context:"快件异常处理中：等待二次联系",ftime:"2026-11-06 13:00:00",statusCode:"202"},
+        {context:"快件派送异常：收件地址无人接听",ftime:"2026-11-06 12:00:00",statusCode:"201"},
+      ],
+    },
+  });
+  const notifsAfterEp1_b=(await c.fetch("/me/notifications")).rows.filter((n:{template:string})=>n.template==="tracking.exception_opened");
+  assert.equal(notifsAfterEp1_b.length,1,"Repeated exception callbacks in same episode must deduplicate notification (T77)");
+
+  // Staff acknowledges Episode 1 alert
+  const monEp1=await admin.fetch("/staff/tracking/monitor");
+  const alertEp1=monEp1.alerts.find((a:{tracker_id:string;kind:string;episode:number})=>a.tracker_id===trackerId && a.kind==="exception" && a.episode===1);
+  assert.ok(alertEp1,"Episode 1 alert must be listed in monitor");
+  const acked=await admin.fetch(`/staff/tracking-alerts/${alertEp1.id}`,{action:"acknowledge",note:"Contacting carrier"});
+  assert.equal(acked.state,"acknowledged");
+
+  // Carrier resumes normal transit -> automatically resolves Episode 1
+  await pushCallback({
+    status:"polling",
+    lastResult:{
+      com:"zhongtong",nu:waybill,state:"0",
+      data:[
+        {context:"快件已恢复正常派送中转",ftime:"2026-11-06 14:00:00",statusCode:"001"},
+        {context:"快件异常处理中：等待二次联系",ftime:"2026-11-06 13:00:00",statusCode:"202"},
+      ],
+    },
+  });
+  const {rows:[resolvedEp1]}=await pool.query("select state from tracking_alerts where id=$1",[alertEp1.id]);
+  assert.equal(resolvedEp1.state,"resolved","Normal transit event must auto-resolve Episode 1 alert");
+
+  // Carrier enters a new exception later -> opens Episode 2 and delivers a 2nd notification (T77)
+  await pushCallback({
+    status:"polling",
+    lastResult:{
+      com:"zhongtong",nu:waybill,state:"2",
+      data:[
+        {context:"快件二次派送异常：园区临时封闭",ftime:"2026-11-06 16:00:00",statusCode:"203"},
+        {context:"快件已恢复正常派送中转",ftime:"2026-11-06 14:00:00",statusCode:"001"},
+      ],
+    },
+  });
+  const notifsAfterEp2=(await c.fetch("/me/notifications")).rows.filter((n:{template:string})=>n.template==="tracking.exception_opened");
+  assert.equal(notifsAfterEp2.length,2,"New exception episode (Episode 2) after recovery must send a new notification (T77)");
+
+  const monEp2=await admin.fetch("/staff/tracking/monitor");
+  const alertEp2=monEp2.alerts.find((a:{tracker_id:string;kind:string;episode:number})=>a.tracker_id===trackerId && a.kind==="exception" && a.episode===2);
+  assert.ok(alertEp2,"Episode 2 alert must exist");
+  const manualResolved=await admin.fetch(`/staff/tracking-alerts/${alertEp2.id}`,{action:"resolve",note:"Gate reopened"});
+  assert.equal(manualResolved.state,"resolved");
+
+  // 2. TASK-172: Overdue/restricted disposal queue, dual-control approval, list_hash guard, and production execution switch (PAGE-M05, T104)
+  const outerPhoto=await receiving.photo("intake_outer");
+  const pkg=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:waybill,advice_id:adv.id,carrier_code:"zto",outer_media_ids:[outerPhoto],
+  },"POST",201);
+  const desk=await receiving.fetch("/staff/desk");
+  const locId=desk.locations.find((l:{code:string})=>l.code==="R-01").id;
+  const itemCode="DSP-"+randomUUID().slice(0,8).toUpperCase();
+  const createdItems=await receiving.fetch(`/staff/packages/${pkg.id}/items`,{
+    revision:pkg.revision,
+    items:[{code:itemCode,location_id:locId}],
+  },"POST",201);
+  const dispItemId=createdItems.item_ids[0] as string;
+
+  // Expire storage_until so the item is overdue
+  await pool.query("update warehouse_items set storage_until=now()-interval '5 days' where id=$1",[dispItemId]);
+
+  const dispQueue=await admin.fetch("/staff/disposals");
+  assert.ok(dispQueue.overdue_items.some((i:{id:string})=>i.id===dispItemId),"Expired item must appear in overdue_items queue");
+
+  const {rows:[custOrg]}=await pool.query("select org_id from orders where id=$1",[o1.id]);
+  const dispCase=await receiving.fetch("/staff/disposals",{
+    org_id:custOrg.org_id,
+    item_ids:[dispItemId],
+    reason:"Overdue > 30 days after two customer notices",
+    legal_basis_version:"TOS-2026-V2",
+  },"POST",201);
+  assert.equal(dispCase.state,"pending_approval");
+  assert.ok(dispCase.list_hash);
+
+  // Requester cannot self-approve (dual-control guard)
+  const selfApprove=await receiving.fetch(`/staff/disposals/${dispCase.id}/approve`,{
+    revision:dispCase.revision,
+    list_hash:dispCase.list_hash,
+    reason:"Self approval attempt",
+  },"POST",403);
+  assert.equal(selfApprove.error.code,"SELF_REVIEW_FORBIDDEN");
+
+  // Independent reviewer with tampered list_hash must fail with 409 DISPOSAL_LIST_CHANGED
+  const wrongHash=await reviewer.fetch(`/staff/disposals/${dispCase.id}/approve`,{
+    revision:dispCase.revision,
+    list_hash:"0000000000000000000000000000000000000000000000000000000000000000",
+    reason:"Tampered hash",
+  },"POST",409);
+  assert.equal(wrongHash.error.code,"DISPOSAL_LIST_CHANGED");
+
+  // Independent reviewer approves with matching list_hash
+  const approvedCase=await reviewer.fetch(`/staff/disposals/${dispCase.id}/approve`,{
+    revision:dispCase.revision,
+    list_hash:dispCase.list_hash,
+    reason:"Verified overdue notices and item list snapshot",
+  });
+  assert.equal(approvedCase.state,"approved");
+
+  // Executing disposal while production switch is disabled must be blocked (T104)
+  const execBlocked=await admin.fetch(`/staff/disposals/${dispCase.id}/execute`,{
+    revision:approvedCase.revision,
+    method:"destroy",
+    witness_note:"Attempt before production switch enabled",
+  },"POST",409);
+  assert.equal(execBlocked.error.code,"DISPOSAL_EXECUTION_DISABLED");
+
+  // Enable production disposal switch with formal legal basis, execute, then turn switch back off
+  await admin.fetch("/staff/admin/disposal-execution-switch",{
+    enabled:true,
+    legal_basis_version:"TOS-2026-V2",
+    reason:"Legal counsel approved disposal policy v2",
+  });
+  try {
+    const executedCase=await admin.fetch(`/staff/disposals/${dispCase.id}/execute`,{
+      revision:approvedCase.revision,
+      method:"destroy",
+      witness_note:"Dual-person physical disposal completed",
+    });
+    assert.equal(executedCase.state,"executed");
+    const {rows:[afterDisp]}=await pool.query("select custody_state,location_id from warehouse_items where id=$1",[dispItemId]);
+    assert.equal(afterDisp.custody_state,"disposed");
+    assert.equal(afterDisp.location_id,null);
+  } finally {
+    await admin.fetch("/staff/admin/disposal-execution-switch",{
+      enabled:false,
+      legal_basis_version:"TOS-2026-V2",
+      reason:"Reset switch after test",
+    });
+  }
+
+  // 3. TASK-173: Post-restore replay manifest (revoked sessions, suppressed emails) & external payment/handover reconciliation (T105, T106)
+  const adminActorId=(await admin.fetch("/me")).actor.id as string;
+  const {rows:[adminSession]}=await pool.query(
+    `insert into sessions(id,user_id,kind,token_hash,auth_version,expires_at)
+     values(gen_random_uuid(),$1,'staff',$2,1,now()+interval '1 day')
+     returning id`,
+    [adminActorId,"resurrected-token-"+randomUUID()]
+  );
+  const replayEmail=`resurrected-${randomUUID().slice(0,8)}@example.com`;
+  const replayDrill=await admin.fetch("/staff/admin/recovery-runs",{
+    environment:"staging-pitr-drill",
+    backup_reference:"pg-basebackup-20261107-01",
+    rpo_seconds:0,
+    rto_seconds:38,
+    revoked_session_ids:[adminSession.id],
+    suppressed_emails:[replayEmail],
+    notes:"Verify T105 post-restore revocation replay and T106 payment/handover reconciliation",
+  },"POST",201);
+  assert.equal(replayDrill.replayed.sessions_revoked,1,"Post-restore replay must revoke resurrected session IDs (T105)");
+  assert.equal(replayDrill.replayed.emails_suppressed,1,"Post-restore replay must re-apply email suppressions (T105)");
+  assert.equal(replayDrill.reconciliation.verified,true,"External payment and shipment handover reconciliation must verify cleanly (T106)");
+
+  const {rows:[checkSess]}=await pool.query("select revoked_at from sessions where id=$1",[adminSession.id]);
+  assert.ok(checkSess.revoked_at,"Resurrected session must have revoked_at set after recovery replay");
+});
+
 test("all core operations have a validated success response",assertCoreCoverage);

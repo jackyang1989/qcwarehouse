@@ -17,6 +17,7 @@ const noticeTitles:Record<string,string>={
   "quote.offered":"A manual inspection quote is ready",
   "shipment.handed_over":"Your parcel has been handed to the carrier",
   "shipment.return_received":"Returned items have been received at the warehouse",
+  "tracking.exception_opened":"Carrier reported a delivery exception",
   "email.delivery_failed":"We couldn't deliver email to this address",
 };
 function UpdatesTable({notices,onRead}:{notices:Row[];onRead:()=>void}) {

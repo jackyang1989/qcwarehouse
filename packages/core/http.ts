@@ -15,14 +15,14 @@ import { advise, assign, bindUnmatchedPackageOwner, checkIn, decideIntakeClaim, 
 import { amendReport, amendReportInput, approveReport, checkTaskCompleteness, createReportDispute, editReportRevision, findInspectionTaskByScan, readReport, recordResults, recordTaskShot, recordTaskStep, reportDesk, returnReport, revisionChanges, staffReport, startTask, submitReport, submitReportRevision, submitTask, taskDetail, translateReportCandidate } from "./inspection";
 import { acceptQuote, amendDispatchBatch, calculateShippingPreview, cancelDisposition, checkStorageReminders, closeCompletedOrder, confirmBatch, handover, instruct, packShipment, planBatch, publishShippingRate, quoteBatch, readDispatchBatch, receiveReturn, releaseReferenceSample, storageQuote } from "./dispatch";
 import { checkout, demoPay, orderPayment, orderRefundPayments, refundApprove, refundRequest, resolvePaymentDispute, stripeEvent, verifyStripe } from "./payments";
-import { approveTrackingTranslation, correctCustomerParcelTracking, correctStaffTracking, providerCallback, refreshTracking, submitTrackingTranslation, tracking, trackingAdmin, verificationState, verifyTracking } from "./logistics";
+import { approveTrackingTranslation, correctCustomerParcelTracking, correctStaffTracking, providerCallback, refreshTracking, submitTrackingTranslation, tracking, trackingAdmin, trackingMonitor, updateTrackingAlert, verificationState, verifyTracking } from "./logistics";
 import { adminDesk, bills, customerActions, customerDesk, customerNotifications, dispatchQueueStates, items, markNotificationRead, orderLedger, orderLedgerCsv, readOrderByPublicNumber, reconcileFinance, searchStaffOrders, staffOrderDetail, staffOrderFilters, warehouseDesk, warehouseDispatchBatch, warehouseDispatchQueue, warehouseItem, warehousePackage } from "./reads";
 import { staffAccess } from "./staff-access";
 import { customerDestination, withDestination } from "./portal-routes";
 import { orderFulfillmentRecord } from "./fulfillment-reads";
 import { canReadCasePhoto, caseDetail, createPublicInquiry, customerTicketMessage, inquiryCategories, publicInquiry, replyToCase, staffTicketEvent, staffTicketQueue, writeStaffTicket } from "./tickets";
-import { approveIncidentResolution, approveStocktake, createIncident, createLocations, createStocktake, customerReadIncident, customerRespondIncident, listIncidents, listStocktakes, locationBatchSchema, locationMaster, proposeIncidentResolution, resolveIncidentCompensation, scanStocktakeItem, setLocationActive, storageMovementDesk, submitStocktake } from "./storage";
-import { acceptScope, approveCapability, cancelOrder, computeOrderRefundStage, convertOrderToTwo, createCapability, createCategory, createTermsVersion, exportCustomerPrivacyData, extendOrderArrival, holdOrder, moveItem, newTemplate, orderCaseCategory, publishSkuPrice, publishTemplate, publishTermsVersion, recordRecoveryDrill, reportIssue, requestCustomerPrivacyAction, requestOrderAfterSales, respondOrderMismatch, resumeOrder, revokeCapability, scopeProposal, scopeReview, setAddress, staffSchemas, systemHealthAndBackupCheck, updateBusinessCalendar, updateCategoryStatus, updateWarehouseAddress, upsertOffer } from "./operations";
+import { approveDisposalCase, approveIncidentResolution, approveStocktake, createDisposalCase, createIncident, createLocations, createStocktake, customerReadIncident, customerRespondIncident, executeDisposalCase, listIncidents, listOverdueAndRestrictedQueue, listStocktakes, locationBatchSchema, locationMaster, proposeIncidentResolution, resolveIncidentCompensation, scanStocktakeItem, setLocationActive, storageMovementDesk, submitStocktake } from "./storage";
+import { acceptScope, approveCapability, cancelOrder, computeOrderRefundStage, convertOrderToTwo, createCapability, createCategory, createTermsVersion, exportCustomerPrivacyData, extendOrderArrival, holdOrder, moveItem, newTemplate, orderCaseCategory, publishSkuPrice, publishTemplate, publishTermsVersion, recordRecoveryDrill, reportIssue, requestCustomerPrivacyAction, requestOrderAfterSales, respondOrderMismatch, resumeOrder, revokeCapability, scopeProposal, scopeReview, setAddress, setDisposalExecutionSwitch, staffSchemas, systemHealthAndBackupCheck, updateBusinessCalendar, updateCategoryStatus, updateWarehouseAddress, upsertOffer } from "./operations";
 import { createReportShare, listPublishedReports, listReportShares, readSharedPhoto, readSharedReport, reportSharingEnabled, revokeReportShare, shareInput, shareTokenPattern } from "./report-shares";
 import { auditFilters, readAudit } from "./audit-read";
 import { completeMediaUpload, createMediaReadUrl, createMediaUploadUrl, putMediaStaging, readMediaBinary, uploadUrlInputSchema } from "./media";
@@ -450,6 +450,8 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   const refundOptions=path.match(/^\/staff\/orders\/by-number\/(QW-[A-F0-9]+)\/refund-options$/);
   if(method==="GET"&&refundOptions) return json(await transaction(db=>orderRefundPayments(db,actorRequired(actor),refundOptions[1])));
   if(method==="GET" && path==="/staff/tracking") return json({rows:await transaction(db=>trackingAdmin(db,actorRequired(actor)))});
+  if(method==="GET" && path==="/staff/tracking/monitor") return json(await transaction(db=>trackingMonitor(db,actorRequired(actor))));
+  if(method==="GET" && path==="/staff/disposals") return json(await transaction(db=>listOverdueAndRestrictedQueue(db,actorRequired(actor))));
   const byNo=path.match(/^\/orders\/by-number\/(QW-[A-F0-9]+)$/);
   if(method==="GET" && byNo) return json(await transaction(db=>readOrderByPublicNumber(db,actorRequired(actor),byNo[1])));
   const order=path.match(/^\/orders\/([a-f0-9-]{36})$/i);
@@ -693,6 +695,39 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   const approveTranslation=path.match(/^\/staff\/tracking-translations\/([a-f0-9-]{36})\/approve$/i);
   if(approveTranslation && method==="POST") return extraWrite(req,path,actor,z.object({}),
     (db,a)=>approveTrackingTranslation(db,a,idSchema.parse(approveTranslation[1])));
+  const alertRoute=path.match(/^\/staff\/tracking-alerts\/([a-f0-9-]{36})$/i);
+  if(alertRoute && method==="POST") return extraWrite(req,path,actor,z.object({
+    action:z.enum(["acknowledge","resolve"]),note:z.string().trim().max(500).optional()
+  }),(db,a,b)=>updateTrackingAlert(db,a,idSchema.parse(alertRoute[1]),b));
+  if(method==="POST" && path==="/staff/disposals") return extraWrite(req,path,actor,z.object({
+    org_id:idSchema.optional(),
+    item_ids:z.array(idSchema).min(1).max(100),
+    reason:z.string().trim().min(2).max(1000),
+    legal_basis:z.string().trim().max(300).optional(),
+    legal_basis_version:z.string().trim().max(300).optional(),
+    customer_authorized:z.boolean().optional(),
+    notice_evidence_ids:z.array(idSchema).optional(),
+  }),createDisposalCase,201);
+  const disposalApprove=path.match(/^\/staff\/disposals\/([a-f0-9-]{36})\/approve$/i);
+  if(disposalApprove && method==="POST") return extraWrite(req,path,actor,z.object({
+    revision:revSchema,
+    list_hash:z.string().min(8).max(128).optional(),
+    legal_basis:z.string().trim().min(2).max(300).optional(),
+    customer_authorized:z.boolean().optional(),
+    evidence_note:z.string().trim().min(2).max(1000).optional(),
+    reason:z.string().trim().min(2).max(1000).optional(),
+    evidence_ids:z.array(idSchema).optional(),
+  }),(db,a,b)=>approveDisposalCase(db,a,idSchema.parse(disposalApprove[1]),b));
+  const disposalExecute=path.match(/^\/staff\/disposals\/([a-f0-9-]{36})\/execute$/i);
+  if(disposalExecute && method==="POST") return extraWrite(req,path,actor,z.object({
+    revision:revSchema,
+    media_ids:z.array(idSchema).max(20).optional(),
+    execution_note:z.string().trim().min(2).max(1000).optional(),
+    method:z.string().trim().max(100).optional(),
+    witness_note:z.string().trim().max(1000).optional(),
+  }),(db,a,b)=>executeDisposalCase(db,a,idSchema.parse(disposalExecute[1]),b));
+  if(method==="POST" && path==="/staff/admin/disposal-execution-switch")
+    return extraWrite(req,path,actor,staffSchemas.disposalSwitch,setDisposalExecutionSwitch);
   const manual=path.match(/^\/orders\/([a-f0-9-]{36})\/manual-quote-request$/i);
   if(method==="POST" && manual) return extraWrite(req,path,actor,z.object({revision:revSchema,reason:z.string().trim().min(4).max(1200)}),
     (db,a,b)=>requestManualQuote(db,a,idSchema.parse(manual[1]),b.revision,b.reason));

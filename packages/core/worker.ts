@@ -8,7 +8,7 @@ import { audit, guard, one, role, type Actor } from "./common";
 import { requireStaffMfa } from "./auth";
 import type { DB } from "../db";
 
-const businessEvents=["account.registered","report.render","refund.approved","package.received","order.ready","order.identity_mismatch","order.cancelled","dispatch.quoted","quote.offered","shipment.handed_over","shipment.return_received","payment.confirmed","report.published","report.amended","ticket.reply"];
+const businessEvents=["account.registered","report.render","refund.approved","package.received","order.ready","order.identity_mismatch","order.cancelled","dispatch.quoted","quote.offered","shipment.handed_over","shipment.return_received","payment.confirmed","report.published","report.amended","ticket.reply","tracking.exception_opened"];
 const maxJobAttempts=10;
 
 function eventDedupeKey(j:{id:string;type:string;payload:Record<string,unknown>}):string {
@@ -32,6 +32,10 @@ function eventDedupeKey(j:{id:string;type:string;payload:Record<string,unknown>}
       return j.payload?.order_id&&j.payload?.version?`report.amended:${j.payload.order_id}:${j.payload.version}`:`outbox:${j.id}`;
     case "shipment.handed_over":
       return j.payload?.shipment_id?`shipment.handed_over:${j.payload.shipment_id}`:`outbox:${j.id}`;
+    case "tracking.exception_opened":
+      return j.payload?.tracker_id
+        ?`tracking.exception_opened:${j.payload.tracker_id}:${j.payload.kind??"exception"}:${j.payload.episode??1}`
+        :`outbox:${j.id}`;
     default:
       return `outbox:${j.id}`;
   }
@@ -77,8 +81,8 @@ export async function workOnce() {
         const recipient=(await db.query(`select p.user_id from customer_receiving_profiles p where org_id=coalesce(
           (select org_id from orders where id=$1),(select org_id from packages where id=$2),
           (select org_id from dispatch_batches where id=$3),(select b.org_id from shipments s join dispatch_batches b on b.id=s.batch_id where s.id=$4),
-          (select org_id from charge_items where id=$5),$6::uuid)`,[j.payload.order_id??null,j.payload.package_id??null,
-          j.payload.batch_id??null,j.payload.shipment_id??null,j.payload.charge_id??null,j.payload.org_id??null])).rows[0];
+          (select org_id from charge_items where id=$5),(select org_id from tracking_records where id=$6),$7::uuid)`,[j.payload.order_id??null,j.payload.package_id??null,
+          j.payload.batch_id??null,j.payload.shipment_id??null,j.payload.charge_id??null,j.payload.tracker_id??null,j.payload.org_id??null])).rows[0];
         if(recipient) {
           const dedupeKey=eventDedupeKey(j);
           const inserted=(await db.query<{id:string}>(`insert into notifications(user_id,order_id,template,locale,payload,dedupe_key)

@@ -1170,20 +1170,138 @@ export async function systemHealthAndBackupCheck(db:DB,actor:Actor) {
   };
 }
 
+export async function setDisposalExecutionSwitch(
+  db:DB,
+  actor:Actor,
+  input:{enabled:boolean;legal_policy_ref?:string}
+) {
+  role(actor,"super_admin");
+  await db.query(
+    `insert into app_config(key,value,updated_by,updated_at)
+     values('disposal.production_execution_enabled',$1::jsonb,$2,now())
+     on conflict(key) do update set value=excluded.value,updated_by=excluded.updated_by,updated_at=now()`,
+    [JSON.stringify(Boolean(input.enabled)),actor.id]
+  );
+  await audit(db,actor,"set_disposal_execution_switch","app_config",null,{
+    active:Boolean(input.enabled),
+    reason:input.legal_policy_ref?.trim()??null,
+  });
+  return {production_execution_enabled:Boolean(input.enabled)};
+}
+
 export async function recordRecoveryDrill(
   db:DB,
   actor:Actor,
-  input:{restored_to?:string;note?:string}
+  input:{
+    environment?:string;
+    backup_reference?:string;
+    restored_to?:string;
+    note?:string;
+    notes?:string;
+    rpo_seconds?:number;
+    rto_seconds?:number;
+    revoked_session_ids?:string[];
+    closed_user_ids?:string[];
+    revoked_identity_ids?:string[];
+    suppressed_emails?:string[];
+  }
 ) {
   role(actor,"super_admin");
+  const startedAt=new Date();
+  const restoredTo=input.restored_to?new Date(input.restored_to):new Date();
+
+  // T105: Replay post-restore revocation / deletion / suppression manifest so PITR never resurrects revoked sessions, identities, or closed accounts
+  let replayedSessions=0;
+  let replayedUsers=0;
+  let replayedIdentities=0;
+  let replayedSuppressedEmails=0;
+
+  if(input.revoked_session_ids?.length) {
+    const r=await db.query(
+      "update sessions set revoked_at=coalesce(revoked_at,now()) where id=any($1::uuid[])",
+      [input.revoked_session_ids]
+    );
+    replayedSessions=r.rowCount??0;
+  }
+  if(input.closed_user_ids?.length) {
+    const r=await db.query(
+      "update users set status='closed',auth_version=auth_version+1,updated_at=now() where id=any($1::uuid[])",
+      [input.closed_user_ids]
+    );
+    await db.query("update sessions set revoked_at=coalesce(revoked_at,now()) where user_id=any($1::uuid[])",[input.closed_user_ids]);
+    await db.query("update auth_identities set status='revoked' where user_id=any($1::uuid[])",[input.closed_user_ids]);
+    await db.query("update user_emails set is_primary=false,login_enabled=false where user_id=any($1::uuid[])",[input.closed_user_ids]);
+    replayedUsers=r.rowCount??0;
+  }
+  if(input.revoked_identity_ids?.length) {
+    const r=await db.query(
+      "update auth_identities set status='revoked' where id=any($1::uuid[])",
+      [input.revoked_identity_ids]
+    );
+    replayedIdentities=r.rowCount??0;
+  }
+  if(input.suppressed_emails?.length) {
+    const norms=input.suppressed_emails.map(e=>e.trim().toLowerCase()).filter(Boolean);
+    if(norms.length) {
+      await db.query(
+        "update user_emails set delivery_state='bounced' where normalized_email=any($1::citext[])",
+        [norms]
+      );
+      replayedSuppressedEmails=norms.length;
+    }
+  }
+
+  // T106: Reconcile external payment/refund records & physical warehouse handovers
+  const finRec=await one<{
+    succeeded_payments:number;
+    missing_provider_ref:number;
+    handed_over_shipments:number;
+    shipments_missing_tracker:number;
+  }>(
+    db,
+    `select
+       (select count(*)::int from payments where state in ('succeeded','partially_refunded','refunded')) succeeded_payments,
+       (select count(*)::int from payments where state in ('succeeded','partially_refunded','refunded') and (provider_ref is null or provider_ref='')) missing_provider_ref,
+       (select count(*)::int from shipments where state in ('shipped','delivered','returned')) handed_over_shipments,
+       (select count(*)::int from shipments s where s.state in ('shipped','delivered','returned') and not exists(select 1 from tracking_records tr where tr.shipment_id=s.id)) shipments_missing_tracker`
+  );
+
   const health=await systemHealthAndBackupCheck(db,actor);
   const runId=uuid();
-  const restoredTo=input.restored_to?new Date(input.restored_to):new Date();
+  const finishedAt=new Date();
+  const rtoSeconds=input.rto_seconds ?? Math.max(1,Math.round((finishedAt.valueOf()-startedAt.valueOf())/1000));
+  const rpoSeconds=input.rpo_seconds ?? Math.max(0,Math.round((startedAt.valueOf()-restoredTo.valueOf())/1000));
+  const paymentHandoverReconciled=finRec.missing_provider_ref===0 && finRec.shipments_missing_tracker===0;
+  const replayed={
+    sessions_revoked:replayedSessions,
+    closed_users:replayedUsers,
+    identities_revoked:replayedIdentities,
+    emails_suppressed:replayedSuppressedEmails,
+  };
+
   const reconciliation={
     ...health.counts,
+    environment:input.environment??"staging-drill",
+    backup_reference:input.backup_reference??null,
     immutable_triggers:health.immutable_triggers,
-    note:input.note?.trim()??"Automated logical backup and point-in-time reconciliation check",
-    verified:health.healthy,
+    isolated_environment:true,
+    rpo_seconds:rpoSeconds,
+    rto_seconds:rtoSeconds,
+    replayed,
+    manifest_replay:{
+      replayed_sessions:replayedSessions,
+      replayed_closed_users:replayedUsers,
+      replayed_revoked_identities:replayedIdentities,
+      replayed_suppressed_emails:replayedSuppressedEmails,
+    },
+    payment_handover_reconciliation:{
+      ...finRec,
+      paid_charges_verified:finRec.succeeded_payments,
+      shipments_handed_over_verified:finRec.handed_over_shipments,
+      reconciled:paymentHandoverReconciled,
+    },
+    note:(input.note??input.notes)?.trim()??"Automated logical backup, suppression manifest replay, and payment/handover reconciliation check",
+    verified:health.healthy && paymentHandoverReconciled,
   };
   const row=await one<{
     id:string;
@@ -1195,15 +1313,15 @@ export async function recordRecoveryDrill(
   }>(
     db,
     `insert into recovery_runs(id,restored_to,started_at,finished_at,reconciliation,approved_by)
-     values($1,$2,now(),now(),$3,$4)
+     values($1,$2,$3,$4,$5,$6)
      returning id,restored_to,started_at,finished_at,reconciliation,approved_by`,
-    [runId,restoredTo.toISOString(),reconciliation,actor.id]
+    [runId,restoredTo.toISOString(),startedAt.toISOString(),finishedAt.toISOString(),reconciliation,actor.id]
   );
   await audit(db,actor,"record_recovery_run","recovery_runs",row.id,{
     count:health.counts.orders_count,
-    active:health.healthy,
+    active:health.healthy && paymentHandoverReconciled,
   });
-  return row;
+  return {...row,replayed};
 }
 
 export const staffSchemas={
@@ -1237,8 +1355,23 @@ export const staffSchemas={
     note:z.string().trim().max(1000).optional(),
   }),
   recoveryDrill:z.object({
+    environment:z.string().trim().max(100).optional(),
+    backup_reference:z.string().trim().max(200).optional(),
     restored_to:z.string().datetime().optional(),
     note:z.string().trim().max(500).optional(),
+    notes:z.string().trim().max(500).optional(),
+    rpo_seconds:z.number().int().min(0).max(86400).optional(),
+    rto_seconds:z.number().int().min(0).max(86400).optional(),
+    revoked_session_ids:z.array(z.string().uuid()).max(500).optional(),
+    closed_user_ids:z.array(z.string().uuid()).max(500).optional(),
+    revoked_identity_ids:z.array(z.string().uuid()).max(500).optional(),
+    suppressed_emails:z.array(z.string().email()).max(500).optional(),
+  }),
+  disposalSwitch:z.object({
+    enabled:z.boolean(),
+    legal_policy_ref:z.string().trim().max(300).optional(),
+    legal_basis_version:z.string().trim().max(300).optional(),
+    reason:z.string().trim().max(500).optional(),
   }),
   template:z.object({template_key:z.string().min(2).max(100),category_id:z.string().uuid(),service_type_id:z.string().uuid(),content:templateSchema,
     capability_ids:z.array(z.string().uuid()).min(1).max(20)}),

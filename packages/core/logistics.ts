@@ -409,3 +409,109 @@ export async function trackingAdmin(db:DB,actor:Actor) {
     order by s.latest_event_at desc nulls last,s.fetched_at desc limit 1) events from tracking_records t where t.closed_at is null
     order by t.next_query_at desc nulls last limit 100`)).rows;
 }
+
+export async function trackingMonitor(db:DB,actor:Actor) {
+  role(actor,...staffAccess.tracking);
+  const cfg=trackingSettings();
+  const carriers=(await db.query(
+    `select code,provider_code,labels,phone_rule,enabled,
+            coalesce(labels->>'zh-CN',code) name_zh,
+            coalesce(labels->>'en',code) name_en,
+            coalesce((phone_rule->>'required')::boolean,false) requires_phone,
+            enabled active
+     from carriers order by enabled desc,code`
+  )).rows;
+  const quota=await one<{
+    queries_24h:number;
+    ok_24h:number;
+    rate_limited_24h:number;
+    quota_exhausted_24h:number;
+    auth_errors_24h:number;
+    provider_errors_24h:number;
+    active_subscriptions:number;
+    failed_subscriptions:number;
+  }>(
+    db,
+    `select
+       (select count(*)::int from tracking_query_attempts where reserved_at>now()-interval '24 hours') queries_24h,
+       (select count(*)::int from tracking_query_attempts where reserved_at>now()-interval '24 hours' and outcome='ok') ok_24h,
+       (select count(*)::int from tracking_query_attempts where reserved_at>now()-interval '24 hours' and outcome='rate_limited') rate_limited_24h,
+       (select count(*)::int from tracking_query_attempts where reserved_at>now()-interval '24 hours' and outcome='quota_exhausted') quota_exhausted_24h,
+       (select count(*)::int from tracking_query_attempts where reserved_at>now()-interval '24 hours' and outcome='auth_error') auth_errors_24h,
+       (select count(*)::int from tracking_query_attempts where reserved_at>now()-interval '24 hours' and outcome='provider_error') provider_errors_24h,
+       (select count(*)::int from tracking_subscriptions where status='active') active_subscriptions,
+       (select count(*)::int from tracking_subscriptions where status in ('failed','unknown')) failed_subscriptions`
+  );
+  const errorQueue=(await db.query(
+    `select t.id,t.direction,t.carrier_code,t.tracking_norm,t.transport_state,t.sync_state,t.package_id,t.shipment_id,
+            t.last_success_at,t.next_query_at
+     from tracking_records t
+     where t.closed_at is null
+       and (t.sync_state in ('provider_error','delayed','needs_verification','needs_carrier','stopped','unsupported','no_record')
+            or t.transport_state in ('exception','returning','returned'))
+     order by t.next_query_at asc nulls first limit 100`
+  )).rows;
+  const alerts=(await db.query(
+    `select a.id,a.tracker_id,a.kind,a.episode,a.state,a.assignee_id,a.due_at,a.ticket_id,a.last_notified_at,
+            t.direction,t.carrier_code,t.tracking_norm,t.transport_state,t.sync_state,
+            (a.due_at is not null and a.due_at<now() and a.state in ('open','acknowledged')) overdue
+     from tracking_alerts a
+     join tracking_records t on t.id=a.tracker_id
+     order by a.state in ('open','acknowledged') desc,a.due_at asc nulls last,a.episode desc limit 100`
+  )).rows;
+  const deliveredUnreceived=(await db.query(
+    `select t.id,t.id tracking_id,t.carrier_code,t.tracking_norm,t.advice_id,t.transport_state,t.latest_event_at,
+            t.latest_event_at delivered_at,
+            (select o.public_no from advice_orders ao join orders o on o.id=ao.order_id where ao.advice_id=t.advice_id limit 1) order_no,
+            (select te.text_zh from tracking_events te where te.tracker_id=t.id order by te.occurred_at desc nulls last limit 1) latest_cn
+     from tracking_records t
+     where t.closed_at is null
+       and t.direction='inbound'
+       and t.transport_state='delivered'
+       and t.package_id is null
+     order by t.latest_event_at desc nulls last limit 100`
+  )).rows;
+  return {
+    provider_config:{
+      provider:"kuaidi100",
+      configured:Boolean(cfg.key && cfg.customer),
+      callback_https_ready:Boolean(cfg.callbackBase && cfg.callbackBase.startsWith("https://")),
+      callback_base:cfg.callbackBase??null,
+      demo_mode:isDemo(),
+    },
+    carriers,
+    quota_summary:quota,
+    error_queue:errorQueue,
+    alerts,
+    delivered_unreceived:deliveredUnreceived,
+  };
+}
+
+export async function updateTrackingAlert(
+  db:DB,
+  actor:Actor,
+  alertId:string,
+  input:{action:"acknowledge"|"resolve";note?:string}
+) {
+  role(actor,...staffAccess.tracking);
+  const a=await one<{
+    id:string;
+    tracker_id:string;
+    kind:string;
+    episode:number;
+    state:string;
+    ticket_id:string|null;
+  }>(db,"select * from tracking_alerts where id=$1 for update",[alertId]);
+  const nextState=input.action==="resolve"?"resolved":"acknowledged";
+  await db.query(
+    "update tracking_alerts set state=$2,assignee_id=coalesce(assignee_id,$3) where id=$1",
+    [alertId,nextState,actor.id]
+  );
+  await audit(db,actor,"update_tracking_alert","tracking_alerts",alertId,{
+    action:input.action,
+    state:nextState,
+    episode:a.episode,
+    note:input.note?.trim()??null,
+  });
+  return {id:alertId,state:nextState,episode:a.episode,assignee_id:actor.id};
+}

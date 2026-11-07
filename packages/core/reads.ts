@@ -147,9 +147,11 @@ export async function customerNotifications(db:DB,actor:Actor,unread=false,befor
     (select v.version from reports r join report_versions v on v.report_id=r.id
       where r.order_id=o.id and v.version::text=n.payload->>'version' and v.state in ('published','superseded')) report_version,
     (select k.id from tickets k where k.id::text=n.payload->>'ticket_id' and k.org_id=$2) case_id,
-    (select s.id from shipments s join dispatch_batches b on b.id=s.batch_id
-      where s.id::text=n.payload->>'shipment_id' and b.org_id=$2) shipment_id,
-    (select p.advice_id from packages p where p.id::text=n.payload->>'package_id' and p.org_id=$2) advice_id,
+    coalesce((select s.id from shipments s join dispatch_batches b on b.id=s.batch_id
+      where s.id::text=n.payload->>'shipment_id' and b.org_id=$2),
+      (select tr.shipment_id from tracking_records tr where tr.id::text=n.payload->>'tracker_id' and tr.org_id=$2)) shipment_id,
+    coalesce((select p.advice_id from packages p where p.id::text=n.payload->>'package_id' and p.org_id=$2),
+      (select tr.advice_id from tracking_records tr where tr.id::text=n.payload->>'tracker_id' and tr.org_id=$2)) advice_id,
     (select c.id from charge_items c where c.id::text=n.payload->>'charge_id' and c.org_id=$2) charge_id
   from batch n left join orders o on o.id=n.order_id and o.org_id=$2
   order by n.created_at desc nulls last,n.id desc`,[actor.id,org,unread,before,pageSize+1]);

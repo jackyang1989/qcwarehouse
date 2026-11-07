@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { DB } from "../db";
-import { audit, code, event, guard, lock, one, organization, role, uuid, type Actor } from "./common";
+import { audit, code, event, guard, hash, lock, one, organization, revision, role, uuid, type Actor } from "./common";
 import { staffAccess } from "./staff-access";
 
 const occupied = "w.custody_state in ('received','stored')";
@@ -690,4 +690,291 @@ export async function resolveIncidentCompensation(
     payment_proof:proof,
   };
 }
+
+export async function listOverdueAndRestrictedQueue(db:DB,actor:Actor) {
+  role(actor,"receiver","warehouse_admin","support","super_admin");
+  const candidateItems=(await db.query(
+    `select w.id,w.code,w.org_id,w.package_id,p.code package_code,
+            w.identity_state,w.condition_state,w.custody_state,w.received_at,w.storage_until,
+            (w.storage_until is not null and w.storage_until<=now()) overdue,
+            (w.identity_state='quarantined') quarantined,
+            loc.code location_code
+     from warehouse_items w
+     join packages p on p.id=w.package_id
+     left join storage_locations loc on loc.id=w.location_id
+     where w.custody_state in ('received','stored')
+       and (w.identity_state='quarantined' or (w.storage_until is not null and w.storage_until<=now()))
+     order by w.identity_state='quarantined' desc,w.storage_until asc nulls last,w.received_at asc
+     limit 100`
+  )).rows;
+  const cases=(await db.query(
+    `select dc.id,dc.org_id,dc.state,dc.revision,dc.policy_snapshot,dc.authorization_snapshot,
+            dc.requested_by,dc.approved_by,dc.execution_evidence,
+            coalesce(array(
+              select w.code from disposal_items di join warehouse_items w on w.id=di.item_id
+              where di.case_id=dc.id order by w.code
+            ), array[]::text[]) item_codes,
+            coalesce(array(
+              select di.item_id from disposal_items di where di.case_id=dc.id order by di.item_id
+            ), array[]::uuid[]) item_ids
+     from disposal_cases dc
+     order by dc.state='pending_approval' desc,dc.state='approved' desc,dc.id desc
+     limit 100`
+  )).rows;
+  const execFlag=(await db.query<{value:unknown}>("select value from app_config where key='disposal.production_execution_enabled'")).rows[0];
+  const prodEnabled=execFlag?.value===true || (typeof execFlag?.value==="object" && execFlag?.value!==null && (execFlag.value as {enabled?:boolean}).enabled===true);
+  return {
+    production_execution_enabled:prodEnabled,
+    production_execution_switch:{enabled:prodEnabled},
+    candidate_items:candidateItems,
+    overdue_items:candidateItems.filter(i=>i.overdue),
+    restricted_items:candidateItems.filter(i=>i.quarantined),
+    cases,
+  };
+}
+
+export async function createDisposalCase(
+  db:DB,
+  actor:Actor,
+  input:{
+    org_id?:string;
+    item_ids:string[];
+    reason:string;
+    legal_basis?:string;
+    legal_basis_version?:string;
+    customer_authorized?:boolean;
+    notice_evidence_ids?:string[];
+  }
+) {
+  role(actor,"receiver","warehouse_admin","support","super_admin");
+  const itemIds=[...new Set(input.item_ids)].sort();
+  guard(itemIds.length>=1,"INVALID_REQUEST","Select at least one item for the disposal case.",422);
+  const items=(await db.query<{
+    id:string;
+    code:string;
+    org_id:string|null;
+    custody_state:string;
+    identity_state:string;
+    storage_until:Date|null;
+  }>("select id,code,org_id,custody_state,identity_state,storage_until from warehouse_items where id=any($1::uuid[]) order by id for update",[itemIds])).rows;
+  guard(items.length===itemIds.length,"ITEM_NOT_FOUND","One or more selected items were not found.",404);
+  const orgSet=new Set(items.map(i=>i.org_id??""));
+  guard(orgSet.size===1,"TENANT_MISMATCH","All items in a disposal case must belong to the same organization.");
+  for(const item of items) {
+    guard(["received","stored"].includes(item.custody_state),"ITEM_UNAVAILABLE",`Item ${item.code} is not in warehouse storage.`);
+    const isEligible=item.identity_state==="quarantined" || (item.storage_until && new Date(item.storage_until)<=new Date());
+    guard(isEligible,"DISPOSAL_NOT_ELIGIBLE",`Item ${item.code} is neither quarantined nor past its storage retention deadline.`);
+  }
+  const orgId=items[0].org_id;
+  const listHash=hash(itemIds.join(","));
+  const caseId=uuid();
+  const ticketId=uuid(),ticketNo=code("DSP-");
+  const legalBasis=(input.legal_basis??input.legal_basis_version)?.trim()||"TOS-2026-V2";
+  await db.query(
+    `insert into tickets(id,public_no,org_id,category,state,subject,details,next_action_at)
+     values($1,$2,$3,'disposal','open',$4,$5,now()+interval '24 hours')`,
+    [
+      ticketId,
+      ticketNo,
+      orgId,
+      `Overdue / restricted item disposal case (${items.map(i=>i.code).join(", ")})`,
+      {disposal_case_id:caseId,item_codes:items.map(i=>i.code),reason:input.reason.trim(),list_hash:listHash},
+    ]
+  );
+  const policySnapshot={
+    reason:input.reason.trim(),
+    legal_basis:legalBasis,
+    legal_basis_version:legalBasis,
+    list_hash:listHash,
+    ticket_id:ticketId,
+    ticket_no:ticketNo,
+    item_codes:items.map(i=>i.code),
+    created_at:new Date().toISOString(),
+  };
+  const authSnapshot={
+    list_hash:listHash,
+    customer_authorized:Boolean(input.customer_authorized),
+    notice_evidence_ids:input.notice_evidence_ids??[],
+  };
+  await db.query(
+    `insert into disposal_cases(id,org_id,state,revision,policy_snapshot,authorization_snapshot,requested_by)
+     values($1,$2,'pending_approval',1,$3,$4,$5)`,
+    [caseId,orgId,policySnapshot,authSnapshot,actor.id]
+  );
+  for(const id of itemIds) {
+    await db.query("insert into disposal_items(case_id,item_id) values($1,$2)",[caseId,id]);
+  }
+  await audit(db,actor,"create_disposal_case","disposal_cases",caseId,{
+    count:itemIds.length,
+    reason:input.reason.trim(),
+  });
+  return {
+    id:caseId,
+    case_id:caseId,
+    ticket_id:ticketId,
+    ticket_no:ticketNo,
+    state:"pending_approval",
+    revision:1,
+    list_hash:listHash,
+  };
+}
+
+export async function approveDisposalCase(
+  db:DB,
+  actor:Actor,
+  caseId:string,
+  input:{
+    revision:number;
+    list_hash?:string;
+    legal_basis?:string;
+    customer_authorized?:boolean;
+    evidence_note?:string;
+    reason?:string;
+    evidence_ids?:string[];
+  }
+) {
+  role(actor,"reviewer","warehouse_admin","super_admin");
+  const dc=await one<{
+    id:string;
+    state:string;
+    revision:number;
+    requested_by:string;
+    policy_snapshot:Record<string,unknown>;
+    authorization_snapshot:Record<string,unknown>|null;
+  }>(db,"select * from disposal_cases where id=$1 for update",[caseId]);
+  revision(dc.revision,input.revision);
+  guard(dc.state==="pending_approval","DISPOSAL_UNAVAILABLE","This disposal case is not awaiting approval.");
+  guard(dc.requested_by!==actor.id,"SELF_REVIEW_FORBIDDEN","Disposal cases require independent dual-control approval by another administrator.",403);
+  const currentItemIds=(await db.query<{item_id:string}>("select item_id from disposal_items where case_id=$1 order by item_id",[caseId])).rows.map(r=>r.item_id);
+  const currentHash=hash(currentItemIds.join(","));
+  guard(
+    currentHash===dc.policy_snapshot?.list_hash && (!input.list_hash || input.list_hash===currentHash),
+    "DISPOSAL_LIST_CHANGED",
+    "The disposal item list changed since the case was submitted; re-verify the item list hash."
+  );
+  const legalBasis=(input.legal_basis??String(dc.policy_snapshot?.legal_basis??"TOS-2026-V2")).trim();
+  const note=(input.evidence_note??input.reason??"Independent dual-control approval").trim();
+  const nextPolicy={
+    ...dc.policy_snapshot,
+    legal_basis:legalBasis,
+    approved_list_hash:currentHash,
+  };
+  const nextAuth={
+    ...(dc.authorization_snapshot??{}),
+    list_hash:currentHash,
+    customer_authorized:input.customer_authorized ?? Boolean(dc.authorization_snapshot?.customer_authorized),
+    approval_evidence_note:note,
+    approval_evidence_ids:input.evidence_ids??[],
+    approved_at:new Date().toISOString(),
+  };
+  const nextRev=dc.revision+1;
+  await db.query(
+    `insert into disposal_case_approvals(case_id,revision,list_hash,evidence,actor_id,approved_at)
+     values($1,$2,$3,$4,$5,now())`,
+    [caseId,nextRev,currentHash,{legal_basis:legalBasis,note,evidence_ids:input.evidence_ids??[]},actor.id]
+  );
+  await db.query(
+    `update disposal_cases set state='approved',approved_by=$2,policy_snapshot=$3,authorization_snapshot=$4,revision=$5
+     where id=$1`,
+    [caseId,actor.id,nextPolicy,nextAuth,nextRev]
+  );
+  await audit(db,actor,"approve_disposal_case","disposal_cases",caseId,{
+    revision:nextRev,
+    reason:note,
+  });
+  return {
+    id:caseId,
+    state:"approved",
+    revision:nextRev,
+    list_hash:currentHash,
+    approved_by:actor.id,
+  };
+}
+
+export async function executeDisposalCase(
+  db:DB,
+  actor:Actor,
+  caseId:string,
+  input:{
+    revision:number;
+    media_ids?:string[];
+    execution_note?:string;
+    method?:string;
+    witness_note?:string;
+  }
+) {
+  role(actor,"warehouse_admin","super_admin");
+  const dc=await one<{
+    id:string;
+    state:string;
+    revision:number;
+    requested_by:string;
+    approved_by:string|null;
+    policy_snapshot:Record<string,unknown>;
+    authorization_snapshot:Record<string,unknown>|null;
+  }>(db,"select * from disposal_cases where id=$1 for update",[caseId]);
+  revision(dc.revision,input.revision);
+  guard(dc.state==="approved" && dc.approved_by && dc.approved_by!==dc.requested_by,
+    "DISPOSAL_NOT_APPROVED","Disposal execution requires dual-control approval first.");
+
+  // T104: Physical disposal execution is disabled in production unless formal legal basis / customer authorization AND production switch are present
+  const legalBasis=String(dc.policy_snapshot?.legal_basis??"").trim();
+  const hasFormalBasis=legalBasis.length>=3 && legalBasis.toLowerCase()!=="none" && legalBasis.toLowerCase()!=="missing";
+  const execSwitch=(await db.query<{value:unknown}>("select value from app_config where key='disposal.production_execution_enabled'")).rows[0];
+  const switchEnabled=execSwitch?.value===true || (typeof execSwitch?.value==="object" && execSwitch?.value!==null && (execSwitch.value as {enabled?:boolean}).enabled===true);
+  guard(hasFormalBasis && switchEnabled,
+    "DISPOSAL_EXECUTION_DISABLED",
+    "Physical disposal execution is disabled until formal legal basis, customer notice/authorization, and the disposal execution switch are enabled.",
+    409);
+
+  const itemIds=(await db.query<{item_id:string}>("select item_id from disposal_items where case_id=$1 order by item_id",[caseId])).rows.map(r=>r.item_id);
+  const currentHash=hash(itemIds.join(","));
+  guard(currentHash===dc.policy_snapshot?.list_hash,"DISPOSAL_LIST_CHANGED","Disposal item list hash mismatch.");
+
+  for(const itemId of itemIds) {
+    const item=await one<{id:string;location_id:string|null;custody_state:string}>(
+      db,"select id,location_id,custody_state from warehouse_items where id=$1 for update",[itemId]
+    );
+    guard(["received","stored"].includes(item.custody_state),"ITEM_UNAVAILABLE","Item is no longer in warehouse custody.");
+    await db.query(
+      "update warehouse_items set custody_state='disposed',location_id=null,revision=revision+1 where id=$1",
+      [itemId]
+    );
+    await db.query(
+      "insert into storage_events(item_id,from_location_id,to_location_id,action,operator_id) values($1,$2,null,'dispose',$3)",
+      [itemId,item.location_id,actor.id]
+    );
+  }
+  const execNote=(input.execution_note??input.witness_note??"Dual-person physical disposal completed").trim();
+  const execEvidence={
+    executed_by:actor.id,
+    executed_at:new Date().toISOString(),
+    method:input.method??"destroy",
+    media_ids:input.media_ids??[],
+    execution_note:execNote,
+    list_hash:currentHash,
+  };
+  const nextRev=dc.revision+1;
+  await db.query(
+    "update disposal_cases set state='executed',execution_evidence=$2,revision=$3 where id=$1",
+    [caseId,execEvidence,nextRev]
+  );
+  if(dc.policy_snapshot?.ticket_id) {
+    await db.query(
+      "update tickets set state='resolved',resolved_at=now(),next_action_at=null where id=$1",
+      [dc.policy_snapshot.ticket_id]
+    );
+  }
+  await audit(db,actor,"execute_disposal_case","disposal_cases",caseId,{
+    count:itemIds.length,
+    revision:nextRev,
+  });
+  return {
+    id:caseId,
+    state:"executed",
+    revision:nextRev,
+    disposed_item_ids:itemIds,
+  };
+}
+
 

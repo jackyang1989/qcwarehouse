@@ -75,8 +75,88 @@ export function StorageLocations({warehouseLinks}:{warehouseLinks:[string,string
         ])} empty="没有符合条件的库位。"/>
       </Panel>
       <StocktakeReviewAndIncidentPanel/>
+      <OverdueDisposalDesk/>
     </>}
   </>;
+}
+
+function OverdueDisposalDesk() {
+  const disposals=useLoad("/staff/disposals");
+  const d=disposals.data;
+  const prodEnabled=Boolean(d?.production_execution_switch?.enabled);
+  return <Panel title="逾期与违禁件双人审批处置台（PAGE-M05 / TASK-172 / T104）">
+    <p className="muted">保管期届满或违禁隔离实物须立项生成快照哈希（list_hash），经独立审批人复核（禁止自审），并在正式法律/协议生产开关开启后方可执行处置。</p>
+    {disposals.error&&<ErrorBlock error={disposals.error}/>}
+    {d&&<>
+      <div className="row" style={{justifyContent:"space-between",marginBottom:12}}>
+        <div>
+          <strong>生产处置执行门禁（T104）：</strong> <Tag>{prodEnabled?"已开启":"默认关闭（仅预演与审批）"}</Tag>
+          <span className="muted"> · 逾期在库 {d.overdue_items.length} 件 · 违禁/隔离 {d.restricted_items.length} 件</span>
+        </div>
+        <Action run={async()=>{
+          const legal=window.prompt("请输入正式法律与客户协议条款版本号（如 TOS-2026-V2）","TOS-2026-V2");
+          if(!legal)return;
+          await request("/staff/admin/disposal-execution-switch","POST",{
+            enabled:!prodEnabled,
+            legal_basis_version:legal,
+            reason:"Updated production disposal switch from PAGE-M05",
+          });
+          disposals.reload();
+        }}>{prodEnabled?"关闭生产处置执行开关":"开启生产处置执行开关"}</Action>
+      </div>
+      <div className="ops-columns">
+        <div>
+          <Form label="创建逾期/隔离处置审批单" run={async f=>{
+            const ids=text(f,"item_ids").split(",").map(s=>s.trim()).filter(Boolean);
+            await request("/staff/disposals","POST",{
+              org_id:text(f,"org_id"),
+              item_ids:ids,
+              reason:text(f,"reason"),
+              legal_basis_version:text(f,"legal_basis_version")||"TOS-2026-V2",
+            });
+            disposals.reload();
+          }}>
+            <Field label="客户组织 ID (org_id)" name="org_id"/>
+            <Field label="待处置实物 ID 列表（逗号分隔）" name="item_ids"/>
+            <Field label="适用协议/政策版本" name="legal_basis_version" required={false}/>
+            <Field label="立项说明与通知取证摘要" name="reason"/>
+          </Form>
+        </div>
+        <div>
+          <Table headers={["处置单","状态","实物数 / 清单哈希","政策快照","双人复核与执行"]} rows={(d.cases??[]).map((c:Row)=>{
+            const auth=c.authorization_snapshot??{};
+            const pol=c.policy_snapshot??{};
+            return [
+              <strong className="code">{c.id.slice(0,8)}</strong>,
+              <Tag>{c.state}</Tag>,
+              <span>{(c.items??[]).length} 件 · <span className="code">{(auth.list_hash??"").slice(0,10)}</span></span>,
+              <span>{pol.legal_basis_version??"未配置"}</span>,
+              <div className="row" style={{gap:6,flexWrap:"wrap"}}>
+                {c.state==="pending_approval"&&<Action run={async()=>{
+                  await request(`/staff/disposals/${c.id}/approve`,"POST",{
+                    revision:c.revision,
+                    list_hash:auth.list_hash,
+                    reason:"Independent dual-control approval verified",
+                  });
+                  disposals.reload();
+                }}>独立审批通过</Action>}
+                {c.state==="approved"&&<Action run={async()=>{
+                  const method=window.prompt("处置方式 (destroy / liquidate / donate)","destroy");
+                  if(!method)return;
+                  await request(`/staff/disposals/${c.id}/execute`,"POST",{
+                    revision:c.revision,
+                    method,
+                    witness_note:"Dual-person physical disposal completed",
+                  });
+                  disposals.reload();
+                }}>登记执行归档</Action>}
+              </div>,
+            ];
+          })} empty="暂无处置审批单。"/>
+        </div>
+      </div>
+    </>}
+  </Panel>;
 }
 
 function StocktakeReviewAndIncidentPanel() {

@@ -86,5 +86,64 @@ export function OperationsDesk() {
     {scheduled&&<p className="notice" role="status">作业 #{scheduled} 已重新排队，处理结果请刷新核对。</p>}
     {retriedEmail&&<p className="notice" role="status">邮件记录 {retriedEmail} 已创建新投递尝试并加入队列。</p>}
     {reauth&&<p className="notice"><Link href="/staff/login?next=%2Fadmin%2Foperations">重新验证员工身份后继续</Link></p>}
+    <SystemHealthAndRecoveryPanel/>
   </>;
+}
+
+function SystemHealthAndRecoveryPanel() {
+  const health=useLoad("/staff/admin/system-health");
+  const h=health.data;
+  return <Panel title="系统健康、备份校验与恢复演练重放台（PAGE-M15 / TASK-130 / TASK-173）">
+    <p className="muted">验证对象存储/私有媒体完整性，登记备份恢复演练并重放恢复时间点后的会话撤销、账号注销、解绑与退信抑制清单（T105），同时核对外部支付与出库交接一致性（T106）。</p>
+    {health.error&&<ErrorBlock error={health.error}/>}
+    {h&&<>
+      <div className="metric-strip" aria-label="系统健康与备份">
+        <div className="metric"><span>系统健康状态</span><strong>{h.healthy?"正常":"告警"}</strong><small>数据库连通正常</small></div>
+        <div className="metric"><span>私有媒体完整性</span><strong>{h.storage.total_files - h.storage.missing_bytes_count} / {h.storage.total_files}</strong><small>缺失字节 {h.storage.missing_bytes_count}</small></div>
+        <div className="metric"><span>积压作业 / 抑制邮箱</span><strong>{h.queues.exhausted_jobs} / {h.queues.suppressed_emails}</strong><small>开放事故 {h.queues.open_incidents}</small></div>
+        <div className="metric"><span>恢复演练记录</span><strong>{(h.recent_recovery_runs??[]).length}</strong><small>RPO / RTO 审计</small></div>
+      </div>
+      <div className="ops-columns">
+        <div>
+          <Form label="登记恢复演练与安全撤销清单重放（T105 / T106）" run={async f=>{
+            const sess=text(f,"revoked_session_ids").split(",").map(s=>s.trim()).filter(Boolean);
+            await request("/staff/admin/recovery-runs","POST",{
+              environment:text(f,"environment")||"staging-drill",
+              backup_reference:text(f,"backup_reference"),
+              rpo_seconds:Number(text(f,"rpo_seconds")||0),
+              rto_seconds:Number(text(f,"rto_seconds")||60),
+              revoked_session_ids:sess,
+              notes:text(f,"notes"),
+            });
+            health.reload();
+          }}>
+            <div className="grid two">
+              <label>演练环境<input name="environment" defaultValue="staging-drill" required/></label>
+              <label>备份快照编号<input name="backup_reference" placeholder="pg-dump-20261107" required/></label>
+            </div>
+            <div className="grid two">
+              <label>实测 RPO（秒）<input name="rpo_seconds" type="number" defaultValue="0" min={0} required/></label>
+              <label>实测 RTO（秒）<input name="rto_seconds" type="number" defaultValue="45" min={0} required/></label>
+            </div>
+            <label>需重放撤销的会话 ID（逗号分隔，可选）<input name="revoked_session_ids"/></label>
+            <label>恢复核验说明<textarea name="notes" rows={2}/></label>
+          </Form>
+        </div>
+        <div>
+          <Table headers={["演练编号","环境 / 快照","状态","RPO / RTO","重放与对账摘要","时间"]} rows={(h.recent_recovery_runs??[]).map((r:Row)=>{
+            const m=r.replay_manifest??{};
+            const rec=m.payment_handover_reconciliation??{};
+            return [
+              <strong className="code">{r.id.slice(0,8)}</strong>,
+              <span>{r.environment} · <span className="code">{r.backup_reference}</span></span>,
+              <Tag>{r.state}</Tag>,
+              <span>{m.rpo_seconds??0}s / {m.rto_seconds??0}s</span>,
+              <span>重放会话 {m.replayed?.sessions_revoked??0} · 已付收费 {rec.paid_charges_verified??0} · 交接批次 {rec.shipments_handed_over_verified??0}</span>,
+              stamp(r.completed_at??r.started_at),
+            ];
+          })} empty="暂无恢复演练记录。"/>
+        </div>
+      </div>
+    </>}
+  </Panel>;
 }

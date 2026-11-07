@@ -11,12 +11,12 @@ import { integrationPreflight, signInMethods } from "./integrations";
 import { failedJobs, retryFailedJob } from "./worker";
 import { customerEmailDeliveryStatus, receivePostmarkWebhook, retryEmailDelivery, staffEmailDeliveries } from "./email";
 import { catalog, issueManualQuote, orderDetail, quoteOrder, requestManualQuote, saveOrder, submitOrder } from "./orders";
-import { advise, assign, bindUnmatchedPackageOwner, checkIn, decideIntakeClaim, identifyItem, intakeItems, lookup, quarantineItem, quarantinePackage, requestIntakeClaim, savePhoto, unassignItem, waybill } from "./intake";
+import { advise, assign, bindUnmatchedPackageOwner, checkIn, decideIntakeClaim, identifyItem, intakeItems, linkParcelToOrder, lookup, quarantineItem, quarantinePackage, requestIntakeClaim, savePhoto, unassignItem, waybill } from "./intake";
 import { amendReport, amendReportInput, approveReport, checkTaskCompleteness, createReportDispute, editReportRevision, findInspectionTaskByScan, readReport, recordResults, recordTaskShot, recordTaskStep, reportDesk, returnReport, revisionChanges, staffReport, startTask, submitReport, submitReportRevision, submitTask, taskDetail, translateReportCandidate } from "./inspection";
 import { acceptQuote, amendDispatchBatch, calculateShippingPreview, cancelDisposition, checkStorageReminders, closeCompletedOrder, confirmBatch, handover, instruct, packShipment, planBatch, publishShippingRate, quoteBatch, readDispatchBatch, receiveReturn, releaseReferenceSample, storageQuote } from "./dispatch";
 import { checkout, demoPay, orderPayment, orderRefundPayments, refundApprove, refundRequest, resolvePaymentDispute, stripeEvent, verifyStripe } from "./payments";
 import { approveTrackingTranslation, correctCustomerParcelTracking, correctStaffTracking, providerCallback, refreshTracking, submitTrackingTranslation, tracking, trackingAdmin, trackingMonitor, updateTrackingAlert, verificationState, verifyTracking } from "./logistics";
-import { adminDesk, bills, customerActions, customerDesk, customerNotifications, dispatchQueueStates, items, markNotificationRead, orderLedger, orderLedgerCsv, readOrderByPublicNumber, reconcileFinance, searchStaffOrders, staffOrderDetail, staffOrderFilters, warehouseDesk, warehouseDispatchBatch, warehouseDispatchQueue, warehouseItem, warehousePackage } from "./reads";
+import { adminDesk, bills, customerActions, customerDesk, customerNotifications, dispatchQueueStates, items, markNotificationRead, orderLedger, orderLedgerCsv, readOrderByPublicNumber, readStaffObjectSummary, reconcileFinance, searchStaffOrders, staffOrderDetail, staffOrderFilters, warehouseDesk, warehouseDispatchBatch, warehouseDispatchQueue, warehouseItem, warehousePackage } from "./reads";
 import { staffAccess } from "./staff-access";
 import { customerDestination, withDestination } from "./portal-routes";
 import { orderFulfillmentRecord } from "./fulfillment-reads";
@@ -53,7 +53,7 @@ const operations=Object.entries(contract.paths).flatMap(([path,methods])=>Object
 const idSchema=z.string().uuid();
 const revSchema=z.number().int().positive();
 const emailSchema=z.email().max(254).transform(v=>v.toLowerCase());
-const photoKinds=z.enum(["intake_outer","intake_open","label_photo","shot","dispatch","attachment"]);
+const photoKinds=z.enum(["intake_outer","intake_open","label_photo","shot","defect","dispatch","attachment"]);
 const publicShareRoute=new RegExp("^/public/report-shares/("+shareTokenPattern+")(?:/photos/(\\d{1,6})/(\\d{1,6})/(\\d{1,6}))?$");
 function privateShareResponse(response:Response) {
   response.headers.set("cache-control","private, no-store");
@@ -581,7 +581,7 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   }
   if(method==="POST" && path==="/staff/media") {
     csrf(req);
-    const a=actorRequired(actor);role(a,"receiver","warehouse_admin","inspector","super_admin");
+    const a=actorRequired(actor);role(a,"receiver","warehouse_admin","inspector","support","finance","super_admin");
     guard(Number(req.headers.get("content-length")??0)<=8_100_000,"BODY_TOO_LARGE","Photo is too large.",413);
     const form=await req.formData(),file=form.get("photo");
     guard(file instanceof File,"FILE_INVALID","Choose a photo.",422);
@@ -787,6 +787,16 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   const cancelDisp=path.match(/^\/me\/dispositions\/([a-f0-9-]{36})\/cancel$/i);
   if(method==="POST" && cancelDisp) return extraWrite(req,path,actor,z.object({revision:revSchema.optional(),reason:z.string().trim().max(1000).optional()}),
     (db,a,b)=>cancelDisposition(db,a,idSchema.parse(cancelDisp[1]),b));
+  const linkParcel=path.match(/^\/me\/parcels\/([a-f0-9-]{36})\/link-order$/i);
+  if(method==="POST" && linkParcel) return extraWrite(req,path,actor,z.object({order_id:idSchema}),
+    (db,a,b)=>linkParcelToOrder(db,a,idSchema.parse(linkParcel[1]),b));
+  if(method==="GET" && path==="/staff/object-summary") {
+    const q=z.object({
+      kind:z.enum(["tracking","package","item","batch"]),
+      ref:z.string().trim().min(1).max(120),
+    }).parse({kind:url.searchParams.get("kind"),ref:url.searchParams.get("ref")});
+    return json(await transaction(db=>readStaffObjectSummary(db,actorRequired(actor),q.kind,q.ref)));
+  }
   const custBatch=path.match(/^\/dispatch-batches\/([a-f0-9-]{36})$/i);
   if(method==="GET" && custBatch) return json(await transaction(db=>readDispatchBatch(db,actorRequired(actor),idSchema.parse(custBatch[1]))));
   const amendBatch=path.match(/^\/dispatch-batches\/([a-f0-9-]{36})\/amend$/i);
@@ -891,14 +901,15 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   }
   if(method==="POST" && path==="/staff/incidents") {
     return extraWrite(req,path,actor,z.object({
-      item_id:idSchema,
+      item_id:idSchema.optional(),
+      item_code:z.string().trim().min(2).max(100).optional(),
       order_id:idSchema.optional(),
       order_line_id:idSchema.optional(),
       kind:z.enum(["damage","loss","wrong_inspection"]),
       summary_en:z.string().trim().min(4).max(1000),
       internal_note:z.string().trim().max(1000).optional(),
       evidence_ids:z.array(idSchema).optional(),
-    }),createIncident,201);
+    }).refine(v=>Boolean(v.item_id || v.item_code),{message:"Provide item_id or item_code."}),createIncident,201);
   }
   const incPropose=path.match(/^\/staff\/incidents\/([a-f0-9-]{36})\/propose$/i);
   if(method==="POST" && incPropose) {

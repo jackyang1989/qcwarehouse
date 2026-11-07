@@ -349,7 +349,18 @@ export async function listIncidents(db:DB,actor:Actor) {
      order by t.created_at desc`
   );
   const financeVisible=canSeeIncidentFinance(actor);
+  const eligibleItems=(await db.query(
+    `select w.id,w.code,w.custody_state,o.public_no order_no,
+            (select crp.receiving_code from customer_receiving_profiles crp where crp.org_id=w.org_id limit 1) receiving_code
+     from warehouse_items w
+     left join order_line_item_links a on a.item_id=w.id and a.unlinked_at is null
+     left join order_lines l on l.id=a.order_line_id
+     left join orders o on o.id=l.order_id
+     where w.org_id is not null and w.parent_item_id is null
+     order by w.received_at desc limit 200`
+  )).rows;
   return {
+    eligible_items:eligibleItems,
     rows:rows.map(r=>{
       const res=(r.resolution??{}) as Record<string,unknown>;
       if(!financeVisible) {
@@ -369,7 +380,8 @@ export async function createIncident(
   db:DB,
   actor:Actor,
   input:{
-    item_id:string;
+    item_id?:string;
+    item_code?:string;
     order_id?:string;
     order_line_id?:string;
     kind:"damage"|"loss"|"wrong_inspection";
@@ -379,7 +391,10 @@ export async function createIncident(
   }
 ) {
   role(actor,"receiver","warehouse_admin","support","super_admin");
-  const item=await one(db,"select * from warehouse_items where id=$1 for update",[input.item_id]);
+  guard(Boolean(input.item_id || input.item_code?.trim()),"INVALID_REQUEST","Provide item_id or item_code.",422);
+  const item=input.item_id
+    ?await one(db,"select * from warehouse_items where id=$1 for update",[input.item_id])
+    :await one(db,"select * from warehouse_items where upper(code)=upper($1) for update",[input.item_code!.trim()]);
   guard(item.org_id,"ITEM_UNASSIGNED_ORG","Verify the item organization before creating a customer incident case.");
   await lock(db,"org:"+item.org_id);
   const link=(await db.query<{order_line_id:string;order_id:string}>(
@@ -695,6 +710,7 @@ export async function listOverdueAndRestrictedQueue(db:DB,actor:Actor) {
   role(actor,"receiver","warehouse_admin","support","super_admin");
   const candidateItems=(await db.query(
     `select w.id,w.code,w.org_id,w.package_id,p.code package_code,
+            (select crp.receiving_code from customer_receiving_profiles crp where crp.org_id=w.org_id limit 1) receiving_code,
             w.identity_state,w.condition_state,w.custody_state,w.received_at,w.storage_until,
             (w.storage_until is not null and w.storage_until<=now()) overdue,
             (w.identity_state='quarantined') quarantined,
@@ -709,6 +725,7 @@ export async function listOverdueAndRestrictedQueue(db:DB,actor:Actor) {
   )).rows;
   const cases=(await db.query(
     `select dc.id,dc.org_id,dc.state,dc.revision,dc.policy_snapshot,dc.authorization_snapshot,
+            (select crp.receiving_code from customer_receiving_profiles crp where crp.org_id=dc.org_id limit 1) receiving_code,
             dc.requested_by,dc.approved_by,dc.execution_evidence,
             coalesce(array(
               select w.code from disposal_items di join warehouse_items w on w.id=di.item_id

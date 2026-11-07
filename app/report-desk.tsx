@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Action, checked, Empty, ErrorBlock, Field, Form, Panel, request, Select, stamp, Table, Tag, text, useLoad, type Row } from "./ui";
+import { Action, checked, CodeButton, Empty, ErrorBlock, Field, Form, MediaButton, Panel, request, Select, StaffObjectDrawer, type StaffObjectTarget, stamp, Table, Tag, text, useLoad, type Row } from "./ui";
 
 const states:Record<string,string>={draft:"修订草稿",submitted:"待独立复核",qa_approved:"待生成 PDF",published:"已发布",superseded:"历史版本"};
 export function ReportDesk() {
@@ -32,6 +33,7 @@ function valueOf(result:Row) {
 }
 export function StaffReport({id,actor}:{id:string;actor:Row}) {
   const {data,error,reload}=useLoad("/staff/reports/"+id);
+  const [drawer,setDrawer]=useState<StaffObjectTarget|null>(null);
   const editing=data?.state==="draft"&&data.snapshot.amends_version&&data.created_by===actor.id;
   const hasReviewRole=actor.roles.some((r:string)=>r==="reviewer"||r==="super_admin");
   const isSelfReview=Boolean(data&&(data.created_by===actor.id||data.snapshot.sections.some((s:Row)=>s.inspector_id===actor.id)));
@@ -53,14 +55,13 @@ export function StaffReport({id,actor}:{id:string;actor:Row}) {
           const original=data.base_snapshot?.sections[s]?.results[r];
           const needsEn=hasChinese(result.reason)||(typeof result.typed_value==="string"&&hasChinese(result.typed_value));
           return [
-            result.item,
+            result.item?<CodeButton code={result.item} onClick={()=>setDrawer({kind:"item",ref:result.item})}/>:"—",
             result.label,
             original?valueOf(original):"—",
             <div>{valueOf(result)}{result.reason&&result.typed_value!==null&&result.typed_value!==undefined&&<div className="small muted">{result.reason}</div>}{needsEn&&<div><Tag tone="yellow">待译英文</Tag></div>}</div>,
             result.reason_zh??(hasChinese(result.reason)?result.reason:"—"),
             result.status,
-            result.evidence_ids.map((media:string)=><a className="button" key={media}
-              href={"/api/v1/media/"+media} target="_blank" rel="noreferrer">照片</a>),
+            result.evidence_ids?.length?<MediaButton ids={result.evidence_ids} labels={result.evidence_ids.map((_:string,idx:number)=>`${result.item} · ${result.label} (#${idx+1})`)} label={`查看证据照 (${result.evidence_ids.length})`}/>:"—",
           ];
         })}/>
         {canReview&&section.results.map((result:Row,r:number)=>{
@@ -129,5 +130,6 @@ export function StaffReport({id,actor}:{id:string;actor:Row}) {
       {data.state==="qa_approved"&&<Empty>等待后台生成并校验 PDF。生成成功后客户可以查看新版本。</Empty>}
     </>}
     <button type="button" onClick={reload}>刷新报告状态</button>
+    <StaffObjectDrawer target={drawer} onClose={()=>setDrawer(null)}/>
   </>;
 }

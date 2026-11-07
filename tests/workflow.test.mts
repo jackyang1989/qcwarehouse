@@ -5240,4 +5240,150 @@ test("Week 29 & Week 30 rehearsal archiving, Hong Kong legal entity configuratio
   assert.equal(stagingSignoff.signoff.first_order_invite_enabled,true);
 });
 
+test("parcel post-linking, staff object quick-summary RBAC, item_code incident filing, super_admin/finance media permissions, and enriched customer/admin desks",async()=>{
+  const receiving=await staffLogin("receiving");
+  const inspector=await staffLogin("inspector");
+  const admin=await staffLogin("admin");
+  await pool.query("insert into staff_roles(user_id,role) select id,'support' from users where display_name='reviewer' on conflict do nothing");
+  staffSessions.delete("reviewer");
+  const supportOnly=await staffLogin("reviewer");
+
+  const {c,registration,terms}=await signCustomer();
+  const {c:otherCustomer}=await signCustomer();
+  const termsId=terms.find((t:{kind:string})=>t.kind==="terms")!.id;
+  const offer=(await c.fetch("/catalog")).offers.find((o:{sku_code:string})=>o.sku_code==="apparel-inspection-1");
+
+  // 1. Register an inbound parcel first without an order, then link it to a newly created order via POST /me/parcels/{id}/link-order
+  const waybillNo="SF"+randomUUID().slice(0,10).toUpperCase();
+  const advice=await c.fetch("/me/parcels",{
+    address_id:registration.warehouse_address.id,
+    tracking_no:waybillNo,
+    carrier_code:"sf",
+    order_ids:[],
+  },"POST",201);
+
+  const {draft:order}=await createAndPay(c,[{
+    category_id:offer.category_id,offer_id:offer.offer_id,quantity:1,options:{},
+    attributes:{name:"Quick-Link Jacket"},items:[{position:1,sample_code:"QL-01",name:"Quick-Link Jacket"}],
+  }],terms);
+
+  // Cross-tenant guard: another customer cannot link our parcel or link to our order
+  await otherCustomer.fetch(`/me/parcels/${advice.id}/link-order`,{order_id:order.id},"POST",404);
+
+  const linked1=await c.fetch(`/me/parcels/${advice.id}/link-order`,{order_id:order.id},"POST",200);
+  assert.equal(linked1.linked,true);
+  // Idempotent repeat call
+  const linked2=await c.fetch(`/me/parcels/${advice.id}/link-order`,{order_id:order.id},"POST",200);
+  assert.equal(linked2.linked,true);
+
+  const ordAfterLink=await c.fetch(`/orders/${order.id}`);
+  assert.equal(ordAfterLink.parcels.length,1);
+  assert.equal(ordAfterLink.parcels[0].tracking_norm,waybillNo);
+  assert.equal(ordAfterLink.parcels[0].carrier_code,"sf");
+
+  // 2. Super-admin & finance media upload + check-in & unpack + /staff/object-summary RBAC
+  const adminLabelPhoto=await admin.photo("label_photo");
+  assert.ok(adminLabelPhoto);
+  const adminPayoutProof=await admin.photo("attachment");
+  assert.ok(adminPayoutProof);
+
+  const pkg=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:waybillNo,advice_id:advice.id,carrier_code:"sf",outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+  const {locations}=await receiving.fetch("/staff/desk");
+  const loc=locations.find((l:{code:string})=>l.code==="R-01")??locations[0];
+  const sampleOne="S-"+randomUUID().slice(0,8).toUpperCase();
+  const sampleTwo="S-"+randomUUID().slice(0,8).toUpperCase();
+  const unpacked=await receiving.fetch(`/staff/packages/${pkg.id}/items`,{
+    revision:pkg.revision,
+    items:[{code:sampleOne,location_id:loc.id},{code:sampleTwo,location_id:loc.id}],
+  },"POST",201);
+  const pkgDetail=await receiving.fetch(`/staff/packages/${pkg.id}`);
+  const pkgCode=pkgDetail.parcel.code;
+
+  // Customer and unauthorized inspector RBAC checks on /staff/object-summary
+  await c.fetch(`/staff/object-summary?kind=item&ref=${encodeURIComponent(sampleOne)}`,undefined,"GET",403);
+  await inspector.fetch(`/staff/object-summary?kind=package&ref=${encodeURIComponent(pkgCode)}`,undefined,"GET",403);
+  await inspector.fetch(`/staff/object-summary?kind=item&ref=${encodeURIComponent(sampleOne)}`,undefined,"GET",403);
+
+  const sumTracking=await receiving.fetch(`/staff/object-summary?kind=tracking&ref=${encodeURIComponent(waybillNo)}`);
+  assert.equal(sumTracking.kind,"tracking");
+  assert.equal(sumTracking.tracker.package_code,pkgCode);
+  assert.ok(Array.isArray(sumTracking.tracker.media_ids) && sumTracking.tracker.media_ids.length>=1);
+
+  const sumPackage=await receiving.fetch(`/staff/object-summary?kind=package&ref=${encodeURIComponent(pkgCode)}`);
+  assert.equal(sumPackage.kind,"package");
+  assert.equal(sumPackage.parcel.code,pkgCode);
+  assert.equal(sumPackage.items.length,2);
+
+  const sumItem=await receiving.fetch(`/staff/object-summary?kind=item&ref=${encodeURIComponent(sampleOne)}`);
+  assert.equal(sumItem.kind,"item");
+  assert.equal(sumItem.item.code,sampleOne);
+
+  // 3. Create incident by human-readable item_code (S-...) instead of raw UUID, and resolve compensation with attachment proof
+  const incQueue=await receiving.fetch("/staff/incidents");
+  assert.ok(Array.isArray(incQueue.eligible_items));
+  assert.ok(incQueue.eligible_items.some((it:{code:string})=>it.code===sampleOne));
+
+  const createdInc=await receiving.fetch("/staff/incidents",{
+    item_code:sampleOne,
+    kind:"damage",
+    summary_en:"Corner scuff discovered during shelf transfer",
+    evidence_ids:[await receiving.photo("defect")],
+  },"POST",201);
+  assert.equal(createdInc.state,"open");
+  const custInc=await c.fetch(`/me/incidents/${createdInc.id}`);
+  assert.equal(custInc.item_id,unpacked.item_ids[0]);
+  assert.equal(custInc.item_code,sampleOne);
+
+  await receiving.fetch(`/staff/incidents/${createdInc.id}/propose`,{
+    compensation_cents:1500,
+    summary_en:"Offering $15.00 compensation for shelf scuff",
+  });
+  await admin.fetch(`/staff/incidents/${createdInc.id}/approve`,{
+    reason:"Approved $15.00 incident compensation",
+  });
+  await c.fetch(`/me/incidents/${createdInc.id}/response`,{
+    decision:"accept",
+    note:"Accepted compensation",
+  });
+  const settledInc=await admin.fetch(`/staff/incidents/${createdInc.id}/resolve`,{
+    payout_reference:"BANK-TX-99881",
+    payout_method:"manual_bank_transfer",
+    paid_amount_cents:1500,
+    proof_media_ids:[adminPayoutProof],
+    note:"Transferred $15.00",
+  });
+  assert.equal(settledInc.state,"resolved");
+  assert.equal(settledInc.paid,true);
+  // Support can read the payout proof attachment linked to incident_cases
+  const proofUrls=await supportOnly.fetch(`/media/${adminPayoutProof}/url`);
+  assert.ok(proofUrls.url);
+
+  // 4. Enriched customerDesk (active_batches + recent_destinations) & adminDesk (customerUsers with email masking for non-super_admin)
+  const dispTwo=await c.fetch(`/me/items/${unpacked.item_ids[1]}/dispositions`,{
+    action:"to_forwarder",
+    destination:{recipient:"Shenzhen Forwarder Hub",phone:"13900139000",address:"Warehouse 9, Baoan, Shenzhen",member_code:"FWD-7788"},
+    terms_version_id:termsId,
+  },"POST",201);
+  const plannedBatch=await c.fetch("/dispatch-batches",{disposition_ids:[dispTwo.id]},"POST",201);
+  await c.fetch(`/dispatch-batches/${plannedBatch.batch_id}/confirm`,{revision:plannedBatch.revision});
+
+  const sumBatch=await receiving.fetch(`/staff/object-summary?kind=batch&ref=${plannedBatch.batch_id}`);
+  assert.equal(sumBatch.kind,"batch");
+  assert.equal(sumBatch.batch.id,plannedBatch.batch_id);
+
+  const custDesk=await c.fetch("/me/desk");
+  assert.ok(Array.isArray(custDesk.active_batches) && custDesk.active_batches.some((b:{id:string})=>b.id===plannedBatch.batch_id));
+  assert.ok(Array.isArray(custDesk.recent_destinations) && custDesk.recent_destinations.some((d:{member_code?:string})=>d.member_code==="FWD-7788"));
+
+  const superAdminDesk=await admin.fetch("/staff/admin/desk");
+  const fullRow=superAdminDesk.customerUsers.find((u:{receiving_code:string})=>u.receiving_code===registration.receiving_code);
+  assert.ok(fullRow && !String(fullRow.email).includes("***"));
+
+  const supportDesk=await supportOnly.fetch("/staff/admin/desk");
+  const maskedRow=supportDesk.customerUsers.find((u:{receiving_code:string})=>u.receiving_code===registration.receiving_code);
+  assert.ok(maskedRow && String(maskedRow.email).includes("***"));
+});
+
 test("all core operations have a validated success response",assertCoreCoverage);

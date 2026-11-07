@@ -11,7 +11,10 @@ import { effectiveDispatchCharge } from "./dispatch";
 
 export async function items(db:DB,actor:Actor) {
   return (await db.query(`select w.id item_id,w.code,w.custody_state,w.revision,w.identity_state,w.condition_state,w.storage_until,w.received_at,
-    p.code package_code,a.order_line_id,o.id order_id,o.public_no order_no,sl.code location_code,
+    p.code package_code,p.advice_id inbound_advice_id,
+    (select t.tracking_norm from tracking_records t where t.package_id=p.id and t.direction='inbound' and t.closed_at is null order by t.generation desc limit 1) inbound_tracking_norm,
+    (select max(sp.ends_at) from storage_periods sp where sp.item_id=w.id) paid_storage_until,
+    a.order_line_id,e.declared_fields,o.id order_id,o.public_no order_no,sl.code location_code,
     (select coalesce(jsonb_agg(jsonb_build_object('id',c.id,'code',c.code,'custody_state',c.custody_state) order by c.code),'[]'::jsonb)
      from warehouse_items c where c.parent_item_id=w.id) components,
     (select jsonb_build_object(
@@ -19,10 +22,16 @@ export async function items(db:DB,actor:Actor) {
       'expired',r.expires_at<=now(),
       'in_use',exists(select 1 from reference_reservations rr where rr.reference_id=r.id and rr.released_at is null)
     ) from reference_samples r where r.item_id=w.id order by r.revision desc limit 1) reference_sample,
+    (select jsonb_build_object('id',d.id,'action',d.action,'state',d.state,'destination',d.destination,'return_info',d.return_info)
+     from disposition_requests d where d.item_id=w.id and d.state not in ('completed','cancelled') order by d.revision desc limit 1) active_disposition,
+    (select bi.batch_id from dispatch_batch_items bi where bi.item_id=w.id and bi.released_at is null limit 1) active_batch_id,
+    (select jsonb_build_object('id',s.id,'batch_id',s.batch_id,'tracking_norm',s.tracking_norm,'carrier_code',s.carrier_code,'state',s.state,'shipped_at',s.shipped_at)
+     from shipment_items si join shipments s on s.id=si.shipment_id where si.item_id=w.id order by s.shipped_at desc nulls last,s.id desc limit 1) outbound_shipment,
     array(select d.id from disposition_requests d where d.item_id=w.id and d.state='requested'
       and not exists(select 1 from dispatch_batch_items bi where bi.disposition_id=d.id and bi.released_at is null)) instructions
     from warehouse_items w join packages p on p.id=w.package_id
     left join order_line_item_links a on a.item_id=w.id and a.unlinked_at is null
+    left join expected_items e on e.id=a.expected_item_id
     left join order_lines l on l.id=a.order_line_id left join orders o on o.id=l.order_id
     left join storage_locations sl on sl.id=w.location_id
     where w.org_id=$1 and w.parent_item_id is null order by w.received_at desc limit 400`,[organization(actor)])).rows.map(w=>({
@@ -107,7 +116,7 @@ export async function customerDesk(db:DB,actor:Actor) {
     from package_advices a
     join tracking_records t on t.advice_id=a.id and t.closed_at is null left join packages p on p.advice_id=a.id
     where a.org_id=$1 order by a.created_at desc limit 200`,[org])).rows;
-  const shipments=(await db.query(`select s.id,s.state,s.tracking_norm,s.carrier_code,s.shipped_at,b.action from shipments s join dispatch_batches b on b.id=s.batch_id
+  const shipments=(await db.query(`select s.id,s.batch_id,s.state,s.tracking_norm,s.carrier_code,s.shipped_at,b.action from shipments s join dispatch_batches b on b.id=s.batch_id
     where b.org_id=$1 and s.shipped_at is not null order by s.shipped_at desc limit 200`,[org])).rows;
   const quotes=(await db.query(`select q.id,q.revision,q.amount_cents,q.expires_at,'dispatch' purpose,q.batch_id,b.action,
     q.snapshot, (select jsonb_object_agg(w.id::text,w.code) from dispatch_batch_items bi join warehouse_items w
@@ -117,6 +126,32 @@ export async function customerDesk(db:DB,actor:Actor) {
     from storage_quotes q join disposition_requests d on d.id=q.disposition_id join warehouse_items w on w.id=d.item_id and w.org_id=d.org_id
     where d.org_id=$1 and q.accepted_at is null and q.expires_at>now() limit 100`,[org])).rows;
   const batches=(await db.query("select id,state,revision,action from dispatch_batches where org_id=$1 and state='draft' limit 100",[org])).rows;
+  const active_batches=(await db.query(`select b.id,b.state,b.revision,b.action,b.destination_snapshot,
+    q.id quote_id,q.amount_cents quote_amount_cents,q.expires_at quote_expires_at,
+    coalesce((select array_agg(w.code order by w.code) from dispatch_batch_items bi join warehouse_items w on w.id=bi.item_id where bi.batch_id=b.id and bi.released_at is null),array[]::text[]) item_codes,
+    coalesce((select array_agg(distinct s.tracking_norm) filter (where s.tracking_norm is not null) from shipments s where s.batch_id=b.id),array[]::text[]) waybills
+    from dispatch_batches b
+    left join lateral(select id,amount_cents,expires_at from dispatch_quote_versions where batch_id=b.id order by revision desc limit 1) q on true
+    where b.org_id=$1 order by b.id desc limit 60`,[org])).rows;
+  const destRows=(await db.query<{action:string;destination:Record<string,unknown>}>(
+    `select action,destination from disposition_requests
+     where org_id=$1 and destination is not null and action in ('to_forwarder','to_domestic_address','return_to_seller')
+     order by id desc limit 80`,
+    [org]
+  )).rows;
+  const seenDest=new Set<string>();
+  const recent_destinations:{action:string;recipient:string;phone:string;address:string;member_code?:string}[]=[];
+  for(const row of destRows) {
+    const d=row.destination??{};
+    const recipient=String(d.recipient??"").trim(),phone=String(d.phone??"").trim(),address=String(d.address??"").trim();
+    const member_code=d.member_code?String(d.member_code).trim():undefined;
+    if(!recipient || !phone || !address) continue;
+    const key=`${row.action}|${recipient.toLowerCase()}|${phone}|${address.toLowerCase()}|${member_code??""}`;
+    if(seenDest.has(key)) continue;
+    seenDest.add(key);
+    recent_destinations.push({action:row.action,recipient,phone,address,...(member_code?{member_code}:{})});
+    if(recent_destinations.length>=12) break;
+  }
   const reports=(await db.query(`select r.order_id,r.public_no,r.published_version,o.public_no order_no from reports r join orders o on o.id=r.order_id
     where o.org_id=$1 and r.published_version is not null limit 200`,[org])).rows;
   const tickets=(await db.query(`select id,public_no,subject,state,details->>'decision' decision from tickets where org_id=$1 order by created_at desc limit 100`,[org])).rows;
@@ -131,7 +166,7 @@ export async function customerDesk(db:DB,actor:Actor) {
     w.code,w.custody_state
     from reference_samples r join warehouse_items w on w.id=r.item_id
     where r.org_id=$1 order by r.expires_at desc,r.revision desc limit 100`,[org])).rows;
-  return {orders,advices,shipments,quotes,batches,reports,tickets,notices,references,profile:await receiving(db,actor.id),email_delivery:await customerEmailDeliveryStatus(db,actor),items:await items(db,actor),bills:await bills(db,actor)};
+  return {orders,advices,shipments,quotes,batches,active_batches,recent_destinations,reports,tickets,notices,references,profile:await receiving(db,actor.id),email_delivery:await customerEmailDeliveryStatus(db,actor),items:await items(db,actor),bills:await bills(db,actor)};
 }
 export async function customerNotifications(db:DB,actor:Actor,unread=false,before:string|null=null) {
   const org=organization(actor),pageSize=50;
@@ -430,6 +465,30 @@ export async function adminDesk(db:DB,actor:Actor) {
           or u.mfa_secret_enc is not null
        order by u.created_at asc`
     )).rows:[],
+    customerUsers:(ops || actor.roles.includes("super_admin"))?(await db.query<{
+      id:string;org_id:string;receiving_code:string;status:string;created_at:Date;
+      original_email:string|null;normalized_email:string|null;order_count:number;stored_item_count:number;
+    }>(
+      `select u.id,p.org_id,p.receiving_code,u.status,u.created_at,
+              ue.original_email,ue.normalized_email::text as normalized_email,
+              (select count(*)::int from orders o where o.org_id=p.org_id) order_count,
+              (select count(*)::int from warehouse_items w where w.org_id=p.org_id and w.custody_state in ('received','stored') and w.parent_item_id is null) stored_item_count
+       from customer_receiving_profiles p
+       join users u on u.id=p.user_id
+       left join user_emails ue on ue.user_id=u.id and ue.is_primary
+       order by u.created_at desc limit 150`
+    )).rows.map(r=>({
+      id:r.id,
+      org_id:r.org_id,
+      receiving_code:r.receiving_code,
+      status:r.status,
+      created_at:r.created_at,
+      email:actor.roles.includes("super_admin")
+        ?(r.original_email??r.normalized_email)
+        :(r.normalized_email?r.normalized_email.replace(/(^.).*(@.*$)/,"$1***$2"):null),
+      order_count:r.order_count,
+      stored_item_count:r.stored_item_count,
+    })):[],
     templates:templates?(await db.query(`select t.id,t.template_key,t.category_id,t.service_type_id,t.version,t.state,t.content,
       t.content_hash,t.author_id,t.reviewer_id,t.published_at,
       array(select c.code from template_capabilities tc join capabilities c on c.id=tc.capability_id
@@ -513,12 +572,14 @@ export async function staffOrderDetail(db:DB,actor:Actor,publicNo:string) {
   const {rows:lines}=await db.query(`select l.quantity,s.title,l.id,
     (select count(*)::int from expected_items e where e.order_line_id=l.id and e.in_scope) current_positions
     from order_lines l join service_offers s on s.id=l.offer_id where l.order_id=$1 order by l.id`,[id]);
-  const {rows:items}=await db.query(`select w.code,w.custody_state,w.identity_state,loc.code location,e.position
+  const {rows:items}=await db.query(`select w.code,w.custody_state,w.identity_state,loc.code location,e.position,pkg.code package_code
     from order_lines l join order_line_item_links a on a.order_line_id=l.id and a.org_id=$2 and a.unlinked_at is null
     join expected_items e on e.id=a.expected_item_id
-    join warehouse_items w on w.id=a.item_id and w.org_id=a.org_id left join storage_locations loc on loc.id=w.location_id
+    join warehouse_items w on w.id=a.item_id and w.org_id=a.org_id
+    left join packages pkg on pkg.id=w.package_id
+    left join storage_locations loc on loc.id=w.location_id
     where l.order_id=$1 order by l.id,e.position`,[id,org_id]);
-  const {rows:parcels}=await db.query(`select t.tracking_norm,t.carrier_code,t.transport_state,p.code,p.state custody,p.received_at
+  const {rows:parcels}=await db.query(`select t.tracking_norm,t.carrier_code,t.transport_state,t.sync_state,p.code,p.state custody,p.received_at
     from orders o join tracking_records t on t.org_id=o.org_id and t.direction='inbound' and t.closed_at is null
     left join packages p on p.id=t.package_id and p.org_id=o.org_id
     where o.id=$1 and ${inboundBelongsToOrder} order by t.tracking_norm`,[id]);
@@ -532,7 +593,7 @@ export async function staffOrderDetail(db:DB,actor:Actor,publicNo:string) {
   const customer=(await db.query(`select u.id,u.status,p.receiving_code,e.normalized_email::text as email
     from customer_receiving_profiles p join users u on u.id=p.user_id left join user_emails e on e.user_id=u.id and e.is_primary
     where p.org_id=$1 limit 1`,[org_id])).rows[0]??null;
-  const shipments=(await orderShipments(db,id,org_id)).map(({state,tracking_norm,shipped_at,action})=>({state,tracking_norm,shipped_at,action}));
+  const shipments=(await orderShipments(db,id,org_id)).map(({id:shipment_id,batch_id,carrier_code,state,tracking_norm,shipped_at,action})=>({id:shipment_id,batch_id,carrier_code,state,tracking_norm,shipped_at,action}));
   return {order:orderDTO(order),created_at:order.created_at,paid_at:order.paid_at,
     samples_ready_at:order.samples_ready_at,sla_due_at:order.sla_due_at,report_published_at:order.report_published_at,closed_at:order.closed_at,
     customer,lines,items,parcels,tickets,blocks,activity,shipments};
@@ -889,4 +950,138 @@ export async function orderLedgerCsv(db:DB,actor:Actor,opts:{includeTest?:boolea
     "",
   ].map(csvCell).join(","));
   return lines.join("\n")+"\n";
+}
+
+export async function readStaffObjectSummary(
+  db:DB,
+  actor:Actor,
+  kind:"tracking"|"package"|"item"|"batch",
+  ref:string
+) {
+  const clean=ref.trim();
+  const canReadAllStaffMedia=actor.roles.some(r=>["warehouse_admin","super_admin"].includes(r));
+  if(kind==="tracking") {
+    role(actor,"warehouse_admin","receiver","support","finance","super_admin");
+    const norm=waybill(clean);
+    const tracker=(await db.query(
+      `select t.id,t.direction,t.tracking_norm,t.carrier_code,t.transport_state,t.sync_state,
+              t.latest_event_at,t.last_success_at,t.next_query_at,t.advice_id,t.package_id,t.shipment_id,
+              p.code package_code,p.state package_state,p.received_at package_received_at,
+              s.batch_id,s.state shipment_state,s.shipped_at,coalesce(s.packed_media_ids,array[]::uuid[]) shipment_media_ids,
+              (select crp.receiving_code from customer_receiving_profiles crp where crp.org_id=t.org_id limit 1) receiving_code,
+              (select coalesce(array_agg(distinct o.public_no order by o.public_no),array[]::text[])
+               from advice_orders ao join orders o on o.id=ao.order_id where ao.advice_id=t.advice_id) order_numbers,
+              (select ts.events_json from tracking_snapshots ts where ts.tracker_id=t.id and ts.locale='zh-CN'
+               order by ts.latest_event_at desc nulls last,ts.fetched_at desc limit 1) events_zh,
+              (select count(*)::int from tracking_events te where te.tracker_id=t.id) event_count,
+              (select count(*)::int from tracking_events te join tracking_translations tr on tr.event_id=te.id and tr.locale='en'
+               where te.tracker_id=t.id and tr.source not like 'draft:%') published_en_count
+       from tracking_records t
+       left join packages p on p.id=t.package_id
+       left join shipments s on s.id=t.shipment_id
+       where t.tracking_norm=$1 and t.closed_at is null
+       order by t.generation desc,t.id desc limit 1`,
+      [norm]
+    )).rows[0];
+    guard(tracker,"NOT_FOUND","Tracking record not found.",404);
+    const mediaIds=canReadAllStaffMedia
+      ?(tracker.package_id
+        ?(await db.query<{id:string}>("select id from media_assets where package_id=$1 and status='ready' order by created_at limit 12",[tracker.package_id])).rows.map(r=>r.id)
+        :Array.isArray(tracker.shipment_media_ids)?tracker.shipment_media_ids.slice(0,12):[])
+      :[];
+    const {shipment_media_ids:_unused,...trackerClean}=tracker;
+    return {kind:"tracking",tracker:{...trackerClean,media_ids:mediaIds}};
+  }
+  if(kind==="package") {
+    role(actor,"receiver","warehouse_admin","support","super_admin");
+    const isUuid=/^[0-9a-f-]{36}$/i.test(clean);
+    const parcel=(await db.query(
+      `select p.id,p.code,p.state,p.revision,p.received_quantity,p.received_at,p.weight_g,p.condition_note,
+              sl.code location_code,
+              (select crp.receiving_code from customer_receiving_profiles crp where crp.org_id=p.org_id limit 1) receiving_code,
+              t.tracking_norm,t.carrier_code,t.transport_state,t.sync_state,
+              (select coalesce(array_agg(distinct o.public_no order by o.public_no),array[]::text[])
+               from advice_orders ao join orders o on o.id=ao.order_id where ao.advice_id=p.advice_id) order_numbers
+       from packages p
+       left join storage_locations sl on sl.id=p.location_id
+       left join tracking_records t on t.package_id=p.id and t.direction='inbound' and t.closed_at is null
+       where ${isUuid?"p.id=$1":"upper(p.code)=upper($1)"} limit 1`,
+      [clean]
+    )).rows[0];
+    guard(parcel,"NOT_FOUND","Parcel not found.",404);
+    const pkgItems=(await db.query(
+      `select w.id,w.code,w.identity_state,w.condition_state,w.custody_state,sl.code location,o.public_no order_no
+       from warehouse_items w
+       left join storage_locations sl on sl.id=w.location_id
+       left join order_line_item_links a on a.item_id=w.id and a.unlinked_at is null
+       left join order_lines l on l.id=a.order_line_id
+       left join orders o on o.id=l.order_id
+       where w.package_id=$1 order by w.received_at,w.code limit 100`,
+      [parcel.id]
+    )).rows;
+    const mediaIds=canReadAllStaffMedia
+      ?(await db.query<{id:string}>("select id from media_assets where package_id=$1 and status='ready' order by created_at limit 12",[parcel.id])).rows.map(r=>r.id)
+      :[];
+    return {kind:"package",parcel:{...parcel,media_ids:mediaIds},items:pkgItems};
+  }
+  if(kind==="item") {
+    role(actor,"receiver","warehouse_admin","support","super_admin");
+    const isUuid=/^[0-9a-f-]{36}$/i.test(clean);
+    const item=(await db.query(
+      `select w.id,w.code,w.revision,w.identity_state,w.condition_state,w.custody_state,w.received_at,w.storage_until,
+              p.code package_code,sl.code location,
+              (select t.tracking_norm from tracking_records t where t.package_id=p.id and t.direction='inbound' and t.closed_at is null limit 1) inbound_tracking_norm,
+              (select crp.receiving_code from customer_receiving_profiles crp where crp.org_id=w.org_id limit 1) receiving_code,
+              o.public_no order_no,o.state order_state,e.position expected_position,e.declared_fields,
+              (select jsonb_build_object('id',d.id,'action',d.action,'state',d.state,'destination',d.destination)
+               from disposition_requests d where d.item_id=w.id and d.state not in ('completed','cancelled') order by d.revision desc limit 1) active_disposition,
+              (select bi.batch_id from dispatch_batch_items bi where bi.item_id=w.id and bi.released_at is null limit 1) active_batch_id
+       from warehouse_items w
+       join packages p on p.id=w.package_id
+       left join storage_locations sl on sl.id=w.location_id
+       left join order_line_item_links a on a.item_id=w.id and a.unlinked_at is null
+       left join expected_items e on e.id=a.expected_item_id
+       left join order_lines l on l.id=a.order_line_id
+       left join orders o on o.id=l.order_id
+       where ${isUuid?"w.id=$1":"upper(w.code)=upper($1)"} limit 1`,
+      [clean]
+    )).rows[0];
+    guard(item,"NOT_FOUND","Warehouse item not found.",404);
+    const events=(await db.query(
+      `select se.id,se.action,se.created_at,fl.code from_location,tl.code to_location
+       from storage_events se
+       left join storage_locations fl on fl.id=se.from_location_id
+       left join storage_locations tl on tl.id=se.to_location_id
+       where se.item_id=$1 order by se.created_at desc,se.id desc limit 15`,
+      [item.id]
+    )).rows;
+    const mediaIds=canReadAllStaffMedia
+      ?(await db.query<{id:string}>("select id from media_assets where item_id=$1 and status='ready' order by created_at limit 12",[item.id])).rows.map(r=>r.id)
+      :[];
+    return {kind:"item",item:{...item,media_ids:mediaIds},events};
+  }
+  role(actor,"warehouse_admin","support","finance","super_admin");
+  const batchId=z.string().uuid().parse(clean);
+  const batch=(await db.query(
+    `select b.id,b.revision,b.state,b.action,b.destination_snapshot,
+            (select crp.receiving_code from customer_receiving_profiles crp where crp.org_id=b.org_id limit 1) receiving_code,
+            q.id quote_id,q.revision quote_revision,q.amount_cents,q.expires_at,q.accepted_at,q.snapshot quote_snapshot,
+            coalesce((select jsonb_agg(jsonb_build_object('id',w.id,'code',w.code,'custody_state',w.custody_state) order by w.code)
+              from dispatch_batch_items bi join warehouse_items w on w.id=bi.item_id
+              where bi.batch_id=b.id and bi.released_at is null),'[]'::jsonb) items
+     from dispatch_batches b
+     left join lateral(select * from dispatch_quote_versions where batch_id=b.id order by revision desc limit 1) q on true
+     where b.id=$1`,
+    [batchId]
+  )).rows[0];
+  guard(batch,"NOT_FOUND","Dispatch batch not found.",404);
+  const shipments=(await db.query(
+    `select s.id,s.state,s.weight_g,s.carrier_code,s.tracking_norm,s.shipped_at,s.returned_at,
+            t.transport_state,t.sync_state
+     from shipments s
+     left join tracking_records t on t.shipment_id=s.id and t.closed_at is null
+     where s.batch_id=$1 order by s.shipped_at nulls first,s.id`,
+    [batchId]
+  )).rows;
+  return {kind:"batch",batch,shipments};
 }

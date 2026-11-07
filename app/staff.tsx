@@ -4,7 +4,7 @@ import Link from "next/link";
 import { ScopeReview } from "./scope-review";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { Action, checked, Empty, ErrorBlock, Field, FileInput, Form, Panel, Photo, request, RequestError, Select, stamp, Table, Tag, text, upload, useLoad, usd, type Row } from "./ui";
+import { Action, checked, CodeButton, DateInput, Empty, ErrorBlock, Field, FileInput, Form, MediaButton, ModalDrawer, Panel, Photo, request, RequestError, Select, StaffObjectDrawer, type StaffObjectTarget, stamp, Table, Tag, text, upload, useLoad, usd, type Row } from "./ui";
 import { switchDemoPortal } from "./chrome";
 import { OverdueDisposalDesk, StocktakeReviewAndIncidentPanel } from "./storage-desk";
 import { staffTabs } from "../packages/core/portal-routes";
@@ -30,6 +30,7 @@ export function WarehouseDesk({path,actor,demo=false}:{path:string;actor:Row;dem
   const packageDetail=useLoad(packageId?"/staff/packages/"+packageId:null);
   const selectedPackage=packageDetail.data?.parcel.id===packageId?packageDetail.data:undefined;
   const [itemCode,setItemCode]=useState("");
+  const [drawer,setDrawer]=useState<StaffObjectTarget|null>(null);
   const itemDetail=useLoad(itemCode?"/staff/items/by-code?"+new URLSearchParams({code:itemCode}):null);
   useEffect(()=>{
     if(path!=="/wh/intake")return;
@@ -218,10 +219,10 @@ export function WarehouseDesk({path,actor,demo=false}:{path:string;actor:Row;dem
       </Panel>
     </>}
     {current==="packages"&&<>
-      <Panel title="外箱及实收包裹列表" subtitle="点击包裹编号进入单包明细、标签打印与实物拆包记录。">
+      <Panel title="外箱及实收包裹列表" subtitle="点击包裹编号进入单包明细，或点击原始运单号直接弹窗查看物流轨迹。">
         <Table headers={["包裹编号","原始运单","实收件数","入库状态","操作"]} rows={data.packages.map((parcel:Row)=>[
           <Link className="code" href={"/wh/packages/"+encodeURIComponent(parcel.code)}>{parcel.code}</Link>,
-          <span className="code">{parcel.tracking_norm??"—"}</span>,
+          parcel.tracking_norm?<CodeButton code={parcel.tracking_norm} onClick={()=>setDrawer({kind:"tracking",ref:parcel.tracking_norm})}/>:<span className="muted">—</span>,
           `${parcel.received_quantity} 件`,
           <Tag tone="green">{label(parcel.state)}</Tag>,
           <Link className="button sm" href={"/wh/packages/"+encodeURIComponent(parcel.code)}>包裹详情</Link>,
@@ -288,11 +289,12 @@ export function WarehouseDesk({path,actor,demo=false}:{path:string;actor:Row;dem
     </>}
     {current==="sync"&&<OfflineSyncQueue tasks={data.tasks}/>}
     {current==="dispatch"&&<>
-      {canShip?<><DispatchQueue/>
+      {canShip?<><DispatchQueue onOpenDrawer={setDrawer}/>
       {!!data.retain.length&&<Panel title="续存报价">
-        {data.retain.map((i:Row)=><p key={i.id}>{i.code} <Action run={async()=>{await request("/staff/dispositions/"+i.id+"/storage-quote","POST",{});reload();}}>生成 30 天报价</Action></p>)}
+        {data.retain.map((i:Row)=><p key={i.id}><CodeButton code={i.code} onClick={()=>setDrawer({kind:"item",ref:i.code})}/> <Action run={async()=>{await request("/staff/dispositions/"+i.id+"/storage-quote","POST",{});reload();}}>生成 30 天报价</Action></p>)}
       </Panel>}</>:<Panel title="出库待办"><p className="muted">当前演示角色无出库交接权限，请切换为“仓管”或“超级管理员”查看并操作发运批次。</p></Panel>}
     </>}
+    <StaffObjectDrawer target={drawer} onClose={()=>setDrawer(null)}/>
   </>;
 }
 
@@ -343,7 +345,7 @@ const dispatchQueueLabels:Record<string,string>={
   weighing:"待称重报价",payment:"待客户确认或付款",packing:"待装箱",
   handover:"待交接",shipped:"已交接",returned:"有退回记录",blocked:"付款需核对",
 };
-function DispatchQueue() {
+function DispatchQueue({onOpenDrawer}:{onOpenDrawer?:(t:StaffObjectTarget)=>void}) {
   const search=useSearchParams();
   const state=search.get("state")??"weighing",reference=search.get("reference")?.trim()??"";
   const params=new URLSearchParams({state,...(reference?{reference}:{})});
@@ -362,9 +364,29 @@ function DispatchQueue() {
     </form>
     {error&&<ErrorBlock error={error}/>}
     {!data&&!error&&<p role="status">正在查询批次…</p>}
-    {data&&!error&&<Table headers={["批次","去向","待发实物","已装箱待交接","已交接","退回包裹","运单","退货截止","报价到期"]} rows={data.rows.map((batch:Row)=>[
-      <Link className="code" href={"/wh/dispatch/"+batch.id}>{batch.id}</Link>,dispatchAction(batch.action),
-      batch.remaining,batch.packed,batch.shipped,batch.returns,batch.waybills?.join("、")??"—",stamp(batch.return_deadline),stamp(batch.expires_at),
+    {data&&!error&&<Table headers={["批次编号","去向与状态","实物进度","关联运单","退货 / 报价截止","操作"]} rows={data.rows.map((batch:Row)=>[
+      <div className="cell-stack">
+        <Link className="code" href={"/wh/dispatch/"+batch.id} title={batch.id}>#{String(batch.id).slice(0,8)}</Link>
+        {onOpenDrawer&&<small><button type="button" className="code-btn" onClick={()=>onOpenDrawer({kind:"batch",ref:batch.id})}>速览清单</button></small>}
+      </div>,
+      <div className="cell-stack">
+        <strong>{dispatchAction(batch.action)}</strong>
+        <div><Tag>{label(batch.state)}</Tag></div>
+      </div>,
+      <div className="cell-stack">
+        <span>待发 <strong>{batch.remaining}</strong> · 已装箱 <strong>{batch.packed}</strong></span>
+        <small>已交接 {batch.shipped}{batch.returns?` · 退回 ${batch.returns}`:""}</small>
+      </div>,
+      (batch.waybills?.length)?<div className="actions">
+        {(batch.waybills as string[]).map(wb=>onOpenDrawer
+          ?<CodeButton key={wb} code={wb} onClick={()=>onOpenDrawer({kind:"tracking",ref:wb})}/>
+          :<span key={wb} className="code">{wb}</span>)}
+      </div>:<span className="muted">—</span>,
+      <div className="cell-stack">
+        <span>退货：{stamp(batch.return_deadline)}</span>
+        <small>报价：{stamp(batch.expires_at)}</small>
+      </div>,
+      <Link className="button sm primary" href={"/wh/dispatch/"+batch.id}>进入作业 →</Link>,
     ])} empty="这个状态下暂无符合条件的批次。"/>}
   </Panel>;
 }
@@ -408,6 +430,7 @@ function ScanAndSubmit({items,label,run,children}:{items:Row[];label:string;run:
 export function WarehouseDispatchBatch({id}:{id:string}) {
   const {data,error,reload}=useLoad("/staff/dispatch-batches/"+id);
   const carriers=useLoad("/carriers");
+  const [drawer,setDrawer]=useState<StaffObjectTarget|null>(null);
   const b=data?.batch;
   return <>
     <div className="page-head row"><div><Link href="/wh/dispatch">← 出库队列</Link>
@@ -435,8 +458,11 @@ export function WarehouseDispatchBatch({id}:{id:string}) {
       <Panel title="包裹交接与退回">
         {!data.shipments.length&&<Empty>尚未生成已装箱包裹。</Empty>}
         {data.shipments.map((s:Row)=><div className="card" key={s.id}>
-          <h3>{label(s.state)} · {s.weight_g} 克 · {s.items.length} 件</h3><p className="code">{s.id}</p>
-          <Table headers={["实物码","退回实收"]} rows={s.items.map((i:Row)=>[i.code,i.received_at?stamp(i.received_at):"—"])}/>
+          <h3>{label(s.state)} · {s.weight_g} 克 · {s.items.length} 件</h3><p className="code">包裹单 #{String(s.id).slice(0,8)}</p>
+          <Table headers={["实物码","退回实收"]} rows={s.items.map((i:Row)=>[
+            <CodeButton code={i.code} onClick={()=>setDrawer({kind:"item",ref:i.code})}/>,
+            i.received_at?stamp(i.received_at):"—",
+          ])}/>
           {s.state==="packed"&&<ScanAndSubmit key={s.revision} items={s.items} label="确认已交给快递" run={async fields=>{
             const photo=await upload(fields.get("photo"),"dispatch");
             await request("/staff/shipments/"+s.id+"/handover","POST",{
@@ -448,7 +474,7 @@ export function WarehouseDispatchBatch({id}:{id:string}) {
             <Select name="carrier" label="实际承运商" choices={(carriers.data?.carriers??[]).map((c:Row)=>({id:c.code,label:c.labels["zh-CN"]??c.labels.en}))}/>
             <Field name="tracking" label="实际寄出运单号"/>
           </ScanAndSubmit>}
-          {s.shipped_at&&<p>实际交接 {stamp(s.shipped_at)} · <span className="code">{s.carrier_code} {s.tracking_norm}</span></p>}
+          {s.shipped_at&&<p>实际交接 {stamp(s.shipped_at)} · {s.carrier_code} {s.tracking_norm?<CodeButton code={s.tracking_norm} onClick={()=>setDrawer({kind:"tracking",ref:s.tracking_norm})}/>:"—"}</p>}
           {s.shipped_at&&<details><summary>查看中文物流轨迹 · {label(s.transport_state??"unknown")}</summary>
             <p>同步状态 {label(s.sync_state??"unknown")} · 更新 {stamp(s.tracking_updated_at)}</p>
             <ol className="timeline">{(s.tracking_events??[]).map((event:Row)=><li key={event.id}>{stamp(event.occurred_at)} · {event.text}</li>)}</ol>
@@ -469,38 +495,63 @@ export function WarehouseDispatchBatch({id}:{id:string}) {
               <Select name="location" label="库位" choices={options(data.locations)}/><Photo label="退回实物照片"/>
             </Form>
           </details>}
-          <div className="actions">{s.evidence_ids.map((media:string)=><a className="button" key={media}
-            href={"/api/v1/media/"+media} target="_blank" rel="noreferrer">查看作业照片</a>)}</div>
+          {s.evidence_ids?.length>0&&<div className="actions" style={{marginTop:8}}>
+            <MediaButton ids={s.evidence_ids} label={`查看装箱/交接照片 (${s.evidence_ids.length})`}/>
+          </div>}
         </div>)}
       </Panel>
     </>}
+    <StaffObjectDrawer target={drawer} onClose={()=>setDrawer(null)}/>
   </>;
 }
 function DispatchQuoteForm({batch,rates,reload}:{batch:Row;rates:Row[];reload:()=>void}) {
   const [count,setCount]=useState(1);
+  const [manualMode,setManualMode]=useState(false);
   const items:Row[]=batch.items??[];
   const maxParcels=Math.min(50,items.length);
   const parcelNumbers=Array.from({length:count},(_,i)=>i+1);
   if(!rates.length) return <Empty>没有生效的运价版本，暂不可报价。</Empty>;
   if(!items.length) return <Empty>该批次没有待发运实物。</Empty>;
-  return <Form label="提交称重并生成报价" run={async fields=>{
-    const parcels=parcelNumbers.map(number=>({
-      item_ids:items.filter(item=>Number(fields.get("parcel-"+item.id)??1)===number).map(item=>item.id),
-      weight_g:Number(fields.get("weight-"+number)),
-    }));
+  return <Form label={manualMode?"提交人工核定运费报价":"提交称重并自动生成报价"} run={async fields=>{
+    const reason=text(fields,"manual_reason");
+    const parcels=parcelNumbers.map(number=>{
+      const manualUsd=text(fields,"manual-usd-"+number);
+      return {
+        item_ids:items.filter(item=>Number(fields.get("parcel-"+item.id)??1)===number).map(item=>item.id),
+        weight_g:Number(fields.get("weight-"+number)),
+        ...(manualMode && manualUsd!==""?{manual_amount_cents:Math.round(Number(manualUsd)*100),...(reason?{manual_reason:reason}:{})}:{}),
+      };
+    });
     if(parcels.some(p=>!p.item_ids.length||!Number.isInteger(p.weight_g)||p.weight_g<1))
       throw new Error("每个包裹至少包含一件指定实物，并填写实际克数。");
-    await request("/staff/dispatch-batches/"+batch.id+"/quote","POST",{revision:batch.revision,rate_version_id:text(fields,"rate"),parcels});
+    if(manualMode) {
+      await request("/staff/dispatch-batches/"+batch.id+"/manual-quote","POST",{
+        revision:batch.revision,rate_version_id:text(fields,"rate"),manual_reason:reason||undefined,parcels,
+      });
+    } else {
+      await request("/staff/dispatch-batches/"+batch.id+"/quote","POST",{revision:batch.revision,rate_version_id:text(fields,"rate"),parcels});
+    }
     reload();
   }}>
-    <Select label="运价版本" name="rate" value={rates[0]?.id} choices={rates.map(rate=>({id:rate.id,label:"版本 "+rate.version}))}/>
+    <div className="fields">
+      <Select label="运价版本" name="rate" value={rates[0]?.id} choices={rates.map(rate=>({id:rate.id,label:"版本 "+rate.version}))}/>
+      <label>计费模式
+        <select value={manualMode?"manual":"standard"} onChange={e=>setManualMode(e.target.value==="manual")}>
+          <option value="standard">按运价表自动计重计费</option>
+          <option value="manual">超规体积 / 偏远地区人工核定运费</option>
+        </select>
+      </label>
+    </div>
     {maxParcels>1&&<label>实际包裹数<select value={count} onChange={e=>setCount(Number(e.target.value))}>
       {Array.from({length:maxParcels},(_,i)=><option key={i+1}>{i+1}</option>)}
     </select></label>}
     {count>1&&<div className="dispatch-assignment" key={count}>{items.map(item=><Select key={item.id} name={"parcel-"+item.id}
       label={"实物 "+item.code+" 所在包裹"} choices={parcelNumbers.map(number=>({id:String(number),label:"包裹 "+number}))}/>)}</div>}
-    <div className="dispatch-assignment">{parcelNumbers.map(number=><Field key={number} label={"包裹 "+number+" 实重（克）"}
-      name={"weight-"+number} type="number" min={1}/>)}</div>
+    <div className="dispatch-assignment">{parcelNumbers.map(number=><div key={number} className="fields">
+      <Field label={"包裹 "+number+" 实重（克）"} name={"weight-"+number} type="number" min={1}/>
+      {manualMode&&<Field label={"包裹 "+number+" 核定运费 (USD)"} name={"manual-usd-"+number} type="number" min={0} step="0.01"/>}
+    </div>)}</div>
+    {manualMode&&<Field label="人工核价原因说明（客户与审计可见）" name="manual_reason" value="超体积抛重或偏远派送附加费人工核定"/>}
   </Form>;
 }
 export function TaskView({id,actor}:{id:string;actor:Row}) {
@@ -509,6 +560,8 @@ export function TaskView({id,actor}:{id:string;actor:Row}) {
   const [drafts,setDrafts]=useState<Row[]>([]);
   const [conflict,setConflict]=useState<{localRevision:number;serverRevision:number;message:string}|null>(null);
   const [online,setOnline]=useState(true);
+  const [checkFilter,setCheckFilter]=useState<"all"|"pending"|"issue"|"done">("all");
+  const [expandedKeys,setExpandedKeys]=useState<Record<string,boolean>>({});
   useEffect(()=>{
     try {
       const saved=localStorage.getItem(draftKey);
@@ -531,6 +584,32 @@ export function TaskView({id,actor}:{id:string;actor:Row}) {
   if(!data)return <p>正在加载检查项…</p>;
   const writable=data.state==="IN_PROGRESS"&&data.assignee_id===actor.id;
   const completeness=data.completeness??{ok:true,missing:[]};
+  const allChecks=data.components.flatMap((m:Row)=>
+    data.content.checks.filter((c:Row)=>Boolean(data.group_id)||!c.component||c.component===m.id).map((c:Row)=>{
+      const attempts=data.results.filter((r:Row)=>r.item_key===c.key&&r.component===m.id);
+      const prev=attempts.find((r:Row)=>r.is_final)??attempts.at(-1);
+      const retryNeeded=attempts.some((r:Row)=>r.details?.retry_required) && attempts.length<3;
+      const isIssue=Boolean(retryNeeded || prev?.details?.uncertain || (prev && ["OBSERVED_ISSUE","BLOCKED"].includes(prev.status)));
+      const isDone=Boolean(prev && !retryNeeded && !prev?.details?.uncertain);
+      return {m,c,attempts,prev,retryNeeded,isIssue,isDone};
+    })
+  );
+  const doneCount=allChecks.filter((x:Row)=>x.isDone).length;
+  const issueCount=allChecks.filter((x:Row)=>x.isIssue).length;
+  const pendingCount=allChecks.length-doneCount;
+  const syncAllDrafts=async()=>{
+    try {
+      await request("/staff/inspection-tasks/"+id+"/results","PUT",{revision:data.revision,results:drafts});
+      saveLocalDrafts([]);reload();
+    } catch(e) {
+      if(e instanceof RequestError && e.code==="VERSION_CONFLICT") {
+        const fresh=await request("/staff/inspection-tasks/"+id);
+        setConflict({localRevision:data.revision,serverRevision:fresh.revision,message:e.message});
+        return;
+      }
+      throw e;
+    }
+  };
   return <><div className="page-head row"><div><p className="eyebrow">WAREHOUSE / INSPECTION WORKBENCH</p><h1 className="code">{data.public_no}</h1>
       <p className="muted">{data.item_code??"对比组"} · {label(data.state)} · 模板版本 <span className="code">{String(data.template_version_id).slice(0,8)}</span> · SLA {stamp(data.sla_due_at)}</p></div>
       <div className="actions"><Tag>{online?"网络在线":"离线草稿模式"}</Tag>{drafts.length>0&&<Tag>待同步草稿 {drafts.length} 项</Tag>}<Link className="button" href="/wh/inspection">返回检查队列</Link></div></div>
@@ -549,19 +628,7 @@ export function TaskView({id,actor}:{id:string;actor:Row}) {
     {drafts.length>0&&!conflict&&writable&&<Panel title="本机离线草稿与待同步队列">
       <p className="muted small">已暂存 {drafts.length} 条检查项结果在本机浏览器，断网不丢失，恢复在线后可一键幂等批量同步。</p>
       <div className="actions">
-        <Action primary run={async()=>{
-          try {
-            await request("/staff/inspection-tasks/"+id+"/results","PUT",{revision:data.revision,results:drafts});
-            saveLocalDrafts([]);reload();
-          } catch(e) {
-            if(e instanceof RequestError && e.code==="VERSION_CONFLICT") {
-              const fresh=await request("/staff/inspection-tasks/"+id);
-              setConflict({localRevision:data.revision,serverRevision:fresh.revision,message:e.message});
-              return;
-            }
-            throw e;
-          }
-        }}>立即同步全部本机草稿</Action>
+        <Action primary run={syncAllDrafts}>立即同步全部本机草稿</Action>
         <Action run={async()=>saveLocalDrafts([])}>清空本机草稿</Action>
       </div>
     </Panel>}
@@ -577,6 +644,27 @@ export function TaskView({id,actor}:{id:string;actor:Row}) {
       </div>
     </Panel>}
     {data.state==="READY"&&actor.roles.some((r:string)=>["inspector","super_admin"].includes(r))&&<Action primary run={async()=>{await request("/staff/inspection-tasks/"+id+"/start","POST",{revision:data.revision});reload();}}>领取并开始</Action>}
+    <Panel title="检查进度与视图筛选">
+      <div className="row">
+        <div>
+          <strong>已完成 {doneCount} / {allChecks.length} 项检查</strong>
+          <span className="muted"> · 必拍机位 {(data.shots??[]).length} 张 · 剩余待补齐 {completeness.missing.length} 项</span>
+        </div>
+        <div className="actions">
+          {([
+            ["all",`全部 (${allChecks.length})`],
+            ["pending",`待录入 (${pendingCount})`],
+            ["issue",`异常/复测 (${issueCount})`],
+            ["done",`已完成 (${doneCount})`],
+          ] as const).map(([key,txt])=><button
+            key={key}
+            type="button"
+            className={"button sm"+(checkFilter===key?" primary":"")}
+            onClick={()=>setCheckFilter(key)}
+          >{txt}</button>)}
+        </div>
+      </div>
+    </Panel>
     {writable&&<Panel title="分步作业计时">
       <div className="actions">
         {([["prep","准备"],["measure","测量"],["visual","外观检查"],["compare","对比核对"]] as const).map(([code,name])=><Action key={code} run={async()=>{
@@ -588,12 +676,45 @@ export function TaskView({id,actor}:{id:string;actor:Row}) {
     {data.content.measure_conditions&&<div className="notice"><strong>测量与拍摄条件</strong><p>{data.content.measure_conditions}</p></div>}
     {data.components.map((m:Row)=><Panel key={m.id} title={m.id==="main"?(data.item_code??"实物"):m.code}>
       {data.content.checks.filter((c:Row)=>Boolean(data.group_id)||!c.component||c.component===m.id).map((c:Row)=>{
+        const rowKey=`${m.id}:${c.key}`;
         const attempts=data.results.filter((r:Row)=>r.item_key===c.key&&r.component===m.id);
         const prev=attempts.find((r:Row)=>r.is_final)??attempts.at(-1);
         const retryNeeded=attempts.some((r:Row)=>r.details?.retry_required) && attempts.length<3;
+        const isIssue=Boolean(retryNeeded || prev?.details?.uncertain || (prev && ["OBSERVED_ISSUE","BLOCKED"].includes(prev.status)));
+        const isDone=Boolean(prev && !retryNeeded && !prev?.details?.uncertain);
+        if(checkFilter==="pending" && isDone) return null;
+        if(checkFilter==="done" && !isDone) return null;
+        if(checkFilter==="issue" && !isIssue) return null;
+        const collapsed=isDone && !expandedKeys[rowKey];
+        if(collapsed) {
+          return <div className="check-compact-row" key={c.key} id={`comp-${m.id}-${c.key}`}>
+            <div>
+              <strong>{c.zh} · {c.label}</strong>{" "}
+              <Tag tone={isIssue?"yellow":"green"}>{prev.status}</Tag>{" "}
+              <span className="code">{prev.typed_value!=null?`${prev.typed_value}${prev.unit?" "+prev.unit:""}`:(prev.reason??"已记录")}</span>
+            </div>
+            <div className="actions">
+              {prev.evidence_ids?.length>0&&<MediaButton ids={prev.evidence_ids} label={`证据照 (${prev.evidence_ids.length})`}/>}
+              {writable&&<button type="button" className="button sm" onClick={()=>setExpandedKeys(s=>({...s,[rowKey]:true}))}>展开修改 / 复测</button>}
+            </div>
+          </div>;
+        }
         return <div className="card" key={c.key} id={`comp-${m.id}-${c.key}`}>
-          <h3>{c.zh} · {c.label}</h3>
-          <p className="muted small">{c.method}{c.unit?" · 单位 "+c.unit:""}{c.diagram?" · 示意图 "+c.diagram:""}</p>
+          <div className="row">
+            <div>
+              <h3 style={{margin:0}}>{c.zh} · {c.label}</h3>
+              <p className="muted small" style={{margin:"4px 0 0"}}>{c.method}{c.unit?" · 单位 "+c.unit:""}{c.diagram?" · 示意图 "+c.diagram:""}</p>
+            </div>
+            <div className="actions">
+              {writable && c.type!=="number" && !c.evidence && !prev && <Action sm run={async()=>{
+                const payload={item_key:c.key,component:m.id,attempt:1,status:"NOT_OBSERVED",is_final:true,method:c.method};
+                if(!online) { saveLocalDrafts([...drafts,payload]); return; }
+                await request("/staff/inspection-tasks/"+id+"/results","PUT",{revision:data.revision,results:[payload]});
+                reload();
+              }}>快速记为未见异常</Action>}
+              {isDone&&<button type="button" className="button sm" onClick={()=>setExpandedKeys(s=>({...s,[rowKey]:false}))}>收起</button>}
+            </div>
+          </div>
           {attempts.length>0&&<p className="small">
             历史记录：{attempts.map((a:Row)=>`#${a.attempt}: ${a.status}${a.typed_value!=null?" "+a.typed_value+(a.unit??""):""}${a.details?.derived_circumference?" (推算周长 "+a.details.derived_circumference+"cm)":""}${a.is_final?" [最终值]":""}`).join(" | ")}
           </p>}
@@ -623,6 +744,7 @@ export function TaskView({id,actor}:{id:string;actor:Row}) {
             }
             try {
               await request("/staff/inspection-tasks/"+id+"/results","PUT",{revision:data.revision,results:[payload]});
+              setExpandedKeys(s=>({...s,[rowKey]:false}));
               reload();
             } catch(e) {
               if(e instanceof RequestError && e.code==="VERSION_CONFLICT") {
@@ -634,16 +756,16 @@ export function TaskView({id,actor}:{id:string;actor:Row}) {
               throw e;
             }
           }}>
-            <Select name="status" label="结果" value="RECORDED" choices={[
+            <Select name="status" label="结果" value={prev?.status??"RECORDED"} choices={[
               {id:"RECORDED",label:"已测量或观察"},{id:"OBSERVED_ISSUE",label:"发现问题"},{id:"NOT_OBSERVED",label:"未观察到问题"},
               {id:"NOT_TESTED",label:"未检查"},{id:"NOT_APPLICABLE",label:"不适用"},{id:"BLOCKED",label:"无法继续"}]}/>
             {c.type==="boolean"?<Select name="value" label="观察值" required={false} choices={[{id:"true",label:"是"},{id:"false",label:"否"}]}/>:
-              <Field name="value" label="实际值" required={false} type={c.type==="number"?"number":"text"} step="any"/>}
+              <Field name="value" label="实际值" required={false} value={prev?.typed_value??""} type={c.type==="number"?"number":"text"} step="any"/>}
             <Select name="severity" label="严重度（发现问题时必填）" required={false} choices={[
               {id:"attention",label:"Attention（需留意）"},{id:"material_issue",label:"Material issue（明显缺陷）"},{id:"uncertain",label:"Uncertain（不确定）"}
             ]}/>
             {c.parts?.length>0&&<Select name="part_code" label="缺陷部位" required={false} choices={c.parts.map((p:string)=>({id:p,label:p}))}/>}
-            <Field name="reason" label="观察说明或缺测原因（支持中文录入，复核时译为英文）" required={false}/>
+            <Field name="reason" label="观察说明或缺测原因（支持中文录入，复核时译为英文）" value={prev?.reason??""} required={false}/>
             <label>证据照片{c.evidence?"（提交前必填）":""}<FileInput name="photo" accept="image/*"/></label>
             <label className="check"><input type="checkbox" name="save_offline"/>暂存到本机离线队列（稍后批量同步）</label>
           </Form>}
@@ -652,8 +774,10 @@ export function TaskView({id,actor}:{id:string;actor:Row}) {
       {(data.content.shots??[]).filter((s:Row)=>Boolean(data.group_id)||!s.component||s.component===m.id).map((s:Row)=>{
         const existing=(data.shots??[]).find((x:Row)=>x.shot_code===s.code&&(x.component??"main")===m.id);
         return <div className="card" key={s.code} id={`comp-${m.id}-${s.code}`}>
-          <h3>必拍机位：{s.zh??s.name} · <span className="code">{s.code}</span></h3>
-          {existing?<p><Tag>已上传</Tag> <a href={"/api/v1/media/"+existing.id} target="_blank" rel="noreferrer">查看机位照片</a></p>:<p className="muted small">尚未上传本组件该机位照片</p>}
+          <div className="row">
+            <h3 style={{margin:0}}>必拍机位：{s.zh??s.name} · <span className="code">{s.code}</span></h3>
+            {existing?<div className="actions"><Tag>已上传</Tag><MediaButton ids={[existing.id]} labels={[`${s.zh??s.name} (${s.code})`]} label="查看机位照片"/></div>:<span className="muted small">尚未上传本组件该机位照片</span>}
+          </div>
           {writable&&<Form label="上传组件必拍照" run={async f=>{
             const mediaId=await upload(f.get("photo"),"shot");
             await request("/staff/inspection-tasks/"+id+"/shots","POST",{revision:data.revision,component:m.id,shot_code:s.code,media_id:mediaId});
@@ -666,8 +790,10 @@ export function TaskView({id,actor}:{id:string;actor:Row}) {
       {data.content.order_shots.map((code:string)=>{
         const existing=(data.shots??[]).find((x:Row)=>x.shot_code===code&&["group","order","main",null].includes(x.component));
         return <div className="card" key={code} id={`comp-group-${code}`}>
-          <h3>对比组机位：<span className="code">{code}</span></h3>
-          {existing?<p><Tag>已上传</Tag> <a href={"/api/v1/media/"+existing.id} target="_blank" rel="noreferrer">查看对比组照</a></p>:<p className="muted small">尚未上传该对比组照</p>}
+          <div className="row">
+            <h3 style={{margin:0}}>对比组机位：<span className="code">{code}</span></h3>
+            {existing?<div className="actions"><Tag>已上传</Tag><MediaButton ids={[existing.id]} labels={[`对比组 (${code})`]} label="查看对比组照"/></div>:<span className="muted small">尚未上传该对比组照</span>}
+          </div>
           {writable&&<Form label="上传对比组照" run={async f=>{
             const mediaId=await upload(f.get("photo"),"shot");
             await request("/staff/inspection-tasks/"+id+"/shots","POST",{revision:data.revision,component:"group",shot_code:code,media_id:mediaId});
@@ -685,6 +811,12 @@ export function TaskView({id,actor}:{id:string;actor:Row}) {
       </>}
       {writable&&<Action primary run={async()=>{await request("/staff/inspection-tasks/"+id+"/submit","POST",{revision:data.revision});location.assign("/wh/inspection");}}>提交此任务</Action>}
     </Panel>
+    {drafts.length>0&&!conflict&&writable&&<div className="sticky-batch-bar">
+      <div><strong>本机已暂存 {drafts.length} 条结果草稿</strong> <span className="muted">确认网络畅通后可一键批量写入服务端</span></div>
+      <div className="actions">
+        <Action primary sm run={syncAllDrafts}>批量同步 {drafts.length} 项草稿</Action>
+      </div>
+    </div>}
   </>;
 }
 export function LogisticsDesk({actor}:{actor?:Row}) {
@@ -692,13 +824,14 @@ export function LogisticsDesk({actor}:{actor?:Row}) {
   const monitor=useLoad("/staff/tracking/monitor");
   const carriers=useLoad("/carriers");
   const [selectedId,setSelectedId]=useState<string>("");
+  const [drawer,setDrawer]=useState<StaffObjectTarget|null>(null);
   const rows:Row[]=data?.rows??[];
   const selectedTrack=rows.find(r=>r.id===selectedId);
   const canTranslate=Boolean(actor?.roles?.some((r:string)=>["receiver","support","reviewer","warehouse_admin","super_admin"].includes(r)));
   const canCorrectWaybill=Boolean(actor?.roles?.some((r:string)=>["warehouse_admin","super_admin"].includes(r)));
   const isSuperAdmin=Boolean(actor?.roles?.includes("super_admin"));
   const carrierChoices=(carriers.data?.carriers??[]).map((c:Row)=>({id:c.code,label:c.labels["zh-CN"]??c.labels.en}));
-  return <><div className="page-head row"><div><p className="eyebrow">TRACKING / OPERATIONS</p><h1>物流监控</h1><p className="muted">入仓、集运及退商家均显示中文原始轨迹与客户英文事件。</p></div><div className="head-actions"><button type="button" className="button sm" onClick={()=>{reload();monitor.reload();}}>刷新监控</button>{isSuperAdmin&&<Link className="button sm" href="/admin/integrations/logistics">物流接口配置</Link>}</div></div>
+  return <><div className="page-head row"><div><p className="eyebrow">TRACKING / OPERATIONS</p><h1>物流监控</h1><p className="muted">入仓、集运及退商家均显示中文原始轨迹与客户英文事件；点击任意运单号可速览关联包裹、订单与照片。</p></div><div className="head-actions"><button type="button" className="button sm" onClick={()=>{reload();monitor.reload();}}>刷新监控</button>{isSuperAdmin&&<Link className="button sm" href="/admin/integrations/logistics">物流接口配置</Link>}</div></div>
     {error&&<ErrorBlock error={error}/>}
     {monitor.error&&<ErrorBlock error={monitor.error}/>}
     {monitor.data&&<>
@@ -711,7 +844,7 @@ export function LogisticsDesk({actor}:{actor?:Row}) {
       <div className="ops-columns">
         <Panel title="异常运输告警队列">
           <Table headers={["运单号","方向","异常类型","状态","截止时间","操作"]} rows={monitor.data.alerts.map((a:Row)=>[
-            <strong className="code">{a.tracking_norm}</strong>,
+            <CodeButton code={a.tracking_norm} onClick={()=>setDrawer({kind:"tracking",ref:a.tracking_norm})}/>,
             label(a.direction),
             <span>{a.kind} · <Tag>Ep #{a.episode}</Tag></span>,
             <Tag>{a.state}{a.overdue?" (超期)":""}</Tag>,
@@ -730,9 +863,9 @@ export function LogisticsDesk({actor}:{actor?:Row}) {
         </Panel>
         <Panel title="承运商已签收但仓库未实收">
           <Table headers={["运单号","承运商","订单号","签收时间","最后轨迹摘要"]} rows={monitor.data.delivered_unreceived.map((d:Row)=>[
-            <strong className="code">{d.tracking_norm}</strong>,
+            <CodeButton code={d.tracking_norm} onClick={()=>setDrawer({kind:"tracking",ref:d.tracking_norm})}/>,
             d.carrier_code,
-            d.order_no??"—",
+            d.order_no?<Link className="code" href={`/admin/orders/${d.order_no}`}>{d.order_no}</Link>:"—",
             stamp(d.delivered_at),
             d.latest_cn??"—",
           ])} empty="所有承运商签收包裹均已登记实收。"/>
@@ -746,13 +879,13 @@ export function LogisticsDesk({actor}:{actor?:Row}) {
     </Panel>
     <Panel
       title="入仓与寄出运输"
-      subtitle="点击右侧按钮展开对应运单的中文承运商原始轨迹与同步记录。"
+      subtitle="点击运单号可速览关联包裹与订单，或点击右侧按钮展开双语翻译与修正面板。"
       badge={<button type="button" className="button sm" onClick={()=>{reload();monitor.reload();}}>刷新列表</button>}
     >
       <Table
         headers={["运单号","运输状态","同步状态","轨迹节点","最近同步","操作"]}
         rows={rows.map((r:Row)=>[
-          <strong className="code">{r.tracking_norm}</strong>,
+          <CodeButton code={r.tracking_norm} onClick={()=>setDrawer({kind:"tracking",ref:r.tracking_norm})}/>,
           <Tag>{label(r.transport_state)}</Tag>,
           <Tag tone={r.sync_state==="active"?"green":"yellow"}>{label(r.sync_state)}</Tag>,
           `${r.events?.length??0} 条记录`,
@@ -761,7 +894,7 @@ export function LogisticsDesk({actor}:{actor?:Row}) {
             type="button"
             className={"button sm"+(selectedId===r.id?" primary":"")}
             onClick={()=>setSelectedId(prev=>prev===r.id?"":r.id)}
-          >{selectedId===r.id?"收起详情":"查看轨迹"}</button>,
+          >{selectedId===r.id?"收起工作区":"翻译与修正"}</button>,
         ])}
         empty="暂无入仓或寄出运输记录。"
       />
@@ -837,7 +970,9 @@ export function LogisticsDesk({actor}:{actor?:Row}) {
           </Form>
         </details>}
       </div>}
-    </Panel></>;
+    </Panel>
+    <StaffObjectDrawer target={drawer} onClose={()=>setDrawer(null)}/>
+  </>;
 }
 export function LogisticsConfiguration() {
   const {data,error,reload}=useLoad("/staff/admin/tracking/health");
@@ -864,6 +999,7 @@ export function LogisticsConfiguration() {
 }
 export function AdminDesk({actor,path}:{actor:Row;path:string}) {
   const {data,error,reload}=useLoad("/staff/admin/desk"),terms=useLoad("/public/terms");
+  const [drawer,setDrawer]=useState<StaffObjectTarget|null>(null);
   useEffect(()=>{
     if(!data||path!=="/admin/orders") return;
     function revealCase() {
@@ -999,8 +1135,11 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
       {data.claims.length>0&&<Panel title="未匹配包裹认领" id="claims">
         {data.claims.map((c:Row)=><details key={c.id} className="card" id={"case-"+c.id}>
           <summary>{c.public_no} · {c.carrier_code} {c.tracking_no} · {c.decision??c.state}</summary>
-          <div className="actions"><a href={"/api/v1/media/"+c.proof_id} target="_blank" rel="noreferrer">查看客户发货凭证</a>
-          {c.outer_photo_ids.map((id:string)=><a key={id} href={"/api/v1/media/"+id} target="_blank" rel="noreferrer">核对仓库外箱照片</a>)}</div>
+          <div className="actions" style={{marginBlock:8}}>
+            {c.tracking_no&&<CodeButton code={c.tracking_no} onClick={()=>setDrawer({kind:"tracking",ref:c.tracking_no})}/>}
+            {c.proof_id&&<MediaButton ids={[c.proof_id]} labels={[`${c.public_no} 客户发货凭证`]} label="查看客户发货凭证"/>}
+            {c.outer_photo_ids?.length>0&&<MediaButton ids={c.outer_photo_ids} label={`核对仓库外箱照片 (${c.outer_photo_ids.length})`}/>}
+          </div>
           {c.state==="open"&&<Form label="记录核验结论" run={async f=>{
             const decision=text(f,"decision");
             if(decision==="approve"&&!c.outer_photo_ids.length)throw new Error("先确认实物入库及外箱凭证。");
@@ -1051,7 +1190,7 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
       <Panel title="支付争议与阻断处置">
         <Table headers={["争议编号","关联订单/批次","争议金额","状态","原因","人工结论","操作"]} rows={(data.disputes??[]).map((d:Row)=>[
           <span className="code">{d.provider_dispute_id}</span>,
-          d.public_no??(d.batch_id?`Batch ${d.batch_id.slice(0,8)}`:"—"),
+          d.public_no?<Link className="code" href={`/admin/orders/${d.public_no}`}>{d.public_no}</Link>:(d.batch_id?<CodeButton code={`Batch #${d.batch_id.slice(0,8)}`} onClick={()=>setDrawer({kind:"batch",ref:d.batch_id})}/>:"—"),
           usd(d.amount_cents),
           <Tag>{d.status}</Tag>,
           d.reason??"—",
@@ -1073,7 +1212,7 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
         ])} empty="当前无支付拒付或争议记录。"/>
       </Panel>
     </>}
-    {page==="finance"&&<FinanceReconciliationPanel/>}
+    {page==="finance"&&<FinanceReconciliationPanel onOpenDrawer={setDrawer}/>}
     {(page==="config"||page==="settings")&&superAdmin&&<>
       <Panel title="仓库收货地址版本" subtitle="切换默认地址不会影响仍发往历史地址的在途包裹入库。">
         <Table headers={["中文地址","英文地址","收件人/电话","关联预报数","状态","操作"]} rows={data.addresses.map((a:Row)=>[
@@ -1108,18 +1247,7 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
           <Select name="is_default" label="是否立即设为唯一默认" choices={[{id:"true",label:"设为唯一默认"},{id:"false",label:"作为候选仓址保存"}]}/>
         </Form>
       </Panel>
-      <Panel title="工作日历与节假日配置">
-        <p className="muted">当前节假日：{(data.calendar?.holidays??[]).join(", ")||"未配置"} · 调休上班日：{(data.calendar?.extra_workdays??[]).join(", ")||"未配置"}</p>
-        <Form inline label="保存工作日历" run={async f=>{
-          const holidays=text(f,"holidays").split(",").map(s=>s.trim()).filter(Boolean);
-          const extra=f.get("extra_workdays")?.toString().split(",").map(s=>s.trim()).filter(Boolean)??[];
-          await request("/staff/admin/calendar","POST",{holidays,extra_workdays:extra});
-          reload();
-        }}>
-          <Field name="holidays" label="法定节假日 (YYYY-MM-DD 逗号分隔)" required={false} value={(data.calendar?.holidays??[]).join(",")}/>
-          <Field name="extra_workdays" label="调休补班日 (YYYY-MM-DD 逗号分隔)" required={false} value={(data.calendar?.extra_workdays??[]).join(",")}/>
-        </Form>
-      </Panel>
+      <BusinessCalendarEditor calendar={data.calendar} onSave={reload}/>
     </>}
     {page==="legal"&&superAdmin&&<Panel title="合规文档与条款版本列表">
       <Table headers={["类型","版本号","状态","生效时间","内容哈希","操作"]} rows={(data.termsVersions??[]).map((t:Row)=>[
@@ -1158,43 +1286,12 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
         <label>Markdown 正文<textarea name="content_md" required minLength={10}/></label>
       </Form>
     </Panel>}
-    {page==="users"&&superAdmin&&<>
-      <Panel title="员工权限列表" subtitle="变更员工角色或停用账号均须填写可审计原因，停用后立即撤销活跃会话。">
-        <Table headers={["员工账号","状态","当前角色","权限与状态操作"]} rows={(data.staffUsers??[]).map((u:Row)=>[
-          <div style={{whiteSpace:"nowrap"}}>
-            <strong>{u.display_name??u.id.slice(0,8)}</strong>
-            <div className="muted small code" style={{marginTop:2}}>{u.email??"—"}</div>
-          </div>,
-          <Tag>{u.status}</Tag>,
-          <div className="row flexwrap" style={{justifyContent:"flex-start",gap:5,minWidth:150}}>
-            {(u.roles??[]).length?(u.roles as string[]).map(r=><Tag key={r} tone="blue">{r}</Tag>):<span className="muted">无角色</span>}
-          </div>,
-          <div className="actions">
-            <Form inline label="更新角色" run={async f=>{
-              const roles=text(f,"roles").split(",").map(s=>s.trim()).filter(Boolean);
-              await request("/staff/users/"+u.id+"/roles","POST",{roles,reason:text(f,"reason")});
-              reload();
-            }}>
-              <label style={{flex:"1.45 1 205px",minWidth:195}}>角色列表（逗号分隔）<input name="roles" defaultValue={(u.roles??[]).join(",")} required/></label>
-              <label style={{flex:"1 1 135px",minWidth:125}}>变更原因<input name="reason" placeholder="填写调整依据" required/></label>
-            </Form>
-            {u.id!==actor.id&&<Action run={async()=>{
-              const nextStatus=u.status==="disabled"?"active":"disabled";
-              await request("/staff/users/"+u.id+"/status","POST",{status:nextStatus,reason:nextStatus==="disabled"?"后台停用员工账号":"后台恢复员工账号"});
-              reload();
-            }}>{u.status==="disabled"?"恢复账号":"停用账号"}</Action>}
-          </div>,
-        ])} empty="暂无员工账号。"/>
-      </Panel>
-      <Panel title="典型职责分离">
-        <Table headers={["操作","允许角色","重要守卫"]} rows={[
-          ["报告录入与复核","检查员 / 独立复核员","检查员不能批准本人生成的报告"],
-          ["退款第二人审批","独立批准者","需重新认证并记录可追溯审批原因"],
-          ["价格与模板发布","模板管理员 + 独立审核人","已确认订单保留原价格与模板快照"],
-          ["物流接入管理","超级管理员","供应商密钥仅在服务端加密存储"],
-        ]}/>
-      </Panel>
-    </>}
+    {page==="users"&&superAdmin&&<StaffAndCustomerUsersDesk
+      staffUsers={data.staffUsers??[]}
+      customerUsers={data.customerUsers??[]}
+      actor={actor}
+      onSave={reload}
+    />}
     {(page==="catalog"||page==="settings")&&<>
       <Panel title="类目运营准入" subtitle="新增分类不代表自动开放付费下单。">
         <Table headers={["标识","中文名称","英文名称","状态","准入材料","操作"]} rows={data.categories.map((c:Row)=>[
@@ -1303,21 +1400,341 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
             <Action run={async()=>{await request("/staff/admin/templates/"+t.id+"/publish","POST",{});reload();}}>独立审核发布</Action>:
           t.state==="IN_REVIEW"&&t.author_id===actor.id?<small>等待非作者独立复核</small>:null,
         ])} empty="暂无模板版本。"/>
-        {!!data.categories.length&&canAuthorTemplate&&<Form label="提交模板审核" run={async f=>{
-          const content=JSON.parse(text(f,"content"));
-          await request("/staff/admin/templates","POST",{template_key:text(f,"key"),category_id:text(f,"category"),service_type_id:text(f,"service"),
-            capability_ids:[text(f,"capability")],content});reload();
-        }}><Field name="key" label="模板键"/><Select name="category" label="类目" choices={data.categories.map((c:Row)=>({id:c.id,label:c.labels["zh-CN"]}))}/>
-        <Select name="service" label="服务类型" choices={data.services.map((x:Row)=>({id:x.id,label:x.labels["zh-CN"]}))}/>
-        <Select name="capability" label="获批能力" choices={options(data.capabilities)}/>
-        <label>模板 JSON<textarea name="content" required placeholder={'{"checks":[{"key":"width","label":"Width","zh":"宽度","type":"number","unit":"cm","method":"Ruler","required":true,"evidence":true}]}'}/></label></Form>}
+        {!!data.categories.length&&canAuthorTemplate&&<TemplateAuthorForm
+          categories={data.categories}
+          services={data.services}
+          capabilities={data.capabilities}
+          onSave={reload}
+        />}
       </Panel>
     </>}
     {page==="shipping-rates"&&superAdmin&&<ShippingRateConfigPanel rates={data.shippingRates??[]} onSave={reload}/>}
+    <StaffObjectDrawer target={drawer} onClose={()=>setDrawer(null)}/>
   </>;
 }
 
-function FinanceReconciliationPanel() {
+const STAFF_ROLE_OPTIONS:[string,string,string][]=[
+  ["receiver","收货员 (receiver)","扫描运单、包裹实收建档、拆包上架与实物识别"],
+  ["inspector","检查员 (inspector)","领取质检任务、录入实测数据与上传机位证据照"],
+  ["reviewer","独立复核员 (reviewer)","非本人报告复核批准、检查能力与模板独立审核"],
+  ["warehouse_admin","仓管主管 (warehouse_admin)","库位管理、出库称重报价、打包交接与盘点复核"],
+  ["support","客服专员 (support)","订单查询、工单回复、未匹配包裹认领与异常跟进"],
+  ["finance","财务专员 (finance)","联合对账账本、退款核验与事故赔付打款核销"],
+  ["template_admin","模板管理员 (template_admin)","规划品类、提交检验能力与编写品类检查模板"],
+  ["super_admin","超级管理员 (super_admin)","全局配置、条款发布、价格上架、权限管控与双人终审"],
+];
+
+function BusinessCalendarEditor({calendar,onSave}:{calendar?:Row;onSave:()=>void}) {
+  const [holidays,setHolidays]=useState<string[]>(()=>[...(calendar?.holidays??[])].sort());
+  const [workdays,setWorkdays]=useState<string[]>(()=>[...(calendar?.extra_workdays??[])].sort());
+  const [pickHoliday,setPickHoliday]=useState("");
+  const [pickWorkday,setPickWorkday]=useState("");
+  useEffect(()=>{
+    setHolidays([...(calendar?.holidays??[])].sort());
+    setWorkdays([...(calendar?.extra_workdays??[])].sort());
+  },[calendar]);
+  const addDate=(list:string[],setter:(v:string[])=>void,ymd:string)=>{
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(ymd) || list.includes(ymd)) return;
+    setter([...list,ymd].sort());
+  };
+  return <Panel title="工作日历与节假日配置" subtitle="通过日历点选添加或移除日期，SLA 承诺工作日自动跳过法定节假日并计入调休补班日。">
+    <div className="ops-columns">
+      <div className="card" style={{margin:0}}>
+        <h3 style={{marginTop:0}}>法定节假日 ({holidays.length})</h3>
+        <div className="inline-form">
+          <div style={{flex:"1 1 200px"}}>
+            <DateInput name="pick_holiday" onValueChange={setPickHoliday}/>
+          </div>
+          <button type="button" className="button sm" disabled={!pickHoliday} onClick={()=>addDate(holidays,setHolidays,pickHoliday)}>+ 添加节假日</button>
+        </div>
+        <div className="date-chips">
+          {holidays.length?holidays.map(d=><span key={d} className="date-chip">{d}<button type="button" aria-label={`移除 ${d}`} onClick={()=>setHolidays(holidays.filter(x=>x!==d))}>×</button></span>):<span className="muted small">暂未配置节假日</span>}
+        </div>
+      </div>
+      <div className="card" style={{margin:0}}>
+        <h3 style={{marginTop:0}}>调休补班工作日 ({workdays.length})</h3>
+        <div className="inline-form">
+          <div style={{flex:"1 1 200px"}}>
+            <DateInput name="pick_workday" onValueChange={setPickWorkday}/>
+          </div>
+          <button type="button" className="button sm" disabled={!pickWorkday} onClick={()=>addDate(workdays,setWorkdays,pickWorkday)}>+ 添加补班日</button>
+        </div>
+        <div className="date-chips">
+          {workdays.length?workdays.map(d=><span key={d} className="date-chip">{d}<button type="button" aria-label={`移除 ${d}`} onClick={()=>setWorkdays(workdays.filter(x=>x!==d))}>×</button></span>):<span className="muted small">暂未配置调休补班日</span>}
+        </div>
+      </div>
+    </div>
+    <div className="actions" style={{marginTop:12}}>
+      <Action primary run={async()=>{
+        await request("/staff/admin/calendar","POST",{holidays,extra_workdays:workdays});
+        onSave();
+      }}>保存工作日历配置</Action>
+    </div>
+  </Panel>;
+}
+
+function StaffAndCustomerUsersDesk({
+  staffUsers,customerUsers,actor,onSave,
+}:{
+  staffUsers:Row[];customerUsers:Row[];actor:Row;onSave:()=>void;
+}) {
+  const [editingStaff,setEditingStaff]=useState<Row|null>(null);
+  const [selectedRoles,setSelectedRoles]=useState<string[]>([]);
+  const [editingCustomer,setEditingCustomer]=useState<Row|null>(null);
+  const [custQuery,setCustQuery]=useState("");
+  const [custStatus,setCustStatus]=useState("");
+  const openStaffEditor=(u:Row)=>{
+    setSelectedRoles([...(u.roles??[])]);
+    setEditingStaff(u);
+  };
+  const filteredCustomers=customerUsers.filter(c=>{
+    const q=custQuery.trim().toLowerCase();
+    const matchQ=!q || String(c.receiving_code??"").toLowerCase().includes(q) || String(c.email??"").toLowerCase().includes(q);
+    const matchSt=!custStatus || c.status===custStatus;
+    return matchQ && matchSt;
+  });
+  return <>
+    <Panel title="员工权限列表" subtitle="点击「配置角色权限」通过多选卡片调整岗位权限；变更角色或停用账号均记录审计原因并即时生效。">
+      <Table headers={["员工账号","状态","当前角色","权限与账号管控"]} rows={staffUsers.map((u:Row)=>[
+        <div key={u.id} className="cell-stack">
+          <strong>{u.display_name??u.id.slice(0,8)}</strong>
+          <small className="code">{u.email??"—"}</small>
+        </div>,
+        <Tag key="st">{u.status}</Tag>,
+        <div key="roles" className="actions">
+          {(u.roles??[]).length?(u.roles as string[]).map(r=><Tag key={r} tone="blue">{r}</Tag>):<span className="muted">未分配角色</span>}
+        </div>,
+        <div key="ops" className="actions">
+          <button type="button" className="button sm primary" onClick={()=>openStaffEditor(u)}>配置角色权限</button>
+          {u.id!==actor.id&&<Action sm run={async()=>{
+            const nextStatus=u.status==="disabled"?"active":"disabled";
+            await request("/staff/users/"+u.id+"/status","POST",{status:nextStatus,reason:nextStatus==="disabled"?"后台停用员工账号":"后台恢复员工账号"});
+            onSave();
+          }}>{u.status==="disabled"?"恢复账号":"停用账号"}</Action>}
+        </div>,
+      ])} empty="暂无员工账号。"/>
+    </Panel>
+    <Panel title="客户账号与专属收件码目录" subtitle="按永久收件码 QCW-... 或注册邮箱检索客户，查看履约统计或执行风控状态调整。">
+      <div className="form inline-form" style={{marginBottom:12}}>
+        <label>搜索收件码或邮箱<input type="search" placeholder="QCW-... 或客户邮箱" value={custQuery} onChange={e=>setCustQuery(e.target.value)}/></label>
+        <label>账号状态<select value={custStatus} onChange={e=>setCustStatus(e.target.value)}>
+          <option value="">全部状态</option>
+          <option value="active">正常 (active)</option>
+          <option value="restricted">限制新单 (restricted)</option>
+          <option value="disabled">已停用 (disabled)</option>
+        </select></label>
+      </div>
+      <Table
+        headers={["专属收件码","主绑定邮箱","账号状态","累计订单 / 在库件数","注册时间","管控操作"]}
+        rows={filteredCustomers.map(c=>[
+          <strong key={c.id} className="code">{c.receiving_code}</strong>,
+          <span key="em" className="code">{c.email??"—"}</span>,
+          <Tag key="st">{c.status}</Tag>,
+          <span key="cnt">{c.order_count??0} 单 · 在库 {c.stored_item_count??0} 件</span>,
+          stamp(c.created_at,true),
+          <button type="button" className="button sm" onClick={()=>setEditingCustomer(c)}>管控状态</button>,
+        ])}
+        empty="没有符合筛选条件的客户账号。"
+      />
+    </Panel>
+    <Panel title="典型职责分离">
+      <Table headers={["操作","允许角色","重要守卫"]} rows={[
+        ["报告录入与复核","检查员 / 独立复核员","检查员不能批准本人生成的报告"],
+        ["退款第二人审批","独立批准者","需重新认证并记录可追溯审批原因"],
+        ["价格与模板发布","模板管理员 + 独立审核人","已确认订单保留原价格与模板快照"],
+        ["物流接入管理","超级管理员","供应商密钥仅在服务端加密存储"],
+      ]}/>
+    </Panel>
+    <ModalDrawer
+      open={Boolean(editingStaff)}
+      onClose={()=>setEditingStaff(null)}
+      title={editingStaff?`配置员工角色权限 · ${editingStaff.display_name??editingStaff.email}`:""}
+      subtitle="勾选该员工需承担的岗位角色（至少保留 1 项或停用账号），保存后立即更新服务端权限。"
+    >
+      {editingStaff&&<Form label="保存角色权限变更" run={async f=>{
+        if(!selectedRoles.length) throw new Error("请至少勾选一个员工角色，或直接停用该账号。");
+        await request("/staff/users/"+editingStaff.id+"/roles","POST",{
+          roles:selectedRoles,
+          reason:text(f,"reason"),
+        });
+        setEditingStaff(null);
+        onSave();
+      }}>
+        <div className="role-grid">
+          {STAFF_ROLE_OPTIONS.map(([code,title,desc])=><label key={code} className="role-chip">
+            <input
+              type="checkbox"
+              checked={selectedRoles.includes(code)}
+              onChange={e=>setSelectedRoles(prev=>e.target.checked?[...prev,code]:prev.filter(x=>x!==code))}
+            />
+            <div>
+              <div>{title}</div>
+              <small>{desc}</small>
+            </div>
+          </label>)}
+        </div>
+        <Field name="reason" label="权限变更原因（审计必填）" value="岗位职责调整"/>
+      </Form>}
+    </ModalDrawer>
+    <ModalDrawer
+      open={Boolean(editingCustomer)}
+      onClose={()=>setEditingCustomer(null)}
+      centered
+      title={editingCustomer?`客户账号状态管控 · ${editingCustomer.receiving_code}`:""}
+      subtitle={editingCustomer?.email??""}
+    >
+      {editingCustomer&&<Form label="确认更新客户账号状态" run={async f=>{
+        await request("/staff/users/"+editingCustomer.id+"/status","POST",{
+          status:text(f,"status"),
+          reason:text(f,"reason"),
+        });
+        setEditingCustomer(null);
+        onSave();
+      }}>
+        <Select name="status" label="目标状态" value={editingCustomer.status} choices={[
+          {id:"active",label:"正常启用 (active)"},
+          {id:"restricted",label:"限制新建订单与付款，保留在途查询与提货 (restricted)"},
+          {id:"disabled",label:"停用账号并立即撤销所有登录会话 (disabled)"},
+        ]}/>
+        <Field name="reason" label="风控或恢复原因说明"/>
+      </Form>}
+    </ModalDrawer>
+  </>;
+}
+
+function TemplateAuthorForm({
+  categories,services,capabilities,onSave,
+}:{
+  categories:Row[];services:Row[];capabilities:Row[];onSave:()=>void;
+}) {
+  const [editorMode,setEditorMode]=useState<"visual"|"json">("visual");
+  const [selectedCaps,setSelectedCaps]=useState<string[]>(()=>capabilities[0]?.id?[capabilities[0].id]:[]);
+  const [checks,setChecks]=useState<Row[]>([
+    {key:"overall_appearance",label:"Overall appearance",zh:"整体外观",type:"string",unit:"",method:"Visual inspection",required:true,evidence:false},
+    {key:"length_cm",label:"Length",zh:"长度",type:"number",unit:"cm",method:"Calibrated tape",required:true,evidence:true},
+  ]);
+  const [shots,setShots]=useState<Row[]>([
+    {code:"front",name:"Front overview",zh:"正面全貌"},
+    {code:"label",name:"Brand / care label",zh:"品牌与洗水标"},
+  ]);
+  const [measureCond,setMeasureCond]=useState("自然平铺无拉伸，使用校准卷尺测量。");
+  const [rawJson,setRawJson]=useState("");
+  const buildJsonObj=()=>({
+    measure_conditions:measureCond,
+    checks:checks.map(c=>({
+      key:c.key,label:c.label,zh:c.zh,type:c.type,
+      ...(c.unit?{unit:c.unit}:{}),
+      method:c.method,required:Boolean(c.required),evidence:Boolean(c.evidence),
+    })),
+    shots:shots.filter(s=>s.code.trim()).map(s=>({code:s.code.trim(),name:s.name.trim()||s.code.trim(),zh:s.zh.trim()||s.code.trim()})),
+  });
+  const switchMode=(next:"visual"|"json")=>{
+    if(next==="json") {
+      setRawJson(JSON.stringify(buildJsonObj(),null,2));
+    } else if(rawJson.trim()) {
+      try {
+        const parsed=JSON.parse(rawJson);
+        if(Array.isArray(parsed.checks)) setChecks(parsed.checks);
+        if(Array.isArray(parsed.shots)) setShots(parsed.shots);
+        if(typeof parsed.measure_conditions==="string") setMeasureCond(parsed.measure_conditions);
+      } catch {}
+    }
+    setEditorMode(next);
+  };
+  return <div className="card" style={{marginTop:14}}>
+    <div className="row" style={{marginBottom:10}}>
+      <h3 style={{margin:0}}>编写并提交新模板版本</h3>
+      <div className="actions">
+        <button type="button" className={"button sm"+(editorMode==="visual"?" primary":"")} onClick={()=>switchMode("visual")}>可视化构建器</button>
+        <button type="button" className={"button sm"+(editorMode==="json"?" primary":"")} onClick={()=>switchMode("json")}>高级 JSON 模式</button>
+      </div>
+    </div>
+    <Form label="提交模板至独立审核" run={async f=>{
+      if(!selectedCaps.length) throw new Error("请至少勾选一项已批准的检验能力。");
+      const content=editorMode==="json"?JSON.parse(text(f,"content")):buildJsonObj();
+      await request("/staff/admin/templates","POST",{
+        template_key:text(f,"key"),
+        category_id:text(f,"category"),
+        service_type_id:text(f,"service"),
+        capability_ids:selectedCaps,
+        content,
+      });
+      onSave();
+    }}>
+      <div className="fields three">
+        <Field name="key" label="模板键 (如 bags-std)"/>
+        <Select name="category" label="适用类目" choices={categories.map((c:Row)=>({id:c.id,label:c.labels["zh-CN"]}))}/>
+        <Select name="service" label="服务类型" choices={services.map((x:Row)=>({id:x.id,label:x.labels["zh-CN"]}))}/>
+      </div>
+      <div>
+        <span style={{fontWeight:650,fontSize:12.5,display:"block",marginBottom:6}}>绑定获批检验能力（支持多选）</span>
+        <div className="role-grid">
+          {capabilities.map((cap:Row)=><label key={cap.id} className="role-chip">
+            <input
+              type="checkbox"
+              checked={selectedCaps.includes(cap.id)}
+              onChange={e=>setSelectedCaps(prev=>e.target.checked?[...prev,cap.id]:prev.filter(x=>x!==cap.id))}
+            />
+            <div>
+              <div className="code">{cap.code}</div>
+              <small>{cap.method}</small>
+            </div>
+          </label>)}
+        </div>
+      </div>
+      {editorMode==="visual"?<>
+        <label>测量与拍摄环境说明
+          <input value={measureCond} onChange={e=>setMeasureCond(e.target.value)}/>
+        </label>
+        <div>
+          <div className="row" style={{marginBottom:6}}>
+            <strong>检查项列表 ({checks.length})</strong>
+            <button type="button" className="button sm" onClick={()=>setChecks([...checks,{key:`check_${checks.length+1}`,label:"New check",zh:"新增检查项",type:"string",unit:"",method:"Visual",required:true,evidence:false}])}>+ 新增检查项</button>
+          </div>
+          {checks.map((ck,idx)=><div key={idx} className="card" style={{padding:10,marginBottom:8}}>
+            <div className="fields three">
+              <label>字段键 (key)<input value={ck.key} onChange={e=>setChecks(checks.map((x,i)=>i===idx?{...x,key:e.target.value}:x))} required/></label>
+              <label>中文名称<input value={ck.zh??""} onChange={e=>setChecks(checks.map((x,i)=>i===idx?{...x,zh:e.target.value}:x))} required/></label>
+              <label>英文标签 (Report Label)<input value={ck.label??""} onChange={e=>setChecks(checks.map((x,i)=>i===idx?{...x,label:e.target.value}:x))} required/></label>
+            </div>
+            <div className="fields three" style={{marginTop:8}}>
+              <label>值类型
+                <select value={ck.type??"string"} onChange={e=>setChecks(checks.map((x,i)=>i===idx?{...x,type:e.target.value}:x))}>
+                  <option value="string">文本观察 (string)</option>
+                  <option value="number">数值测量 (number)</option>
+                  <option value="boolean">布尔判断 (boolean)</option>
+                </select>
+              </label>
+              <label>单位（数值选填，如 cm / g）<input value={ck.unit??""} onChange={e=>setChecks(checks.map((x,i)=>i===idx?{...x,unit:e.target.value}:x))}/></label>
+              <label>检验方法/工具<input value={ck.method??""} onChange={e=>setChecks(checks.map((x,i)=>i===idx?{...x,method:e.target.value}:x))} required/></label>
+            </div>
+            <div className="row" style={{marginTop:8}}>
+              <div className="actions">
+                <label className="check"><input type="checkbox" checked={Boolean(ck.required)} onChange={e=>setChecks(checks.map((x,i)=>i===idx?{...x,required:e.target.checked}:x))}/> 必检项</label>
+                <label className="check"><input type="checkbox" checked={Boolean(ck.evidence)} onChange={e=>setChecks(checks.map((x,i)=>i===idx?{...x,evidence:e.target.checked}:x))}/> 强制拍照取证</label>
+              </div>
+              {checks.length>1&&<button type="button" className="button sm" onClick={()=>setChecks(checks.filter((_,i)=>i!==idx))}>移除此项</button>}
+            </div>
+          </div>)}
+        </div>
+        <div>
+          <div className="row" style={{marginBottom:6}}>
+            <strong>组件必拍机位 ({shots.length})</strong>
+            <button type="button" className="button sm" onClick={()=>setShots([...shots,{code:`shot_${shots.length+1}`,name:"Detail view",zh:"细节机位"}])}>+ 新增必拍机位</button>
+          </div>
+          {shots.map((sh,idx)=><div key={idx} className="inline-form" style={{marginBottom:6}}>
+            <label>机位编码<input value={sh.code} onChange={e=>setShots(shots.map((x,i)=>i===idx?{...x,code:e.target.value}:x))} required/></label>
+            <label>中文名称<input value={sh.zh??""} onChange={e=>setShots(shots.map((x,i)=>i===idx?{...x,zh:e.target.value}:x))} required/></label>
+            <label>英文名称<input value={sh.name??""} onChange={e=>setShots(shots.map((x,i)=>i===idx?{...x,name:e.target.value}:x))} required/></label>
+            {shots.length>1&&<button type="button" className="button sm" onClick={()=>setShots(shots.filter((_,i)=>i!==idx))}>移除</button>}
+          </div>)}
+        </div>
+      </>:<label>模板结构 JSON<textarea name="content" rows={10} value={rawJson} onChange={e=>setRawJson(e.target.value)} required/></label>}
+    </Form>
+  </div>;
+}
+
+function FinanceReconciliationPanel({onOpenDrawer}:{onOpenDrawer?:(t:StaffObjectTarget)=>void}) {
   const [includeTest,setIncludeTest]=useState(false);
   const query=`?include_test=${includeTest?"1":"0"}`;
   const {data,error,reload}=useLoad("/staff/admin/reconciliation"+query);
@@ -1344,7 +1761,9 @@ function FinanceReconciliationPanel() {
         <Table headers={["收费项","类型","关联订单/批次","应收","实收","已退","跨单分摊校验","状态"]} rows={(data.rows??[]).map((r:Row)=>[
           <span className="code">{r.charge_id.slice(0,8)}</span>,
           ({inspection:"质检费",dispatch:"运费",storage:"仓储费"} as Row)[r.purpose]??r.purpose,
-          r.order_public_no??(r.batch_id?`Batch ${r.batch_id.slice(0,8)}`:"—"),
+          r.order_public_no
+            ?<Link className="code" href={`/admin/orders/${r.order_public_no}`}>{r.order_public_no}</Link>
+            :(r.batch_id?(onOpenDrawer?<CodeButton code={`Batch #${r.batch_id.slice(0,8)}`} onClick={()=>onOpenDrawer({kind:"batch",ref:r.batch_id})}/>:`Batch ${r.batch_id.slice(0,8)}` ):"—"),
           usd(r.amount_cents),usd(r.paid_cents),usd(r.refunded_cents),
           r.purpose==="dispatch"?(r.allocation_balanced?
             `平衡（订单分摊 ${usd(r.allocated_cents)}${r.unallocated_cents?` + 零委托 ${usd(r.unallocated_cents)}`:""}）`:"分摊异常"):"—",
@@ -1378,18 +1797,31 @@ function FinanceReconciliationPanel() {
           usd(g.labor_cost_cents),
           usd(g.contribution_cents),
         ])} empty="暂无类目与服务工时统计。"/>
-        <Table headers={["订单号","状态","类目/服务","件数","净质检实收","代收运费(单列)","仓储实收","作业秒数","工时成本","毛利贡献","渠道凭据核对"]} rows={(ledger.data.orders??[]).map((o:Row)=>[
-          <span><Link className="code" href={"/admin/orders/"+o.public_no}>{o.public_no}</Link>{o.is_test&&<> <Tag>TEST</Tag></>}</span>,
-          <Tag>{label(o.state)}</Tag>,
-          `${o.category_slug} / ${o.service_code}`,
-          o.sample_count,
-          usd(o.net_inspection_cents),
-          usd(o.pass_through_shipping_cents),
-          usd(o.storage_allocated_cents),
-          `${o.inspection_seconds}s`,
-          usd(o.labor_cost_cents),
-          usd(o.contribution_cents),
-          o.channel_reconciled?<span className="code">{o.provider_refs.join(", ")||"无收费"}</span>:"渠道未对齐",
+        <Table headers={["订单与状态","类目 / 服务 / 件数","质检净实收","代收运费 / 仓储","检验工时与成本","毛利贡献","渠道凭据核对"]} rows={(ledger.data.orders??[]).map((o:Row)=>[
+          <div className="cell-stack">
+            <div><Link className="code" href={"/admin/orders/"+o.public_no}>{o.public_no}</Link>{o.is_test&&<> <Tag>TEST</Tag></>}</div>
+            <div><Tag>{label(o.state)}</Tag></div>
+          </div>,
+          <div className="cell-stack">
+            <span className="code">{o.category_slug} / {o.service_code}</span>
+            <small>{o.sample_count} 件委托样品</small>
+          </div>,
+          <div className="cell-stack">
+            <strong>{usd(o.net_inspection_cents)}</strong>
+            <small>实收 {usd(o.inspection_paid_cents)}{o.inspection_refunded_cents?` · 已退 ${usd(o.inspection_refunded_cents)}`:""}</small>
+          </div>,
+          <div className="cell-stack">
+            <span>运费 {usd(o.pass_through_shipping_cents)}</span>
+            <small>仓储 {usd(o.storage_allocated_cents)}</small>
+          </div>,
+          <div className="cell-stack">
+            <span>{usd(o.labor_cost_cents)}</span>
+            <small>计时 {o.inspection_seconds}s</small>
+          </div>,
+          <strong>{usd(o.contribution_cents)}</strong>,
+          o.channel_reconciled
+            ?<div className="cell-stack"><Tag tone="green">已对齐</Tag><small className="code">{o.provider_refs.join(", ")||"零费用"}</small></div>
+            :<Tag tone="red">渠道未对齐</Tag>,
         ])} empty="暂无符合过滤条件的订单账本记录。"/>
       </>}
     </Panel>
@@ -1489,6 +1921,7 @@ function StaffOrderList() {
 export function StaffOrder({number}:{number:string}) {
   const params=orderSearchParams(useSearchParams());
   const {data,error,reload}=useLoad("/staff/orders/by-number/"+number);
+  const [drawer,setDrawer]=useState<StaffObjectTarget|null>(null);
   const milestones=data?[
     ["订单创建",data.created_at],["质检付款确认",data.paid_at],["样品齐备",data.samples_ready_at],
     ["报告已发布",data.report_published_at],["订单关闭",data.closed_at],
@@ -1526,14 +1959,22 @@ export function StaffOrder({number}:{number:string}) {
           </>}
         </Panel>
       </div>
-      <Panel title="实物及库位"><Table headers={["实物编号","检查位置","身份","保管状态","库位"]} rows={data.items.map((i:Row)=>[
-        <span className="code">{i.code}</span>,i.position,label(i.identity_state),label(i.custody_state),i.location??"—",
+      <Panel title="实物及库位" subtitle="点击实物编号或包裹编号可直接弹出速览抽屉。"><Table headers={["实物编号","来源包裹","检查位置","身份","保管状态","库位"]} rows={data.items.map((i:Row)=>[
+        <CodeButton code={i.code} onClick={()=>setDrawer({kind:"item",ref:i.code})}/>,
+        i.package_code?<CodeButton code={i.package_code} onClick={()=>setDrawer({kind:"package",ref:i.package_code})}/>:"—",
+        i.position,label(i.identity_state),label(i.custody_state),i.location??"—",
       ])} empty="暂无实物绑定。"/></Panel>
-      <Panel title="入仓包裹"><Table headers={["卖家运单","承运商","运输状态","仓内包裹","实收时间"]} rows={data.parcels.map((p:Row)=>[
-        <span className="code">{p.tracking_norm}</span>,p.carrier_code??"—",label(p.transport_state),p.code??"待实收",stamp(p.received_at),
+      <Panel title="入仓包裹" subtitle="点击卖家运单查看物流轨迹，点击包裹码查看拆包明细。"><Table headers={["卖家运单","承运商","运输状态","仓内包裹","实收时间"]} rows={data.parcels.map((p:Row)=>[
+        <CodeButton code={p.tracking_norm} onClick={()=>setDrawer({kind:"tracking",ref:p.tracking_norm})}/>,
+        p.carrier_code??"—",
+        label(p.transport_state),
+        p.code?<CodeButton code={p.code} onClick={()=>setDrawer({kind:"package",ref:p.code})}/>:"待实收",
+        stamp(p.received_at),
       ])} empty="暂无关联卖家运单。"/></Panel>
-      <Panel title="已交接发运"><Table headers={["发运运单","处置类型","状态","交接时间"]} rows={data.shipments.map((s:Row)=>[
-        <span className="code">{s.tracking_norm}</span>,label(s.action),label(s.state),stamp(s.shipped_at),
+      <Panel title="已交接发运" subtitle="点击发运单号查看出库物流轨迹，点击批次号核对装箱记录。"><Table headers={["发运运单","发运批次","处置类型","状态","交接时间"]} rows={data.shipments.map((s:Row)=>[
+        s.tracking_norm?<CodeButton code={s.tracking_norm} onClick={()=>setDrawer({kind:"tracking",ref:s.tracking_norm})}/>:"待填单",
+        s.batch_id?<CodeButton code={`#${String(s.batch_id).slice(0,8)}`} onClick={()=>setDrawer({kind:"batch",ref:s.batch_id})}/>:"—",
+        label(s.action),label(s.state),stamp(s.shipped_at),
       ])} empty="暂无已交接运单。"/></Panel>
       <Panel title="关联工单与阻断">
         <Table headers={["编号","主题","状态"]} rows={data.tickets.map((t:Row)=>[
@@ -1565,6 +2006,7 @@ export function StaffOrder({number}:{number:string}) {
         a.display_name??({staff:"员工",customer:"客户",system:"系统"} as Row)[a.actor_type],
       ])} empty="暂无订单操作记录。"/></Panel>
     </>}
+    <StaffObjectDrawer target={drawer} onClose={()=>setDrawer(null)}/>
   </>;
 }
 

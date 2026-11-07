@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { Action, Empty, ErrorBlock, Field, FileInput, Form, Panel, request, stamp, Table, Tag, text, usd, useLoad, type Row } from "./ui";
+import { Action, Empty, ErrorBlock, Field, FileInput, Form, MediaButton, Panel, request, stamp, Table, Tag, text, usd, useLoad, type Row } from "./ui";
 
 const status:Record<string,[string,string]>={
   open:["Open","待处理"],waiting_customer:["Awaiting your reply","待客户回复"],
@@ -21,8 +21,9 @@ function Conversation({events,staff=false}:{events:Row[];staff?:boolean}) {
     <div className="row"><strong>{staff?entry.kind==="internal_note"?"内部备注":entry.kind==="state_change"?"操作记录":
       entry.actor_type==="customer"?"客户":"客服":entry.actor_type==="customer"?"You":"QC Warehouse"}</strong>
       <small>{stamp(entry.created_at)}</small></div><p>{entry.body}</p>
-      {entry.media_ids?.map((id:string)=><a className="button" key={id} href={"/api/v1/media/"+id} target="_blank" rel="noreferrer">
-        {staff?"查看附件":"View attached photo"}</a>)}
+      {entry.media_ids?.length>0&&<div className="actions" style={{marginTop:6}}>
+        <MediaButton ids={entry.media_ids} label={staff?`查看附件照片 (${entry.media_ids.length})`:`View attached photo${entry.media_ids.length>1?`s (${entry.media_ids.length})`:""}`}/>
+      </div>}
   </li>)}</ol>;
 }
 export function CustomerCase({id,order}:{id:string;order?:string}) {

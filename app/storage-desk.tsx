@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Action, checked, Empty, ErrorBlock, Field, Form, Panel, request, Select, stamp, Table, Tag, text, useLoad, usd, type Row } from "./ui";
+import { Action, checked, CodeButton, Empty, ErrorBlock, Field, Form, MediaButton, ModalDrawer, Panel, Photo, request, Select, StaffObjectDrawer, type StaffObjectTarget, stamp, Table, Tag, text, upload, useLoad, usd, type Row } from "./ui";
 
 const zones:Record<string,string>={
   receiving:"收货区",queue:"待检区",inspecting:"检查区",post_inspection:"检后存放区",
@@ -80,8 +80,21 @@ export function StorageLocations({warehouseLinks}:{warehouseLinks:[string,string
 
 export function OverdueDisposalDesk() {
   const disposals=useLoad("/staff/disposals");
+  const [selectedIds,setSelectedIds]=useState<string[]>([]);
+  const [switchOpen,setSwitchOpen]=useState(false);
+  const [execCase,setExecCase]=useState<Row|null>(null);
+  const [drawer,setDrawer]=useState<StaffObjectTarget|null>(null);
   const d=disposals.data;
   const prodEnabled=Boolean(d?.production_execution_switch?.enabled);
+  const candidates:Row[]=d?.candidate_items??[];
+  const activeCaseItemIds=new Set<string>(
+    (d?.cases??[]).filter((c:Row)=>c.state!=="cancelled").flatMap((c:Row)=>c.item_ids??[])
+  );
+  const firstSelected=candidates.find(c=>selectedIds.includes(c.id));
+  const lockedOrgKey=firstSelected?(firstSelected.org_id??"__unassigned__"):null;
+  const toggleCandidate=(item:Row)=>{
+    setSelectedIds(prev=>prev.includes(item.id)?prev.filter(x=>x!==item.id):[...prev,item.id]);
+  };
   return <Panel title="逾期与违禁件双人审批处置台">
     <p className="muted">保管期届满或违禁隔离实物须立项生成快照哈希（list_hash），经独立审批人复核（禁止自审），并在正式法律/协议生产开关开启后方可执行处置。</p>
     {disposals.error&&<ErrorBlock error={disposals.error}/>}
@@ -91,75 +104,170 @@ export function OverdueDisposalDesk() {
           <strong>生产处置执行门禁：</strong> <Tag>{prodEnabled?"已开启":"默认关闭（仅预演与审批）"}</Tag>
           <span className="muted"> · 逾期在库 {d.overdue_items.length} 件 · 违禁/隔离 {d.restricted_items.length} 件</span>
         </div>
-        <Action run={async()=>{
-          const legal=window.prompt("请输入正式法律与客户协议条款版本号（如 TOS-2026-V2）","TOS-2026-V2");
-          if(!legal)return;
-          await request("/staff/admin/disposal-execution-switch","POST",{
-            enabled:!prodEnabled,
-            legal_basis_version:legal,
-            reason:"Updated production disposal switch from PAGE-M05",
-          });
-          disposals.reload();
-        }}>{prodEnabled?"关闭生产处置执行开关":"开启生产处置执行开关"}</Action>
+        <button type="button" className="button sm" onClick={()=>setSwitchOpen(true)}>
+          {prodEnabled?"关闭生产处置执行开关":"开启生产处置执行开关"}
+        </button>
       </div>
       <div className="ops-columns">
         <div>
-          <Form label="创建逾期/隔离处置审批单" run={async f=>{
-            const ids=text(f,"item_ids").split(",").map(s=>s.trim()).filter(Boolean);
-            await request("/staff/disposals","POST",{
-              org_id:text(f,"org_id"),
-              item_ids:ids,
-              reason:text(f,"reason"),
-              legal_basis_version:text(f,"legal_basis_version")||"TOS-2026-V2",
-            });
-            disposals.reload();
-          }}>
-            <Field label="客户组织 ID (org_id)" name="org_id"/>
-            <Field label="待处置实物 ID 列表（逗号分隔）" name="item_ids"/>
-            <Field label="适用协议/政策版本" name="legal_basis_version" required={false}/>
-            <Field label="立项说明与通知取证摘要" name="reason"/>
-          </Form>
+          <h3 style={{marginTop:0}}>01 / 勾选逾期或隔离实物立项 ({selectedIds.length} 件已选)</h3>
+          <Table
+            headers={["选择","实物编码","来源包裹 / 客户","原因与保管截止","库位"]}
+            rows={candidates.map((it:Row)=>{
+              const inCase=activeCaseItemIds.has(it.id);
+              const itemOrgKey=it.org_id??"__unassigned__";
+              const orgMismatch=Boolean(lockedOrgKey && lockedOrgKey!==itemOrgKey && !selectedIds.includes(it.id));
+              return [
+                <input
+                  key={it.id}
+                  type="checkbox"
+                  checked={selectedIds.includes(it.id)}
+                  disabled={inCase||orgMismatch}
+                  title={inCase?"已在处置单中":orgMismatch?"同一处置单仅限同一客户组织实物":"选择此实物"}
+                  onChange={()=>toggleCandidate(it)}
+                />,
+                <CodeButton key="code" code={it.code} onClick={()=>setDrawer({kind:"item",ref:it.code})}/>,
+                <div key="pkg" className="cell-stack">
+                  <span>{it.package_code?<CodeButton code={it.package_code} onClick={()=>setDrawer({kind:"package",ref:it.package_code})}/>:"—"}</span>
+                  <small>{it.receiving_code??"未绑定客户"}</small>
+                </div>,
+                <div key="due" className="cell-stack">
+                  <div className="actions">
+                    {it.quarantined&&<Tag tone="red">隔离件</Tag>}
+                    {it.overdue&&<Tag tone="yellow">保管逾期</Tag>}
+                    {inCase&&<Tag tone="outline">已立项</Tag>}
+                  </div>
+                  <small>截止：{stamp(it.storage_until,true)}</small>
+                </div>,
+                it.location_code??"—",
+              ];
+            })}
+            empty="当前没有逾期或违禁隔离的在库实物。"
+          />
+          {selectedIds.length>0&&<div style={{marginTop:12}}>
+            <Form label={`为已选 ${selectedIds.length} 件实物创建处置审批单`} run={async f=>{
+              await request("/staff/disposals","POST",{
+                ...(firstSelected?.org_id?{org_id:firstSelected.org_id}:{}),
+                item_ids:selectedIds,
+                reason:text(f,"reason"),
+                legal_basis_version:text(f,"legal_basis_version")||"TOS-2026-V2",
+                customer_authorized:checked(f,"customer_authorized"),
+              });
+              setSelectedIds([]);
+              disposals.reload();
+            }}>
+              <div className="fields">
+                <Field label="适用协议/政策版本" name="legal_basis_version" value="TOS-2026-V2" required={false}/>
+                <Field label="立项说明与通知取证摘要" name="reason"/>
+              </div>
+              <label className="check"><input type="checkbox" name="customer_authorized"/> 已确认客户书面弃货授权或届满催告留证完备</label>
+            </Form>
+          </div>}
         </div>
         <div>
-          <Table headers={["处置单","状态","实物数 / 清单哈希","政策快照","双人复核与执行"]} rows={(d.cases??[]).map((c:Row)=>{
+          <h3 style={{marginTop:0}}>02 / 处置审批单与双人复核 ({(d.cases??[]).length})</h3>
+          <Table headers={["处置单 / 客户","状态","实物清单 / 哈希","政策版本","双人复核与执行"]} rows={(d.cases??[]).map((c:Row)=>{
             const auth=c.authorization_snapshot??{};
             const pol=c.policy_snapshot??{};
+            const codes:string[]=c.item_codes??[];
+            const count=codes.length||(c.item_ids??[]).length;
+            const execMediaIds:string[]=c.execution_evidence?.media_ids??[];
             return [
-              <strong className="code">{c.id.slice(0,8)}</strong>,
-              <Tag>{c.state}</Tag>,
-              <span>{(c.items??[]).length} 件 · <span className="code">{(auth.list_hash??"").slice(0,10)}</span></span>,
-              <span>{pol.legal_basis_version??"未配置"}</span>,
-              <div className="row" style={{gap:6,flexWrap:"wrap"}}>
-                {c.state==="pending_approval"&&<Action run={async()=>{
+              <div key={c.id} className="cell-stack">
+                <strong className="code">#{c.id.slice(0,8)}</strong>
+                <small>{c.receiving_code??"未归属组织"}</small>
+              </div>,
+              <Tag key="st">{c.state}</Tag>,
+              <div key="items" className="cell-stack">
+                <div className="actions">
+                  <span>{count} 件</span>
+                  {codes.slice(0,3).map(cd=><CodeButton key={cd} code={cd} onClick={()=>setDrawer({kind:"item",ref:cd})}/>)}
+                  {codes.length>3&&<small className="muted">+{codes.length-3}</small>}
+                </div>
+                <small className="code">Hash: {(auth.list_hash??pol.list_hash??"").slice(0,12)}</small>
+              </div>,
+              <span key="pol">{pol.legal_basis_version??pol.legal_basis??"TOS-2026-V2"}</span>,
+              <div key="act" className="actions">
+                {c.state==="pending_approval"&&<Action sm run={async()=>{
                   await request(`/staff/disposals/${c.id}/approve`,"POST",{
                     revision:c.revision,
-                    list_hash:auth.list_hash,
+                    list_hash:auth.list_hash??pol.list_hash,
                     reason:"Independent dual-control approval verified",
                   });
                   disposals.reload();
                 }}>独立审批通过</Action>}
-                {c.state==="approved"&&<Action run={async()=>{
-                  const method=window.prompt("处置方式 (destroy / liquidate / donate)","destroy");
-                  if(!method)return;
-                  await request(`/staff/disposals/${c.id}/execute`,"POST",{
-                    revision:c.revision,
-                    method,
-                    witness_note:"Dual-person physical disposal completed",
-                  });
-                  disposals.reload();
-                }}>登记执行归档</Action>}
+                {c.state==="approved"&&<button type="button" className="button sm primary" onClick={()=>setExecCase(c)}>登记执行归档</button>}
+                {execMediaIds.length>0&&<MediaButton ids={execMediaIds} label={`执行照片 (${execMediaIds.length})`}/>}
               </div>,
             ];
           })} empty="暂无处置审批单。"/>
         </div>
       </div>
     </>}
+    <ModalDrawer
+      open={switchOpen}
+      onClose={()=>setSwitchOpen(false)}
+      centered
+      title={prodEnabled?"关闭生产处置执行门禁":"开启生产处置执行门禁"}
+      subtitle="物理销毁/变卖属于不可逆高危操作，须核验正式协议条款版本与留痕原因。"
+    >
+      <Form label={prodEnabled?"确认关闭执行开关":"确认开启执行开关"} run={async f=>{
+        await request("/staff/admin/disposal-execution-switch","POST",{
+          enabled:!prodEnabled,
+          legal_basis_version:text(f,"legal_basis_version")||"TOS-2026-V2",
+          reason:text(f,"reason"),
+        });
+        setSwitchOpen(false);
+        disposals.reload();
+      }}>
+        <Field label="正式法律与客户协议条款版本号" name="legal_basis_version" value="TOS-2026-V2"/>
+        <Field label="门禁变更审计原因" name="reason" value={prodEnabled?"临时关闭生产物理处置执行开关":"法务条款与通知留证已就绪，开启生产物理处置执行"}/>
+      </Form>
+    </ModalDrawer>
+    <ModalDrawer
+      open={Boolean(execCase)}
+      onClose={()=>setExecCase(null)}
+      centered
+      title={execCase?`执行物理处置归档 · #${String(execCase.id).slice(0,8)}`:""}
+      subtitle="请核对实物清单无误后选择处置方式，可同步上传现场销毁/交接照片。"
+    >
+      {execCase&&<Form label="确认完成物理处置并归档" run={async f=>{
+        const file=f.get("photo");
+        const mediaIds:string[]=[];
+        if(file instanceof File && file.size>0) mediaIds.push(await upload(file,"attachment"));
+        await request(`/staff/disposals/${execCase.id}/execute`,"POST",{
+          revision:execCase.revision,
+          method:text(f,"method")||"destroy",
+          witness_note:text(f,"witness_note"),
+          execution_note:text(f,"witness_note"),
+          ...(mediaIds.length?{media_ids:mediaIds}:{}),
+        });
+        setExecCase(null);
+        disposals.reload();
+      }}>
+        <Select label="物理处置方式" name="method" value="destroy" choices={[
+          {id:"destroy",label:"集中销毁 (destroy)"},
+          {id:"liquidate",label:"合规变卖折抵 (liquidate)"},
+          {id:"donate",label:"公益捐赠 (donate)"},
+        ]}/>
+        <Field label="双人现场见证与执行记录" name="witness_note" value="仓库主管与复核人双人现场核对清单并完成处置"/>
+        <Field label="现场处置证据照片（可选）" name="photo" type="file" required={false}/>
+      </Form>}
+    </ModalDrawer>
+    <StaffObjectDrawer target={drawer} onClose={()=>setDrawer(null)}/>
   </Panel>;
 }
 
 export function StocktakeReviewAndIncidentPanel() {
   const stocktakes=useLoad("/staff/stocktakes");
   const incidents=useLoad("/staff/incidents");
+  const [reviewSt,setReviewSt]=useState<Row|null>(null);
+  const [proposeInc,setProposeInc]=useState<Row|null>(null);
+  const [srvUsd,setSrvUsd]=useState("0.00");
+  const [compUsd,setCompUsd]=useState("20.00");
+  const [payoutInc,setPayoutInc]=useState<Row|null>(null);
+  const [drawer,setDrawer]=useState<StaffObjectTarget|null>(null);
+  const eligibleItems:Row[]=incidents.data?.eligible_items??[];
   return <div className="ops-columns">
     <Panel title="盘点差异复核">
       <p className="muted">盘点提交的缺失/错位差异须由独立主管或管理员复核，禁止盘点创建人自审。</p>
@@ -169,15 +277,14 @@ export function StocktakeReviewAndIncidentPanel() {
         const matched=items.filter(i=>i.state==="matched"||i.state==="adjusted").length;
         const disc=items.filter(i=>i.state==="investigating").length;
         return [
-          <strong className="code">{st.id.slice(0,8)}</strong>,
-          st.scope?.zone?`仓区: ${st.scope.zone}`:"全仓",
-          <Tag>{st.state}</Tag>,
+          <strong key={st.id} className="code">#{st.id.slice(0,8)}</strong>,
+          st.scope?.zone?`仓区: ${zones[st.scope.zone]??st.scope.zone}`:"全仓",
+          <Tag key="st">{st.state}</Tag>,
           `${items.length} / ${matched} / ${disc}`,
-          stamp(st.snapshot_at),
-          st.state==="submitted"?<Action run={async()=>{
-            await request(`/staff/stocktakes/${st.id}/approve`,"POST",{decision:"approve",reason:"Supervisor reviewed stocktake discrepancy"});
-            stocktakes.reload();
-          }}>批准差异结案</Action>:"—",
+          stamp(st.snapshot_at,true),
+          st.state==="submitted"
+            ?<button type="button" className="button sm primary" onClick={()=>setReviewSt(st)}>复核差异 ({disc})</button>
+            :"—",
         ];
       })} empty="暂无盘点记录。"/>
     </Panel>
@@ -185,62 +292,164 @@ export function StocktakeReviewAndIncidentPanel() {
       <p className="muted">服务费退回受原支付单可退余额约束，货值赔付独立立项审批并登记打款凭证。非财务/超管角色隐藏具体赔付金额。</p>
       {incidents.error&&<ErrorBlock error={incidents.error}/>}
       <Form label="登记库内异常事故" run={async f=>{
+        const file=f.get("evidence_photo");
+        const evidenceIds:string[]=[];
+        if(file instanceof File && file.size>0) evidenceIds.push(await upload(file,"attachment"));
         await request("/staff/incidents","POST",{
-          item_id:text(f,"item_id"),
+          item_code:text(f,"item_code").toUpperCase(),
           kind:text(f,"kind"),
           summary_en:text(f,"summary_en"),
+          ...(text(f,"internal_note")?{internal_note:text(f,"internal_note")}:{}),
+          ...(evidenceIds.length?{evidence_ids:evidenceIds}:{}),
         });
         incidents.reload();
       }}>
-        <div className="grid two">
-          <Field label="关联实物 ID" name="item_id"/>
+        <div className="fields">
+          <label>关联实物编码（支持扫码或搜索）
+            <input name="item_code" list="incident-eligible-items" placeholder="例如 S-1001" required/>
+          </label>
+          <datalist id="incident-eligible-items">
+            {eligibleItems.map(it=><option key={it.id} value={it.code}>{`${it.receiving_code??"—"} · ${it.order_no??"未委托"} · ${it.custody_state}`}</option>)}
+          </datalist>
           <Select label="事故类型" name="kind" choices={[
             {id:"loss",label:"库内缺失 (loss)"},
             {id:"damage",label:"库内破损 (damage)"},
             {id:"wrong_inspection",label:"质检重大差错 (wrong_inspection)"},
           ]}/>
         </div>
-        <Field label="事故说明与取证摘要 (English)" name="summary_en"/>
+        <div className="fields">
+          <Field label="对客英文说明与取证摘要 (English)" name="summary_en"/>
+          <Field label="内部交接备注（仅员工可见，可选）" name="internal_note" required={false}/>
+        </div>
+        <Field label="现场破损/异常证据照片（可选）" name="evidence_photo" type="file" required={false}/>
       </Form>
-      <Table headers={["事故工单","实物/订单","类型","状态","服务费退回 / 货值赔付","审批与结案操作"]} rows={(incidents.data?.rows??[]).map((inc:Row)=>[
-        <strong className="code">{inc.ticket_no}</strong>,
-        <span>{inc.item_code??"—"} / {inc.order_no??"—"}</span>,
-        inc.resolution?.kind??"—",
-        <Tag>{inc.state}</Tag>,
-        inc.resolution?.financial_restricted
-          ?<span className="muted">仅财务/超管可见</span>
-          :<span>{usd(inc.resolution?.service_refund_cents??0)} / {usd(inc.resolution?.compensation_cents??0)} {inc.payment_proof?"(已打款)":"(未打款)"}</span>,
-        <div className="row" style={{gap:6,flexWrap:"wrap"}}>
-          {(inc.state==="open"||inc.state==="customer_rejected")&&<Action run={async()=>{
-            const srv=window.prompt("服务费退回金额（美分，0 表示不退服务费）","0");
-            const comp=window.prompt("货值协商赔付金额（美分，独立于平台收费）","2000");
-            if(srv===null||comp===null)return;
-            await request(`/staff/incidents/${inc.id}/propose`,"POST",{
-              service_refund_cents:Number(srv||0),
-              compensation_cents:Number(comp||0),
-              currency:"USD",
-              summary_en:"Proposed compensation solution",
-            });
-            incidents.reload();
-          }}>提交方案</Action>}
-          {inc.state==="proposed"&&<Action run={async()=>{
-            await request(`/staff/incidents/${inc.id}/approve`,"POST",{reason:"Approved by independent reviewer"});
-            incidents.reload();
-          }}>独立审批</Action>}
-          {inc.state==="awaiting_payout"&&<Action run={async()=>{
-            const proof=window.prompt("登记打款凭证编号（入账后标记已赔付）","PAYOUT-PROOF-001");
-            if(!proof)return;
-            await request(`/staff/incidents/${inc.id}/resolve`,"POST",{
-              payout_reference:proof,
-              payout_method:"bank_transfer",
-              paid_amount_cents:Number(inc.resolution?.compensation_cents??0),
-              note:"Compensation payout completed",
-            });
-            incidents.reload();
-          }}>登记打款结案</Action>}
-        </div>,
-      ])} empty="暂无库内事故单。"/>
+      <Table headers={["事故工单","实物 / 订单","类型","状态","服务费退回 / 货值赔付","凭证与结案操作"]} rows={(incidents.data?.rows??[]).map((inc:Row)=>{
+        const evIds:string[]=inc.evidence?.media_ids??[];
+        const proofIds:string[]=inc.payment_proof?.proof_media_ids??[];
+        return [
+          <strong key={inc.id} className="code">{inc.ticket_no}</strong>,
+          <div key="item" className="cell-stack">
+            <span>{inc.item_code?<CodeButton code={inc.item_code} onClick={()=>setDrawer({kind:"item",ref:inc.item_code})}/>:"—"}</span>
+            <small>{inc.order_no?<Link href={`/admin/orders/${inc.order_no}`}>{inc.order_no}</Link>:"未关联质检单"}</small>
+          </div>,
+          inc.resolution?.kind??"—",
+          <Tag key="st">{inc.state}</Tag>,
+          inc.resolution?.financial_restricted
+            ?<span key="fin" className="muted">仅财务/超管可见</span>
+            :<div key="fin" className="cell-stack">
+              <strong>退服务费 {usd(inc.resolution?.service_refund_cents??0)} · 赔货值 {usd(inc.resolution?.compensation_cents??0)}</strong>
+              <small>{inc.payment_proof?`已打款 (${inc.payment_proof.payout_reference??"已核销"})`:"待确认/待打款"}</small>
+            </div>,
+          <div key="act" className="actions">
+            {evIds.length>0&&<MediaButton ids={evIds} label={`事故照 (${evIds.length})`}/>}
+            {proofIds.length>0&&<MediaButton ids={proofIds} label={`打款水单 (${proofIds.length})`}/>}
+            {(inc.state==="open"||inc.state==="customer_rejected")&&<button type="button" className="button sm primary" onClick={()=>{
+              setSrvUsd(((Number(inc.resolution?.service_refund_cents??0))/100).toFixed(2));
+              setCompUsd(((Number(inc.resolution?.compensation_cents??2000))/100).toFixed(2));
+              setProposeInc(inc);
+            }}>拟定赔偿方案</button>}
+            {inc.state==="proposed"&&<Action sm primary run={async()=>{
+              await request(`/staff/incidents/${inc.id}/approve`,"POST",{reason:"Approved by independent reviewer"});
+              incidents.reload();
+            }}>独立审批</Action>}
+            {inc.state==="awaiting_payout"&&<button type="button" className="button sm primary" onClick={()=>setPayoutInc(inc)}>登记打款结案</button>}
+          </div>,
+        ];
+      })} empty="暂无库内事故单。"/>
     </Panel>
+    <ModalDrawer
+      open={Boolean(reviewSt)}
+      onClose={()=>setReviewSt(null)}
+      centered
+      title={reviewSt?`复核盘点差异 · #${String(reviewSt.id).slice(0,8)}`:""}
+      subtitle="可批准差异生成库存调整记录，或退回仓库要求现场二次复盘。"
+    >
+      {reviewSt&&<Form label="提交复核决定" run={async f=>{
+        await request(`/staff/stocktakes/${reviewSt.id}/approve`,"POST",{
+          decision:text(f,"decision"),
+          reason:text(f,"reason"),
+        });
+        setReviewSt(null);
+        stocktakes.reload();
+      }}>
+        <Select label="复核决定" name="decision" value="approve" choices={[
+          {id:"approve",label:"批准差异调账并结案 (approve)"},
+          {id:"recount",label:"退回要求现场重新复盘 (recount)"},
+        ]}/>
+        <Field label="复核意见与依据" name="reason" value="主管核对监控与库位记录后确认盘点结果"/>
+      </Form>}
+    </ModalDrawer>
+    <ModalDrawer
+      open={Boolean(proposeInc)}
+      onClose={()=>setProposeInc(null)}
+      centered
+      title={proposeInc?`拟定事故赔偿方案 · ${proposeInc.ticket_no}`:""}
+      subtitle="直接输入美元（USD）金额，系统自动换算为美分并校验原单可退服务费上限。"
+    >
+      {proposeInc&&<Form label="提交赔偿方案待独立审批" run={async f=>{
+        const srvCents=Math.round(Number(srvUsd||"0")*100);
+        const compCents=Math.round(Number(compUsd||"0")*100);
+        await request(`/staff/incidents/${proposeInc.id}/propose`,"POST",{
+          service_refund_cents:srvCents,
+          compensation_cents:compCents,
+          currency:"USD",
+          summary_en:text(f,"summary_en"),
+          ...(text(f,"internal_note")?{internal_note:text(f,"internal_note")}:{}),
+        });
+        setProposeInc(null);
+        incidents.reload();
+      }}>
+        <div className="fields">
+          <label>服务费退回金额 (USD)
+            <input type="number" min={0} step="0.01" value={srvUsd} onChange={e=>setSrvUsd(e.target.value)} required/>
+          </label>
+          <label>货值协商赔付金额 (USD)
+            <input type="number" min={0} step="0.01" value={compUsd} onChange={e=>setCompUsd(e.target.value)} required/>
+          </label>
+        </div>
+        <p className="notice" style={{margin:0}}>
+          折算预览：退还平台服务费 <strong>{usd(Math.round(Number(srvUsd||"0")*100))}</strong> + 独立货值赔付 <strong>{usd(Math.round(Number(compUsd||"0")*100))}</strong>
+        </p>
+        <Field label="对客赔偿方案说明 (English)" name="summary_en" value={proposeInc.resolution?.proposal_summary_en||"We sincerely apologize for the warehouse incident and propose the above resolution."}/>
+        <Field label="内部审批备注（可选）" name="internal_note" required={false}/>
+      </Form>}
+    </ModalDrawer>
+    <ModalDrawer
+      open={Boolean(payoutInc)}
+      onClose={()=>setPayoutInc(null)}
+      centered
+      title={payoutInc?`登记赔付打款凭证 · ${payoutInc.ticket_no}`:""}
+      subtitle={payoutInc?`客户已同意方案，核定应赔付货值：${usd(Number(payoutInc.resolution?.compensation_cents??0))}`:""}
+    >
+      {payoutInc&&<Form label="确认打款入账并结案" run={async f=>{
+        const file=f.get("proof_photo");
+        const proofIds:string[]=[];
+        if(file instanceof File && file.size>0) proofIds.push(await upload(file,"attachment"));
+        await request(`/staff/incidents/${payoutInc.id}/resolve`,"POST",{
+          payout_reference:text(f,"payout_reference"),
+          payout_method:text(f,"payout_method")||"bank_transfer",
+          paid_amount_cents:Number(payoutInc.resolution?.compensation_cents??0),
+          currency:"USD",
+          ...(proofIds.length?{proof_media_ids:proofIds}:{}),
+          ...(text(f,"note")?{note:text(f,"note")}:{}),
+        });
+        setPayoutInc(null);
+        incidents.reload();
+      }}>
+        <div className="fields">
+          <Field label="外部打款流水号 / 凭证编号" name="payout_reference"/>
+          <Select label="打款渠道" name="payout_method" value="bank_transfer" choices={[
+            {id:"bank_transfer",label:"银行转账 (Bank Transfer)"},
+            {id:"wire",label:"跨境电汇 (Wire)"},
+            {id:"paypal",label:"PayPal 企业付款"},
+            {id:"other",label:"其他约定渠道"},
+          ]}/>
+        </div>
+        <Field label="打款水单截图（可选）" name="proof_photo" type="file" required={false}/>
+        <Field label="财务核销备注（可选）" name="note" value="已按客户确认金额完成打款核销" required={false}/>
+      </Form>}
+    </ModalDrawer>
+    <StaffObjectDrawer target={drawer} onClose={()=>setDrawer(null)}/>
   </div>;
 }
 

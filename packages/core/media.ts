@@ -161,7 +161,11 @@ export async function createMediaUploadUrl(
       guard(item.org_id === org, "NOT_FOUND", "Item not found.", 404);
     }
   } else {
-    role(actor, "receiver", "inspector", "warehouse_admin");
+    if (input.kind === "attachment") {
+      role(actor, "receiver", "inspector", "warehouse_admin", "support", "finance", "super_admin");
+    } else {
+      role(actor, "receiver", "inspector", "warehouse_admin", "super_admin");
+    }
     const rate = await one<{ n: number }>(
       db,
       "select count(*)::int n from audit_events where actor_id=$1 and action='issue_media_upload_url' and at>now()-interval '1 minute'",
@@ -406,11 +410,22 @@ export async function authorizeMediaRead(db: DB, actor: Actor, id: string) {
       [id, org]
     );
   } else {
-    role(actor, "receiver", "warehouse_admin", "inspector", "reviewer", "support", "super_admin");
+    role(actor, "receiver", "warehouse_admin", "inspector", "reviewer", "support", "finance", "super_admin");
     const claimProof =
       m.kind === "attachment" &&
       actor.roles.some(r => ["support", "super_admin"].includes(r)) &&
       (await db.query("select 1 from tickets where category='identity_unclear' and details->>'proof_id'=$1", [id])).rowCount;
+    const complianceAttachment =
+      m.kind === "attachment" &&
+      actor.roles.some(r => ["support", "finance", "warehouse_admin", "super_admin"].includes(r)) &&
+      (
+        await db.query(
+          `select 1 from incident_cases where (evidence->'media_ids') ? $1 or (payment_proof->'proof_media_ids') ? $1
+           union all
+           select 1 from disposal_cases where (execution_evidence->'media_ids') ? $1 or (authorization_snapshot->'notice_evidence_ids') ? $1`,
+          [id]
+        )
+      ).rowCount;
     const orderAttachment =
       m.kind === "attachment" &&
       actor.roles.some(r => ["inspector", "reviewer", "support", "warehouse_admin", "super_admin"].includes(r)) &&
@@ -435,6 +450,7 @@ export async function authorizeMediaRead(db: DB, actor: Actor, id: string) {
       ).rowCount;
     guard(
       claimProof ||
+        complianceAttachment ||
         orderAttachment ||
         claimOuter ||
         m.uploaded_by === actor.id ||

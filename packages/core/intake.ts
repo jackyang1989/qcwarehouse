@@ -1,5 +1,6 @@
 import type { DB } from "../db";
 import { audit, code, event, guard, hash, lock, one, organization, revision, role, uuid, type Actor } from "./common";
+import { requireCustomerActive } from "./auth";
 import { processImageBytes } from "./media";
 import { readyOrder } from "./orders";
 import { requireSpace } from "./storage";
@@ -35,6 +36,28 @@ export async function advise(db:DB,actor:Actor,input:{tracking_no:string;address
   for(const order of orders) await db.query("insert into advice_orders(advice_id,order_id,org_id) values($1,$2,$3) on conflict do nothing",[row.id,order,org]);
   return {id:row.id,revision:row.revision,state:"advised"};
 }
+export async function linkParcelToOrder(db:DB,actor:Actor,adviceId:string,input:{order_id:string}) {
+  await requireCustomerActive(db,actor);
+  const org=organization(actor);
+  await lock(db,"org:"+org);
+  await one(db,"select id from package_advices where id=$1 and org_id=$2",[adviceId,org]);
+  const order=await one<{id:string;public_no:string;state:string}>(
+    db,
+    "select id,public_no,state from orders where id=$1 and org_id=$2",
+    [input.order_id,org]
+  );
+  guard(
+    ["draft","awaiting_payment","awaiting_samples","on_hold"].includes(order.state),
+    "ORDER_NOT_ACCEPTING_PARCELS",
+    "Parcels can only be linked to draft or awaiting orders."
+  );
+  await db.query(
+    "insert into advice_orders(advice_id,order_id,org_id) values($1,$2,$3) on conflict do nothing",
+    [adviceId,order.id,org]
+  );
+  await audit(db,actor,"link_parcel_order","package_advices",adviceId,{order_id:order.id,order_no:order.public_no});
+  return {advice_id:adviceId,order_id:order.id,order_no:order.public_no,linked:true};
+}
 export async function candidates(db:DB,tracking:string,carrier?:string) {
   return (await db.query(`select t.id,t.org_id,t.advice_id,t.package_id,t.carrier_code,a.revision advice_revision,p.receiving_code
     from tracking_records t left join package_advices a on a.id=t.advice_id
@@ -53,7 +76,8 @@ export async function lookup(db:DB,actor:Actor,input:{tracking_no:string;carrier
 export async function savePhoto(db:DB,actor:Actor,bytes:Buffer,kind:string) {
   const org=actor.kind==="customer"?organization(actor):null;
   if(org) guard(kind==="attachment","FORBIDDEN","Only claim documents can be uploaded.",403);
-  else role(actor,"receiver","inspector","warehouse_admin");
+  else if(kind==="attachment") role(actor,"receiver","inspector","warehouse_admin","support","finance","super_admin");
+  else role(actor,"receiver","inspector","warehouse_admin","super_admin");
   guard(bytes.length>0 && bytes.length<=25_000_000,"FILE_INVALID","Upload a photo up to 25 MB.",422);
   const {fullData,thumbData,width,height,capturedAt}=await processImageBytes(bytes);
   const id=uuid(), key="media/"+id, thumbKey="thumb/"+id;

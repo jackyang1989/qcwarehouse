@@ -925,22 +925,26 @@ export function NewOrder() {
             </div>
             <div className="field">
               <label>Size chart or reference photo (optional)
-                <input type="file" accept="image/*" onChange={async e=>{
-                  const file=e.target.files?.[0];
-                  if(!file) return;
-                  try {
-                    setBusyMessage("Uploading reference image…");
-                    const uploadForm=new FormData();
-                    uploadForm.set("photo",file);
-                    const uploaded=await request("/me/media","POST",uploadForm);
-                    setAttachmentId(uploaded.id);
-                    setAttachmentName(file.name);
-                  } catch(err) {
-                    setWizardError(err instanceof Error?err.message:"Photo upload failed.");
-                  } finally {
-                    setBusyMessage("");
-                  }
-                }}/>
+                <span className="file-picker">
+                  <span className="file-picker-btn">Choose file</span>
+                  <span className="file-picker-name">{attachmentName||"No file chosen"}</span>
+                  <input type="file" accept="image/*" onChange={async e=>{
+                    const file=e.target.files?.[0];
+                    if(!file) return;
+                    try {
+                      setBusyMessage("Uploading reference image…");
+                      const uploadForm=new FormData();
+                      uploadForm.set("photo",file);
+                      const uploaded=await request("/me/media","POST",uploadForm);
+                      setAttachmentId(uploaded.id);
+                      setAttachmentName(file.name);
+                    } catch(err) {
+                      setWizardError(err instanceof Error?err.message:"Photo upload failed.");
+                    } finally {
+                      setBusyMessage("");
+                    }
+                  }}/>
+                </span>
               </label>
               {attachmentName&&<small className="ok">Attached: {attachmentName}</small>}
             </div>
@@ -1389,7 +1393,7 @@ function OrderAfterSalesAndRefundPanel({orderId,orderState,onSaved}:{orderId:str
   const preview=useLoad(!["draft","awaiting_payment"].includes(orderState)?`/orders/${orderId}/refund-preview`:null);
   const [ticketNo,setTicketNo]=useState<string>();
   const stage=preview.data?.stage;
-  return <details className="card"><summary>After-sales, re-inspection &amp; stage refund policy (§10.3)</summary>
+  return <details className="card"><summary>After-sales, re-inspection &amp; stage refund policy</summary>
     {stage&&<p className="muted small">
       Current stage: <strong>{label(stage.stage)}</strong> · Standard refund rate: <strong>{stage.refund_rate_pct}%</strong> · Paid: {usd(stage.paid_cents)} · Refunded: {usd(stage.already_refunded_cents)} · Standard refundable: <strong>{usd(stage.recommended_refund_cents)}</strong> ({stage.policy_summary})
     </p>}

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { Action, Empty, ErrorBlock, Field, Form, Panel, request, stamp, Table, Tag, text, usd, useLoad, type Row } from "./ui";
+import { Action, Empty, ErrorBlock, Field, FileInput, Form, Panel, request, stamp, Table, Tag, text, usd, useLoad, type Row } from "./ui";
 
 const status:Record<string,[string,string]>={
   open:["Open","待处理"],waiting_customer:["Awaiting your reply","待客户回复"],
@@ -72,7 +72,7 @@ export function CustomerCase({id,order}:{id:string;order?:string}) {
           const result=await request(api+"/messages","POST",payload);
           setSent(result.revision);reload();
         }}><label>Reply<textarea name="body" required minLength={2} maxLength={2000}/></label>
-          <label>Evidence photo (optional)<input type="file" name="photo" accept="image/jpeg,image/png,image/webp,image/heic"/></label>
+          <label>Evidence photo (optional)<FileInput name="photo"/></label>
         </Form>
         {sent&&<p role="status">Your reply was sent.</p>}
       </Panel>}
@@ -107,7 +107,7 @@ export function StaffTicketQueue() {
           <option value="unassigned">未领取</option>
           <option value="mine">我负责的</option>
         </select></label>
-        <button type="button" onClick={reload}>刷新</button>
+        <button type="button" className="button" onClick={reload}>刷新</button>
       </div>
       <Form inline label="查工单" run={async fields=>setReference(text(fields,"reference").toUpperCase())}>
         <Field name="reference" label="完整工单或订单号" required={false}/>

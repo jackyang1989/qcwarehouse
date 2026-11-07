@@ -4,7 +4,7 @@ import Link from "next/link";
 import { ScopeReview } from "./scope-review";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
-import { Action, checked, Empty, ErrorBlock, Field, Form, Panel, Photo, request, RequestError, Select, stamp, Table, Tag, text, upload, useLoad, usd, type Row } from "./ui";
+import { Action, checked, Empty, ErrorBlock, Field, FileInput, Form, Panel, Photo, request, RequestError, Select, stamp, Table, Tag, text, upload, useLoad, usd, type Row } from "./ui";
 import { switchDemoPortal } from "./chrome";
 import { OverdueDisposalDesk, StocktakeReviewAndIncidentPanel } from "./storage-desk";
 import { staffTabs } from "../packages/core/portal-routes";
@@ -356,9 +356,9 @@ function DispatchQueue() {
     <form action="/wh/dispatch" method="get" className="form inline-form" key={state+reference}>
       <input type="hidden" name="state" value={state}/>
       <label>批次 ID 或实际运单<input name="reference" defaultValue={reference} maxLength={64}/></label>
-      <button type="submit" className="primary">查批次</button>
-      {reference&&<Link href={"/wh/dispatch?"+new URLSearchParams({state})}>清除编号</Link>}
-      <button type="button" onClick={reload}>刷新</button>
+      <button type="submit" className="button primary">查批次</button>
+      {reference&&<Link className="button" href={"/wh/dispatch?"+new URLSearchParams({state})}>清除编号</Link>}
+      <button type="button" className="button" onClick={reload}>刷新</button>
     </form>
     {error&&<ErrorBlock error={error}/>}
     {!data&&!error&&<p role="status">正在查询批次…</p>}
@@ -410,10 +410,11 @@ export function WarehouseDispatchBatch({id}:{id:string}) {
   const carriers=useLoad("/carriers");
   const b=data?.batch;
   return <>
-    <div className="page-head"><Link href="/wh/dispatch">← 出库队列</Link>
+    <div className="page-head row"><div><Link href="/wh/dispatch">← 出库队列</Link>
       <p className="eyebrow report-eyebrow">WAREHOUSE / DISPATCH BATCH</p><h1>发运批次</h1>
       <p className="code">{id}</p>{b&&<p><Tag>{label(b.state)}</Tag> · {dispatchAction(b.action)}</p>}</div>
-    {error&&<ErrorBlock error={error}/>}<button type="button" onClick={reload}>刷新批次状态</button>
+      <div className="head-actions"><button type="button" className="button sm" onClick={reload}>刷新批次状态</button></div></div>
+    {error&&<ErrorBlock error={error}/>}
     {!data&&!error&&<p role="status">正在读取批次…</p>}
     {data&&!error&&<>
       <Panel title="客户授权去向">
@@ -643,7 +644,7 @@ export function TaskView({id,actor}:{id:string;actor:Row}) {
             ]}/>
             {c.parts?.length>0&&<Select name="part_code" label="缺陷部位" required={false} choices={c.parts.map((p:string)=>({id:p,label:p}))}/>}
             <Field name="reason" label="英文说明或缺测原因" required={false}/>
-            <label>证据照片{c.evidence?"（提交前必填）":""}<input name="photo" type="file" accept="image/*"/></label>
+            <label>证据照片{c.evidence?"（提交前必填）":""}<FileInput name="photo" accept="image/*"/></label>
             <label className="check"><input type="checkbox" name="save_offline"/>暂存到本机离线队列（稍后批量同步）</label>
           </Form>}
         </div>;
@@ -689,7 +690,10 @@ export function TaskView({id,actor}:{id:string;actor:Row}) {
 export function LogisticsDesk() {
   const {data,error,reload}=useLoad("/staff/tracking");
   const monitor=useLoad("/staff/tracking/monitor");
-  return <><div className="page-head row"><div><p className="eyebrow">TRACKING / OPERATIONS</p><h1>物流监控</h1><p className="muted">入仓、集运及退商家均显示中文原始轨迹与客户英文事件。</p></div><Link className="button sm" href="/admin/integrations/logistics">物流接口配置</Link></div>
+  const [selectedId,setSelectedId]=useState<string>("");
+  const rows:Row[]=data?.rows??[];
+  const selectedTrack=rows.find(r=>r.id===selectedId);
+  return <><div className="page-head row"><div><p className="eyebrow">TRACKING / OPERATIONS</p><h1>物流监控</h1><p className="muted">入仓、集运及退商家均显示中文原始轨迹与客户英文事件。</p></div><div className="head-actions"><button type="button" className="button sm" onClick={()=>{reload();monitor.reload();}}>刷新监控</button><Link className="button sm" href="/admin/integrations/logistics">物流接口配置</Link></div></div>
     {error&&<ErrorBlock error={error}/>}
     {monitor.error&&<ErrorBlock error={monitor.error}/>}
     {monitor.data&&<>
@@ -707,12 +711,12 @@ export function LogisticsDesk() {
             <span>{a.kind} · <Tag>Ep #{a.episode}</Tag></span>,
             <Tag>{a.state}{a.overdue?" (超期)":""}</Tag>,
             stamp(a.due_at),
-            a.state!=="resolved"?<div className="row" style={{gap:6}}>
-              {a.state==="open"&&<Action run={async()=>{
+            a.state!=="resolved"?<div className="actions">
+              {a.state==="open"&&<Action sm run={async()=>{
                 await request(`/staff/tracking-alerts/${a.id}`,"POST",{action:"acknowledge",note:"Acknowledged by staff"});
                 monitor.reload();
               }}>认领跟进</Action>}
-              <Action run={async()=>{
+              <Action sm run={async()=>{
                 await request(`/staff/tracking-alerts/${a.id}`,"POST",{action:"resolve",note:"Resolved after carrier check"});
                 monitor.reload();
               }}>标记解除</Action>
@@ -735,21 +739,49 @@ export function LogisticsDesk() {
         {["正常","无物流记录","需电话验证","暂不支持","数据陈旧","英文待更新","接口故障","已签收待入库","退回"].map(x=><Tag key={x} tone="gray">{x}</Tag>)}
       </div>
     </Panel>
-    <Panel title="入仓与寄出运输">
-      <button type="button" onClick={()=>{reload();monitor.reload();}}>刷新</button>
-      {data?.rows.map((r:Row)=><details className="card" key={r.id}><summary>{r.tracking_norm} · {label(r.transport_state)} · {label(r.sync_state)}</summary>
-        <p className="muted">最近同步 {stamp(r.last_success_at)}</p>
-        {r.events?.length?<ol className="timeline">{r.events.map((e:Row)=><li key={e.id}>{stamp(e.occurred_at)} · {e.text}</li>)}</ol>:<Empty>暂无承运商中文轨迹。</Empty>}
-      </details>)}
+    <Panel
+      title="入仓与寄出运输"
+      subtitle="点击右侧按钮展开对应运单的中文承运商原始轨迹与同步记录。"
+      badge={<button type="button" className="button sm" onClick={()=>{reload();monitor.reload();}}>刷新列表</button>}
+    >
+      <Table
+        headers={["运单号","运输状态","同步状态","轨迹节点","最近同步","操作"]}
+        rows={rows.map((r:Row)=>[
+          <strong className="code">{r.tracking_norm}</strong>,
+          <Tag>{label(r.transport_state)}</Tag>,
+          <Tag tone={r.sync_state==="active"?"green":"yellow"}>{label(r.sync_state)}</Tag>,
+          `${r.events?.length??0} 条记录`,
+          stamp(r.last_success_at),
+          <button
+            type="button"
+            className={"button sm"+(selectedId===r.id?" primary":"")}
+            onClick={()=>setSelectedId(prev=>prev===r.id?"":r.id)}
+          >{selectedId===r.id?"收起详情":"查看轨迹"}</button>,
+        ])}
+        empty="暂无入仓或寄出运输记录。"
+      />
+      {selectedTrack&&<div className="card-soft" style={{marginTop:14}}>
+        <div className="row between" style={{marginBottom:12}}>
+          <strong>运单轨迹详情 · <span className="code">{selectedTrack.tracking_norm}</span></strong>
+          <button type="button" className="button sm ghost" onClick={()=>setSelectedId("")}>关闭</button>
+        </div>
+        <div className="grid cols4" style={{marginBottom:14}}>
+          <dl className="def"><dt>运单编号</dt><dd className="code">{selectedTrack.tracking_norm}</dd></dl>
+          <dl className="def"><dt>承运商运输状态</dt><dd>{label(selectedTrack.transport_state)}</dd></dl>
+          <dl className="def"><dt>同步状态</dt><dd>{label(selectedTrack.sync_state)}</dd></dl>
+          <dl className="def"><dt>最近成功同步</dt><dd>{stamp(selectedTrack.last_success_at)}</dd></dl>
+        </div>
+        {selectedTrack.events?.length
+          ?<ol className="timeline">{selectedTrack.events.map((e:Row)=><li key={e.id}><small className="muted">{stamp(e.occurred_at)}</small><div>{e.text}</div></li>)}</ol>
+          :<Empty>暂无承运商中文轨迹（本地未开启外部快递商实时回调时保持待查询状态）。</Empty>}
+      </div>}
     </Panel></>;
 }
 export function LogisticsConfiguration() {
   const {data,error,reload}=useLoad("/staff/admin/tracking/health");
   const monitor=useLoad("/staff/tracking/monitor");
   return <><div className="page-head row"><div><p className="eyebrow">TRACKING / CONFIGURATION</p><h1>物流供应商接入</h1><p className="muted">供应商配置、承运商覆盖、额度、错误及恢复状态。</p></div><Link className="button sm" href="/admin/logistics">物流监控</Link></div>
-    <Panel title="快递100配置预检">
-      <p>状态来自当前应用配置。承运商覆盖、接口连通性和额度需用实际账号联调确认。</p>
-      <button type="button" onClick={()=>{reload();monitor.reload();}}>重新读取配置</button>
+    <Panel title="快递100配置预检" subtitle="状态来自当前应用配置。承运商覆盖、接口连通性和额度需用实际账号联调确认。" badge={<button type="button" className="button sm" onClick={()=>{reload();monitor.reload();}}>重新读取配置</button>}>
       {error?<ErrorBlock error={error}/>:data?<Table headers={["检查项","配置状态"]} rows={[
         ["运单查询",data.queryConfigured?"已配置":"未配置"],
         ["HTTPS 回调地址",data.httpsCallbackConfigured?"已配置":"未配置"],
@@ -884,7 +916,7 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
           </div>
         </Panel>
         <Panel title="生产发布提醒">
-          <p className="small">开发、模拟测试、真实支付联调、实仓验收和正式开放是不同的里程碑。未完成 §23 门禁签署前默认保持预发布保护。</p>
+          <p className="small">开发、模拟测试、真实支付联调、实仓验收和正式开放是不同的里程碑。未完成上线门禁签署前默认保持预发布保护。</p>
           <Tag tone="yellow">Production gate: staging_only</Tag>
         </Panel>
       </div>
@@ -1056,20 +1088,24 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
       </Form>
     </Panel>}
     {page==="users"&&superAdmin&&<>
-      <Panel title="员工权限列表">
-        <Table headers={["员工","邮箱","状态","当前角色","权限与状态操作"]} rows={(data.staffUsers??[]).map((u:Row)=>[
-          <strong>{u.display_name??u.id.slice(0,8)}</strong>,
-          <span className="code">{u.email??"—"}</span>,
+      <Panel title="员工权限列表" subtitle="变更员工角色或停用账号均须填写可审计原因，停用后立即撤销活跃会话。">
+        <Table headers={["员工账号","状态","当前角色","权限与状态操作"]} rows={(data.staffUsers??[]).map((u:Row)=>[
+          <div style={{whiteSpace:"nowrap"}}>
+            <strong>{u.display_name??u.id.slice(0,8)}</strong>
+            <div className="muted small code" style={{marginTop:2}}>{u.email??"—"}</div>
+          </div>,
           <Tag>{u.status}</Tag>,
-          (u.roles??[]).join(", ")||"无角色",
+          <div className="row flexwrap" style={{justifyContent:"flex-start",gap:5,minWidth:150}}>
+            {(u.roles??[]).length?(u.roles as string[]).map(r=><Tag key={r} tone="blue">{r}</Tag>):<span className="muted">无角色</span>}
+          </div>,
           <div className="actions">
             <Form inline label="更新角色" run={async f=>{
               const roles=text(f,"roles").split(",").map(s=>s.trim()).filter(Boolean);
               await request("/staff/users/"+u.id+"/roles","POST",{roles,reason:text(f,"reason")});
               reload();
             }}>
-              <Field name="roles" label="角色列表(逗号分隔)" value={(u.roles??[]).join(",")}/>
-              <Field name="reason" label="变更原因"/>
+              <label style={{flex:"1.45 1 205px",minWidth:195}}>角色列表（逗号分隔）<input name="roles" defaultValue={(u.roles??[]).join(",")} required/></label>
+              <label style={{flex:"1 1 135px",minWidth:125}}>变更原因<input name="reason" placeholder="填写调整依据" required/></label>
             </Form>
             {u.id!==actor.id&&<Action run={async()=>{
               const nextStatus=u.status==="disabled"?"active":"disabled";
@@ -1314,9 +1350,9 @@ function StaffOrderList() {
         </select></label>
       </div>
       <div className="inline-form">
-        <label>创建日期从（UTC）<input name="from" type="date" defaultValue={params.get("from")??""}/></label>
-        <label>创建日期至（UTC，含当天）<input name="to" type="date" defaultValue={params.get("to")??""}/></label>
-        <button className="primary" type="submit">筛选订单</button><Link href="/admin/orders">清除筛选</Link>
+        <Field name="from" label="创建日期从（UTC）" type="date" required={false} value={params.get("from")??""}/>
+        <Field name="to" label="创建日期至（UTC，含当天）" type="date" required={false} value={params.get("to")??""}/>
+        <button className="button primary" type="submit">筛选订单</button><Link className="button" href="/admin/orders">清除筛选</Link>
       </div>
     </form>
     {result.error&&<ErrorBlock error={result.error}/>}
@@ -1664,7 +1700,7 @@ function ItemIdentity({data,onSave}:{data:Row;onSave:()=>void}) {
         <Field name="actual_size" label="实拍吊牌/洗标尺码（选填）" required={false}/>
         <Field name="actual_color" label="实收外观颜色（选填）" required={false}/>
         <Field name="mismatch_note" label="不符说明（客户可见英文，不符时必填）" required={false}/>
-        <label>补充标签核对照（选填）<input type="file" name="photo" accept="image/jpeg,image/png,image/webp"/></label>
+        <label>补充标签核对照（选填）<FileInput name="photo" accept="image/jpeg,image/png,image/webp"/></label>
       </Form>
     </details>}
     {positions.length>0?<Form key={item.id} label="核对并绑定" run={async f=>{

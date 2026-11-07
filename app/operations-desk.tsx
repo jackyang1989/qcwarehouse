@@ -25,7 +25,7 @@ export function OperationsDesk() {
     {email.error&&<ErrorBlock error={email.error}/>}
     {email.data?.channel_alert?.message&&<div className="notice" role="alert"><strong>邮件通道独立告警：</strong>{email.data.channel_alert.message}</div>}
     {!data&&!error&&<p role="status">正在读取失败队列…</p>}
-    {data&&!error&&<Panel title="失败待处理">
+    {data&&!error&&<Panel title="失败待处理" badge={<button type="button" className="button sm" onClick={reload}>刷新作业状态</button>}>
       {!data.rows.length&&<Empty>当前没有可重排的失败作业。</Empty>}
       {data.rows.map((job:Row)=><details className="card" key={job.id+"-"+job.attempts}>
         <summary><span className="code">#{job.id}</span> · {jobNames[job.type]??job.type} · <Tag>
@@ -46,7 +46,6 @@ export function OperationsDesk() {
           }
         }}><label>修复内容与重排依据<textarea name="reason" required minLength={4} maxLength={1000}/></label></Form>
       </details>)}
-      <button type="button" onClick={reload}>刷新作业状态</button>
     </Panel>}
     <Panel title="邮件投递与退信抑制">
       <div className="form inline-form">
@@ -60,7 +59,7 @@ export function OperationsDesk() {
           <option value="delivered">已送达 (delivered)</option>
           <option value="queued">排队中 (queued)</option>
         </select></label>
-        <button type="button" onClick={email.reload}>刷新邮件状态</button>
+        <button type="button" className="button" onClick={email.reload}>刷新邮件状态</button>
       </div>
       {email.data&&!email.data.rows.length&&<Empty>当前筛选条件下没有邮件投递记录。</Empty>}
       {email.data?.rows.map((row:Row)=><details className="card" key={row.id}>
@@ -97,7 +96,7 @@ function SystemHealthAndRecoveryPanel() {
   const counts=h?.counts??{};
   const runs=h?.recovery_runs??h?.recent_recovery_runs??[];
   return <Panel title="系统健康、备份校验与恢复演练">
-    <p className="muted">验证对象存储/私有媒体完整性，登记备份恢复演练并重放恢复时间点后的会话撤销、账号注销、解绑与退信抑制清单（T105），同时核对外部支付与出库交接一致性（T106）。</p>
+    <p className="muted">验证对象存储与私有媒体完整性，登记备份恢复演练并重放恢复时间点后的会话撤销、账号注销、解绑与退信抑制清单，同时核对外部支付与出库交接一致性。</p>
     {health.error&&<ErrorBlock error={health.error}/>}
     {h&&<>
       <div className="metric-strip" aria-label="系统健康与备份">
@@ -108,7 +107,7 @@ function SystemHealthAndRecoveryPanel() {
       </div>
       <div className="ops-columns">
         <div>
-          <Form label="登记恢复演练与安全撤销清单重放（T105 / T106）" run={async f=>{
+          <Form label="登记恢复演练与安全撤销清单重放" run={async f=>{
             const sess=text(f,"revoked_session_ids").split(",").map(s=>s.trim()).filter(Boolean);
             await request("/staff/admin/recovery-runs","POST",{
               environment:text(f,"environment")||"staging-drill",
@@ -178,18 +177,18 @@ function LaunchReadinessAndRehearsalPanel() {
   const readiness=useLoad("/staff/admin/launch-readiness");
   const d=readiness.data;
   return <Panel title="实仓演练归档与生产上线门禁">
-    <p className="muted">统一管理第 29 周 5 组实仓/预发布演练证据归档与复验（测试证据与生产证据严格分离）、第 30 周香港运营主体配置（附录 C.12）、在途订单/批次/库存预检，以及 §23 门禁逐项签署（缺任一项即锁定为预发布 staging_only）。</p>
+    <p className="muted">统一管理 5 组实仓与预发布演练证据归档及复验（测试证据与生产证据严格分离）、香港运营主体配置、在途订单/批次/库存预检，以及生产上线门禁逐项签署（缺任一项即锁定为预发布 staging_only）。</p>
     {readiness.error&&<ErrorBlock error={readiness.error}/>}
     {d&&<>
       <div className="metric-strip" aria-label="上线门禁摘要">
-        <div className="metric"><span>当前生效运行模式</span><strong>{d.effective_mode==="production"?"正式生产 (production)":"预发布保护 (staging_only)"}</strong><small>{d.all_gates_satisfied?"§23 门禁全部满足":"缺 "+d.missing_gates.length+" 项维持预发布"}</small></div>
+        <div className="metric"><span>当前生效运行模式</span><strong>{d.effective_mode==="production"?"正式生产 (production)":"预发布保护 (staging_only)"}</strong><small>{d.all_gates_satisfied?"上线门禁全部满足":"缺 "+d.missing_gates.length+" 项维持预发布"}</small></div>
         <div className="metric"><span>演练场景覆盖</span><strong>{d.rehearsal_coverage.completed_scenarios.length} / {d.rehearsal_coverage.required_scenarios.length}</strong><small>已复验 {d.rehearsal_coverage.reverified_count} 组</small></div>
         <div className="metric"><span>在途订单 / 批次</span><strong>{d.in_flight_summary.in_flight_orders} / {d.in_flight_summary.in_flight_batches}</strong><small>在库实物 {d.in_flight_summary.stored_items} 件</small></div>
         <div className="metric"><span>香港运营主体</span><strong>{d.legal_entity?.entity_name??"待配置"}</strong><small>BR: {d.legal_entity?.br_number??"—"}</small></div>
       </div>
 
       <Table
-        headers={["§23 上线门禁项","门禁代码","当前状态"]}
+        headers={["上线门禁项","门禁代码","当前状态"]}
         rows={Object.entries(d.gates as Record<string,boolean>).map(([k,ok])=>[
           gateLabels[k]??k,
           <span className="code">{k}</span>,

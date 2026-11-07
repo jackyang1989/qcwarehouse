@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Empty, ErrorBlock, Panel, stamp, Table, type Row, useLoad } from "./ui";
+import { Empty, ErrorBlock, Field, Panel, stamp, Table, type Row, useLoad } from "./ui";
 
 const actorLabels:Record<string,string>={customer:"客户",staff:"员工",system:"系统"};
 const fields=[
@@ -36,9 +36,9 @@ export function AuditDesk() {
           <label>操作者类型<select name="actor_type" defaultValue={params.get("actor_type")??""}>
             <option value="">全部</option>{Object.entries(actorLabels).map(([type,label])=><option value={type} key={type}>{label}</option>)}
           </select></label>
-          <label>日期从（UTC）<input name="from" type="date" defaultValue={params.get("from")??""}/></label>
-          <label>日期至（UTC）<input name="to" type="date" defaultValue={params.get("to")??""}/></label>
-          <button type="submit" className="primary">查审计</button><Link href="/admin/audit">清除筛选</Link>
+          <Field name="from" label="日期从（UTC）" type="date" required={false} value={params.get("from")??""}/>
+          <Field name="to" label="日期至（UTC）" type="date" required={false} value={params.get("to")??""}/>
+          <button type="submit" className="button primary">查审计</button><Link className="button" href="/admin/audit">清除筛选</Link>
         </div>
       </form>
     </Panel>

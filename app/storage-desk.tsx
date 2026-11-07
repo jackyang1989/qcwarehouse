@@ -88,7 +88,7 @@ export function OverdueDisposalDesk() {
     {d&&<>
       <div className="row" style={{justifyContent:"space-between",marginBottom:12}}>
         <div>
-          <strong>生产处置执行门禁（T104）：</strong> <Tag>{prodEnabled?"已开启":"默认关闭（仅预演与审批）"}</Tag>
+          <strong>生产处置执行门禁：</strong> <Tag>{prodEnabled?"已开启":"默认关闭（仅预演与审批）"}</Tag>
           <span className="muted"> · 逾期在库 {d.overdue_items.length} 件 · 违禁/隔离 {d.restricted_items.length} 件</span>
         </div>
         <Action run={async()=>{

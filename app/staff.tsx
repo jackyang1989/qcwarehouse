@@ -160,11 +160,21 @@ export function WarehouseDesk({path,actor}:{path:string;actor:Row}) {
       </Panel>
     </>}
     {current==="inspection"&&(canInspect||canReview)&&<>
-      {canInspect&&<Panel title="质检队列">
+      {canInspect&&<Panel title="质检队列（按 SLA 到期排序 · PAGE-H08）">
+        <Form inline label="扫码定位任务" run={async f=>{
+          const hit=await request("/staff/inspection-tasks/lookup?"+new URLSearchParams({code:text(f,"scan_code")}));
+          location.assign("/wh/task/"+hit.task_id);
+        }}><Field name="scan_code" label="扫描或输入样品码 S-... / 订单号 QW-..."/></Form>
         {!groups.length&&<Empty>暂无可领取任务。付款并核对到齐后自动进入队列。</Empty>}
-        {groups.map(ts=><div key={ts[0].order_id} className="card"><h3>{ts[0].public_no}</h3>
-          <Table headers={["物件或组","服务","状态",""]} rows={ts.map(t=>[t.item_code??"比较组",t.title["zh-CN"],label(t.state),
-            <Link href={"/wh/task/"+t.id}>查看检查项</Link>])}/>
+        {groups.map(ts=><div key={ts[0].order_id} className="card">
+          <div className="row">
+            <h3>{ts[0].public_no} · {ts[0].category_labels?.["zh-CN"]??"商品"} · {ts.length} 项任务</h3>
+            <span>{ts[0].sla_overdue?<Tag>SLA 已超时</Tag>:<span className="muted small">SLA 截止：{stamp(ts[0].sla_due_at)}</span>}</span>
+          </div>
+          <Table headers={["物件或组","服务","状态","操作"]} rows={ts.map(t=>[
+            <span className="code">{t.item_code??"比较组"}</span>,t.title["zh-CN"],label(t.state),
+            <Link href={"/wh/task/"+t.id}>进入工作台</Link>
+          ])}/>
           {ts.every(t=>t.state==="SUBMITTED")&&ts.some(t=>t.assignee_id===actor.id)&&<Action primary run={async()=>{
             const res=await request("/staff/inspection-tasks/"+ts[0].id);
             await request("/staff/orders/"+ts[0].order_id+"/report/submit","POST",{revision:res.order_revision,task_ids:ts.map(t=>t.id)});reload();
@@ -369,41 +379,186 @@ function DispatchQuoteForm({batch,rates,reload}:{batch:Row;rates:Row[];reload:()
 }
 export function TaskView({id,actor}:{id:string;actor:Row}) {
   const {data,error,reload}=useLoad("/staff/inspection-tasks/"+id);
+  const draftKey="qcw_task_draft_"+id;
+  const [drafts,setDrafts]=useState<Row[]>([]);
+  const [conflict,setConflict]=useState<{localRevision:number;serverRevision:number;message:string}|null>(null);
+  const [online,setOnline]=useState(true);
+  useEffect(()=>{
+    try {
+      const saved=localStorage.getItem(draftKey);
+      if(saved) setDrafts(JSON.parse(saved));
+    } catch {}
+    setOnline(navigator.onLine);
+    const onOnline=()=>setOnline(true),onOffline=()=>setOnline(false);
+    window.addEventListener("online",onOnline);
+    window.addEventListener("offline",onOffline);
+    return ()=>{window.removeEventListener("online",onOnline);window.removeEventListener("offline",onOffline);};
+  },[draftKey]);
+  function saveLocalDrafts(next:Row[]) {
+    setDrafts(next);
+    try {
+      if(next.length) localStorage.setItem(draftKey,JSON.stringify(next));
+      else localStorage.removeItem(draftKey);
+    } catch {}
+  }
   if(error)return <ErrorBlock error={error}/>;
   if(!data)return <p>正在加载检查项…</p>;
   const writable=data.state==="IN_PROGRESS"&&data.assignee_id===actor.id;
-  return <><div className="page-head row"><div><p className="eyebrow">Warehouse / Inspection task</p><h1 className="code">{data.public_no}</h1>
-      <p className="muted">{data.item_code??"对比组"} · {label(data.state)}</p></div><Link className="button" href="/wh/inspection">返回质检队列</Link></div>
+  const completeness=data.completeness??{ok:true,missing:[]};
+  return <><div className="page-head row"><div><p className="eyebrow">Warehouse / Inspection workbench (PAGE-H09)</p><h1 className="code">{data.public_no}</h1>
+      <p className="muted">{data.item_code??"对比组"} · {label(data.state)} · 模板版本 <span className="code">{String(data.template_version_id).slice(0,8)}</span> · SLA {stamp(data.sla_due_at)}</p></div>
+      <div className="actions"><Tag>{online?"网络在线":"离线草稿模式"}</Tag>{drafts.length>0&&<Tag>待同步草稿 {drafts.length} 项</Tag>}<Link className="button" href="/wh/inspection">返回质检队列</Link></div></div>
     {data.review_feedback&&<div className="notice"><strong>复核退回</strong><p>{data.review_feedback}</p></div>}
+    {conflict&&<Panel title="断网重连与版本冲突处理（PAGE-H10）">
+      <p className="notice">检测到服务端版本已更新（本机基线 v{conflict.localRevision} vs 服务端 v{conflict.serverRevision}）：{conflict.message}</p>
+      <div className="actions">
+        <Action primary run={async()=>{
+          const fresh=await request("/staff/inspection-tasks/"+id);
+          await request("/staff/inspection-tasks/"+id+"/results","PUT",{revision:fresh.revision,results:drafts});
+          saveLocalDrafts([]);setConflict(null);reload();
+        }}>拉取最新基线并合并重放本机草稿（{drafts.length} 项）</Action>
+        <Action run={async()=>{saveLocalDrafts([]);setConflict(null);reload();}}>放弃本机草稿并采用服务端版本</Action>
+      </div>
+    </Panel>}
+    {drafts.length>0&&!conflict&&writable&&<Panel title="本机离线草稿与待同步队列（TASK-073 / TASK-074）">
+      <p className="muted small">已暂存 {drafts.length} 条检查项结果在本机浏览器，断网不丢失，恢复在线后可一键幂等批量同步。</p>
+      <div className="actions">
+        <Action primary run={async()=>{
+          try {
+            await request("/staff/inspection-tasks/"+id+"/results","PUT",{revision:data.revision,results:drafts});
+            saveLocalDrafts([]);reload();
+          } catch(e) {
+            if(e instanceof RequestError && e.code==="VERSION_CONFLICT") {
+              const fresh=await request("/staff/inspection-tasks/"+id);
+              setConflict({localRevision:data.revision,serverRevision:fresh.revision,message:e.message});
+              return;
+            }
+            throw e;
+          }
+        }}>立即同步全部本机草稿</Action>
+        <Action run={async()=>saveLocalDrafts([])}>清空本机草稿</Action>
+      </div>
+    </Panel>}
+    {(data.sibling_tasks?.length??0)>1&&<Panel title="同单逐件任务切换与扫码跳转（TASK-067）">
+      <Form inline label="扫码切换样品" run={async f=>{
+        const hit=await request("/staff/inspection-tasks/lookup?"+new URLSearchParams({code:text(f,"item_scan"),order_id:data.order_id}));
+        location.assign("/wh/task/"+hit.task_id);
+      }}><Field name="item_scan" label="扫描同单样品码 S-..."/></Form>
+      <div className="actions">
+        {data.sibling_tasks.map((st:Row)=><Link key={st.id} className={st.id===id?"button primary":"button"} href={"/wh/task/"+st.id}>
+          {st.item_code??("位置 #"+(st.position??"")) } · {label(st.state)}
+        </Link>)}
+      </div>
+    </Panel>}
     {data.state==="READY"&&actor.roles.includes("inspector")&&<Action primary run={async()=>{await request("/staff/inspection-tasks/"+id+"/start","POST",{revision:data.revision});reload();}}>领取并开始</Action>}
+    {writable&&<Panel title="分步作业计时（TASK-072）">
+      <div className="actions">
+        {([["prep","准备"],["measure","测量"],["visual","外观检查"],["compare","对比核对"]] as const).map(([code,name])=><Action key={code} run={async()=>{
+          await request("/staff/inspection-tasks/"+id+"/steps","POST",{step_code:code,action:"record",seconds:60});reload();
+        }}>记录 {name} 工时</Action>)}
+      </div>
+      {(data.step_timings?.length??0)>0&&<p className="muted small">已记录步骤：{data.step_timings.map((s:Row)=>`${s.step_code}(${s.seconds??0}s)`).join("、")}</p>}
+    </Panel>}
+    {data.content.measure_conditions&&<div className="notice"><strong>测量与拍摄条件</strong><p>{data.content.measure_conditions}</p></div>}
     {data.components.map((m:Row)=><Panel key={m.id} title={m.id==="main"?(data.item_code??"实物"):m.code}>
-      {data.content.checks.map((c:Row)=>{
-        const prev=data.results.find((r:Row)=>r.item_key===c.key&&r.component===m.id&&r.is_final);
-        return <div className="card" key={c.key}><h3>{c.zh} · {c.label}</h3><p className="muted small">{c.method}{c.unit?" · "+c.unit:""}</p>
-          {prev&&<p><Tag>{prev.status}</Tag> {String(prev.typed_value??prev.reason??"")}</p>}
+      {data.content.checks.filter((c:Row)=>Boolean(data.group_id)||!c.component||c.component===m.id).map((c:Row)=>{
+        const attempts=data.results.filter((r:Row)=>r.item_key===c.key&&r.component===m.id);
+        const prev=attempts.find((r:Row)=>r.is_final)??attempts.at(-1);
+        const retryNeeded=attempts.some((r:Row)=>r.details?.retry_required) && attempts.length<3;
+        return <div className="card" key={c.key} id={`comp-${m.id}-${c.key}`}>
+          <h3>{c.zh} · {c.label}</h3>
+          <p className="muted small">{c.method}{c.unit?" · 单位 "+c.unit:""}{c.diagram?" · 示意图 "+c.diagram:""}</p>
+          {attempts.length>0&&<p className="small">
+            历史记录：{attempts.map((a:Row)=>`#${a.attempt}: ${a.status}${a.typed_value!=null?" "+a.typed_value+(a.unit??""):""}${a.details?.derived_circumference?" (推算周长 "+a.details.derived_circumference+"cm)":""}${a.is_final?" [最终值]":""}`).join(" | ")}
+          </p>}
+          {retryNeeded&&<p className="notice">两次测量差值超过阈值，请录入第 3 次复测值。</p>}
+          {prev?.details?.uncertain&&<p className="notice">三次测量均超阈值，已取中位数并标记为不确定值（需填写原因说明）。</p>}
           {writable&&<Form label="保存该项" run={async f=>{
             const status=text(f,"status"),value=text(f,"value"),reason=text(f,"reason"),photo=f.get("photo");
+            const severity=text(f,"severity"),partCode=text(f,"part_code"),offlineSave=checked(f,"save_offline");
             const evidence=photo instanceof File&&photo.size?[await upload(photo,"shot")]:[];
             if(status==="RECORDED"&&!value)throw new Error("录入实际值，或明确选择无法检查。");
             const typed=c.type==="number"?Number(value):c.type==="boolean"?value==="true":value;
-            await request("/staff/inspection-tasks/"+id+"/results","PUT",{revision:data.revision,results:[{
-              item_key:c.key,component:m.id,attempt:(prev?.attempt??0)+1,status,is_final:true,method:c.method,
+            const details:Record<string,unknown>={
+              ...(severity?{severity}:{}),
+              ...(partCode?{part_code:partCode}:{}),
+              ...(reason?{note:reason}:{}),
+            };
+            const payload={
+              item_key:c.key,component:m.id,attempt:(attempts.at(-1)?.attempt??0)+1,status,is_final:true,method:c.method,
               ...(status==="RECORDED"?{typed_value:typed,...(c.unit?{unit:c.unit}:{})}:{}),
-              ...(reason?{reason}:{}),...(evidence.length?{evidence_ids:evidence}:{}),
-            }]});reload();
+              ...(reason?{reason}:{}),
+              ...(Object.keys(details).length?{details}:{}),
+              ...(evidence.length?{evidence_ids:evidence}:{}),
+            };
+            if(offlineSave || !online) {
+              saveLocalDrafts([...drafts.filter(d=>!(d.item_key===payload.item_key&&d.component===payload.component&&d.attempt===payload.attempt)),payload]);
+              return;
+            }
+            try {
+              await request("/staff/inspection-tasks/"+id+"/results","PUT",{revision:data.revision,results:[payload]});
+              reload();
+            } catch(e) {
+              if(e instanceof RequestError && e.code==="VERSION_CONFLICT") {
+                saveLocalDrafts([...drafts,payload]);
+                const fresh=await request("/staff/inspection-tasks/"+id);
+                setConflict({localRevision:data.revision,serverRevision:fresh.revision,message:e.message});
+                return;
+              }
+              throw e;
+            }
           }}>
             <Select name="status" label="结果" value="RECORDED" choices={[
               {id:"RECORDED",label:"已测量或观察"},{id:"OBSERVED_ISSUE",label:"发现问题"},{id:"NOT_OBSERVED",label:"未观察到问题"},
               {id:"NOT_TESTED",label:"未检查"},{id:"NOT_APPLICABLE",label:"不适用"},{id:"BLOCKED",label:"无法继续"}]}/>
             {c.type==="boolean"?<Select name="value" label="观察值" required={false} choices={[{id:"true",label:"是"},{id:"false",label:"否"}]}/>:
               <Field name="value" label="实际值" required={false} type={c.type==="number"?"number":"text"} step="any"/>}
+            <Select name="severity" label="严重度（发现问题时必填）" required={false} choices={[
+              {id:"attention",label:"Attention（需留意）"},{id:"material_issue",label:"Material issue（明显缺陷）"},{id:"uncertain",label:"Uncertain（不确定）"}
+            ]}/>
+            {c.parts?.length>0&&<Select name="part_code" label="缺陷部位" required={false} choices={c.parts.map((p:string)=>({id:p,label:p}))}/>}
             <Field name="reason" label="英文说明或缺测原因" required={false}/>
             <label>证据照片{c.evidence?"（提交前必填）":""}<input name="photo" type="file" accept="image/*"/></label>
+            <label className="check"><input type="checkbox" name="save_offline"/>暂存到本机离线队列（稍后批量同步）</label>
           </Form>}
         </div>;
       })}
+      {(data.content.shots??[]).filter((s:Row)=>Boolean(data.group_id)||!s.component||s.component===m.id).map((s:Row)=>{
+        const existing=(data.shots??[]).find((x:Row)=>x.shot_code===s.code&&(x.component??"main")===m.id);
+        return <div className="card" key={s.code} id={`comp-${m.id}-${s.code}`}>
+          <h3>必拍机位：{s.zh??s.name} · <span className="code">{s.code}</span></h3>
+          {existing?<p><Tag>已上传</Tag> <a href={"/api/v1/media/"+existing.id} target="_blank" rel="noreferrer">查看机位照片</a></p>:<p className="muted small">尚未上传本组件该机位照片</p>}
+          {writable&&<Form label="上传组件必拍照" run={async f=>{
+            const mediaId=await upload(f.get("photo"),"shot");
+            await request("/staff/inspection-tasks/"+id+"/shots","POST",{revision:data.revision,component:m.id,shot_code:s.code,media_id:mediaId});
+            reload();
+          }}><Photo label="选择或拍摄机位照"/></Form>}
+        </div>;
+      })}
     </Panel>)}
-    {writable&&<Action primary run={async()=>{await request("/staff/inspection-tasks/"+id+"/submit","POST",{revision:data.revision});location.assign("/wh/inspection");}}>提交此任务</Action>}
+    {data.group_id&&(data.content.order_shots?.length??0)>0&&<Panel title="对比组同框必拍照（TASK-072）">
+      {data.content.order_shots.map((code:string)=>{
+        const existing=(data.shots??[]).find((x:Row)=>x.shot_code===code&&["group","order","main",null].includes(x.component));
+        return <div className="card" key={code} id={`comp-group-${code}`}>
+          <h3>对比组机位：<span className="code">{code}</span></h3>
+          {existing?<p><Tag>已上传</Tag> <a href={"/api/v1/media/"+existing.id} target="_blank" rel="noreferrer">查看对比组照</a></p>:<p className="muted small">尚未上传该对比组照</p>}
+          {writable&&<Form label="上传对比组照" run={async f=>{
+            const mediaId=await upload(f.get("photo"),"shot");
+            await request("/staff/inspection-tasks/"+id+"/shots","POST",{revision:data.revision,component:"group",shot_code:code,media_id:mediaId});
+            reload();
+          }}><Photo label="拍摄并排对比照"/></Form>}
+        </div>;
+      })}
+    </Panel>}
+    <Panel title="提交前完整性检查（TASK-075 · PAGE-H09）">
+      {completeness.ok?<p><Tag>完整性通过</Tag> 所有必测项、复测、证据照与组件必拍照均已齐全。</p>:<>
+        <p className="notice">当前仍有 {completeness.missing.length} 项缺漏，补齐前不可提交任务：</p>
+        <ul>{completeness.missing.map((item:Row,idx:number)=><li key={idx}>
+          <a href={`#comp-${item.component}-${item.code}`}><strong>{item.sample_id} · {item.label}</strong></a>：{item.hint}
+        </li>)}</ul>
+      </>}
+      {writable&&<Action primary run={async()=>{await request("/staff/inspection-tasks/"+id+"/submit","POST",{revision:data.revision});location.assign("/wh/inspection");}}>提交此任务</Action>}
+    </Panel>
   </>;
 }
 export function LogisticsDesk() {

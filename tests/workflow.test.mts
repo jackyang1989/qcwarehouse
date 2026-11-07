@@ -3257,4 +3257,290 @@ test("item identity mismatch, customer discrepancy response, 3-to-2 conversion, 
   assert.equal(afterSuppPayView.positions.filter((p:{in_scope:boolean})=>p.in_scope).length,3);
 });
 
+test("inspection workbench: SLA queue, scan switching, multi-component suit, retry measurement policy, shots isolation, step timings, offline conflict, and completeness (TASK-066 to TASK-075)",async()=>{
+  const {c,terms}=await signCustomer();
+  const receiving=await staffLogin("receiving");
+  const inspector=await staffLogin("inspector");
+  const reviewer=await staffLogin("reviewer");
+  const admin=await staffLogin("admin");
+
+  const desk=await receiving.fetch("/staff/desk");
+  const locId=desk.locations[0].id as string;
+
+  // Create & publish a multi-component suit template with measurement_policy, derived circumference, parts, and component shots
+  const adminDeskData=await admin.fetch("/staff/admin/desk");
+  const apparelCat=adminDeskData.categories.find((cat:{slug:string})=>cat.slug==="apparel")!;
+  const inspectService=adminDeskData.services.find((s:{code:string})=>s.code==="inspection")!;
+  const capId=adminDeskData.capabilities[0].id as string;
+
+  const suitTplContent={
+    components:[
+      {id:"top",code:"Top (上装)"},
+      {id:"bottom",code:"Bottom (下装)"},
+    ],
+    measure_conditions:"Lay flat on a clean table without stretching.",
+    measurement_policy:{
+      attempts:2,
+      extra_attempt_on_difference:true,
+      threshold_by_unit:{cm:0.5,g:1},
+    },
+    checks:[
+      {
+        key:"waist_flat",
+        label:"Flat width",
+        zh:"平铺宽度",
+        type:"number",
+        unit:"cm",
+        method:"Measure flat width with steel tape",
+        required:true,
+        evidence:true,
+        diagram:"leggings.svg#waist",
+        derived:{circumference_cm:"value*2"},
+      },
+      {
+        key:"garment_weight",
+        label:"Garment weight",
+        zh:"整件克重",
+        type:"number",
+        unit:"g",
+        method:"Electronic scale 1g",
+        required:true,
+        evidence:false,
+      },
+      {
+        key:"stitch_defects",
+        label:"Skipped or open stitches",
+        zh:"跳线或开线",
+        type:"boolean",
+        method:"Visual observation",
+        required:true,
+        evidence:false,
+        parts:["front","back","waistband","crotch","hem"],
+      },
+      {
+        key:"pocket_check",
+        label:"Pocket lining check",
+        zh:"口袋内衬检查",
+        type:"boolean",
+        method:"Visual observation",
+        required:true,
+        evidence:false,
+        applies_if:{"attributes.has_pocket":true},
+      },
+    ],
+    shots:[
+      {code:"front_full",name:"Front full length",zh:"正面全身照",required:true},
+    ],
+  };
+
+  const suitTpl=await inspector.fetch("/staff/admin/templates",{
+    template_key:"apparel-sports-set-test-"+randomUUID().slice(0,8),
+    category_id:apparelCat.id,
+    service_type_id:inspectService.id,
+    capability_ids:[capId],
+    content:suitTplContent,
+  });
+  await reviewer.fetch(`/staff/admin/templates/${suitTpl.id}/publish`,{});
+
+  const suitSku="apparel-suit-test-"+randomUUID().slice(0,6);
+  const suitOffer=await admin.fetch("/staff/admin/offers",{
+    sku_code:suitSku,
+    service_type_id:inspectService.id,
+    category_id:apparelCat.id,
+    template_version_id:suitTpl.id,
+    title:{en:"Sports set inspection","zh-CN":"运动套装逐件检查"},
+    enabled:true,
+    rules:{minimum:1,maximum:30,unit_cents:3900,business_days:3,demo:true},
+  });
+
+  // Create a 2-item standard inspection order on the suit SKU (with has_pocket: false so pocket_check is auto NOT_APPLICABLE)
+  const {draft:suitOrder}=await createAndPay(
+    c,
+    [{
+      category_id:apparelCat.id,
+      offer_id:suitOffer.id,
+      quantity:2,
+      attributes:{has_pocket:false},
+      items:[
+        {sample_code:"SUIT-1",size_label:"M",color_declared:"Black"},
+        {sample_code:"SUIT-2",size_label:"M",color_declared:"Navy"},
+      ],
+    }],
+    terms
+  );
+
+  const addr=(await c.fetch("/me/receiving-address")).warehouse_address.id as string;
+  const suitTrk="SF"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const suitAdv=await c.fetch("/me/parcels",{address_id:addr,carrier_code:"sf",tracking_no:suitTrk,order_ids:[suitOrder.id]},"POST",201);
+  const suitPkg=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:suitTrk,carrier_code:"sf",advice_id:suitAdv.id,weight_g:920,outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+  const suitCode1="S-"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const suitCode2="S-"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const suitItems=await receiving.fetch(`/staff/packages/${suitPkg.id}/items`,{
+    revision:suitPkg.revision,
+    items:[
+      {code:suitCode1,location_id:locId},
+      {code:suitCode2,location_id:locId},
+    ],
+  },"POST",201);
+
+  const suitPos=(await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:suitCode1}))).positions
+    .filter((p:{public_no:string})=>p.public_no===suitOrder.public_no);
+  assert.equal(suitPos.length,2);
+
+  await receiving.fetch(`/staff/items/${suitItems.item_ids[0]}/identify`,{
+    revision:1,order_line_id:suitPos[0].order_line_id,expected_item_id:suitPos[0].id,matches_advice:true,media_ids:[await receiving.photo("label_photo")],
+  });
+  const id2=await receiving.fetch(`/staff/items/${suitItems.item_ids[1]}/identify`,{
+    revision:1,order_line_id:suitPos[1].order_line_id,expected_item_id:suitPos[1].id,matches_advice:true,media_ids:[await receiving.photo("label_photo")],
+  });
+  assert.equal(id2.order_state,"queued");
+
+  // 1. TASK-066 & TASK-067: Scan lookup by item code S-... and sibling_tasks list
+  const lookup1=await inspector.fetch("/staff/inspection-tasks/lookup?"+new URLSearchParams({code:suitCode1,order_id:suitOrder.id}));
+  const lookup2=await inspector.fetch("/staff/inspection-tasks/lookup?"+new URLSearchParams({code:suitCode2,order_id:suitOrder.id}));
+  assert.notEqual(lookup1.task_id,lookup2.task_id);
+  assert.equal(lookup1.item_code,suitCode1);
+  assert.equal(lookup2.item_code,suitCode2);
+
+  const taskId=lookup1.task_id as string;
+  const started=await inspector.fetch(`/staff/inspection-tasks/${taskId}/start`,{revision:lookup1.revision});
+  assert.equal(started.state,"IN_PROGRESS");
+
+  // Concurrency guard: claiming an already-started task fails with 409
+  await inspector.fetch(`/staff/inspection-tasks/${taskId}/start`,{revision:started.revision},"POST",409);
+
+  const detail1=await inspector.fetch(`/staff/inspection-tasks/${taskId}`);
+  assert.equal(detail1.sibling_tasks.length,2);
+  assert.deepEqual(detail1.components.map((m:{id:string})=>m.id),["top","bottom"]);
+  // Rule O3: pocket_check (applies_if has_pocket: true) was automatically seeded as NOT_APPLICABLE on both top and bottom!
+  const autoNa=detail1.results.filter((r:{item_key:string;status:string;is_final:boolean})=>r.item_key==="pocket_check" && r.status==="NOT_APPLICABLE" && r.is_final);
+  assert.equal(autoNa.length,2);
+
+  // 2. TASK-072: Record step timings for prep & measure
+  const stepStart=await inspector.fetch(`/staff/inspection-tasks/${taskId}/steps`,{step_code:"measure",action:"start"});
+  assert.equal(stepStart.step_code,"measure");
+  const stepStop=await inspector.fetch(`/staff/inspection-tasks/${taskId}/steps`,{step_code:"measure",action:"stop"});
+  assert(stepStop.ended_at);
+
+  // 3. TASK-068 & TASK-069 (T16, T48): Record 2 attempts on top.waist_flat that exceed 0.5cm threshold (32.0cm vs 33.2cm -> diff 1.2cm)
+  const topWaistPhoto=await inspector.photo("shot");
+  let taskRev=started.revision as number;
+  const afterTwoAttempts=await inspector.fetch(`/staff/inspection-tasks/${taskId}/results`,{
+    revision:taskRev,
+    results:[
+      {item_key:"waist_flat",component:"top",attempt:1,status:"RECORDED",method:"Measure flat width with steel tape",typed_value:32.0,unit:"cm",is_final:true,evidence_ids:[topWaistPhoto]},
+      {item_key:"waist_flat",component:"top",attempt:2,status:"RECORDED",method:"Measure flat width with steel tape",typed_value:33.2,unit:"cm",is_final:true},
+    ],
+  },"PUT");
+  taskRev=afterTwoAttempts.revision;
+
+  // Completeness check must flag top.waist_flat as needing a 3rd retry measurement!
+  const compAfter2=await inspector.fetch(`/staff/inspection-tasks/${taskId}/completeness`);
+  assert.equal(compAfter2.ok,false);
+  assert(compAfter2.missing.some((m:{component:string;code:string;hint:string})=>m.component==="top" && m.code==="waist_flat" && m.hint.includes("3rd attempt")));
+
+  // Record 3rd attempt on top.waist_flat (32.3cm -> diff with attempt 1 is 0.3cm <= 0.5cm -> attempt 1 (32.0cm, derived_circumference 64) wins!)
+  const afterThreeAttempts=await inspector.fetch(`/staff/inspection-tasks/${taskId}/results`,{
+    revision:taskRev,
+    results:[
+      {item_key:"waist_flat",component:"top",attempt:3,status:"RECORDED",method:"Measure flat width with steel tape",typed_value:32.3,unit:"cm",is_final:true},
+    ],
+  },"PUT");
+  taskRev=afterThreeAttempts.revision;
+
+  const detailAfter3=await inspector.fetch(`/staff/inspection-tasks/${taskId}`);
+  const topWaistFinal=detailAfter3.results.find((r:{item_key:string;component:string;is_final:boolean})=>r.item_key==="waist_flat" && r.component==="top" && r.is_final);
+  assert.equal(topWaistFinal.attempt,1);
+  assert.equal(topWaistFinal.typed_value,32);
+  assert.equal(topWaistFinal.details.derived_circumference,64);
+
+  // 4. TASK-071 & T48: Attempting to reuse topWaistPhoto on bottom.waist_flat is rejected with EVIDENCE_MISMATCH!
+  const reuseErr=await inspector.fetch(`/staff/inspection-tasks/${taskId}/results`,{
+    revision:taskRev,
+    results:[
+      {item_key:"waist_flat",component:"bottom",attempt:1,status:"RECORDED",method:"Measure flat width with steel tape",typed_value:34.0,unit:"cm",is_final:true,evidence_ids:[topWaistPhoto]},
+    ],
+  },"PUT",409);
+  assert.equal(reuseErr.error.code,"EVIDENCE_MISMATCH");
+
+  // 5. TASK-070 (T17): OBSERVED_ISSUE without photo is rejected (422 EVIDENCE_REQUIRED); with invalid part_code is rejected (422 RESULT_INVALID)
+  const noPhotoIssue=await inspector.fetch(`/staff/inspection-tasks/${taskId}/results`,{
+    revision:taskRev,
+    results:[
+      {item_key:"stitch_defects",component:"top",attempt:1,status:"OBSERVED_ISSUE",method:"Visual observation",is_final:true,reason:"Open seam",details:{severity:"attention",part_code:"crotch"}},
+    ],
+  },"PUT",422);
+  assert.equal(noPhotoIssue.error.code,"EVIDENCE_REQUIRED");
+
+  const defectPhoto=await inspector.photo("shot");
+  const badPartIssue=await inspector.fetch(`/staff/inspection-tasks/${taskId}/results`,{
+    revision:taskRev,
+    results:[
+      {item_key:"stitch_defects",component:"top",attempt:1,status:"OBSERVED_ISSUE",method:"Visual observation",is_final:true,reason:"Open seam",details:{severity:"attention",part_code:"invalid_part"},evidence_ids:[defectPhoto]},
+    ],
+  },"PUT",422);
+  assert.equal(badPartIssue.error.code,"RESULT_INVALID");
+
+  // Complete remaining checks on top & bottom (including 3 uncertain attempts on bottom.garment_weight -> median 205g with reason)
+  const bottomWaistPhoto=await inspector.photo("shot");
+  const savedAllChecks=await inspector.fetch(`/staff/inspection-tasks/${taskId}/results`,{
+    revision:taskRev,
+    results:[
+      {item_key:"garment_weight",component:"top",attempt:1,status:"RECORDED",method:"Electronic scale 1g",typed_value:180,unit:"g",is_final:true},
+      {item_key:"garment_weight",component:"top",attempt:2,status:"RECORDED",method:"Electronic scale 1g",typed_value:181,unit:"g",is_final:false},
+      {item_key:"stitch_defects",component:"top",attempt:1,status:"OBSERVED_ISSUE",method:"Visual observation",is_final:true,reason:"Minor loose stitch at waistband",details:{severity:"attention",part_code:"waistband"},evidence_ids:[defectPhoto]},
+      {item_key:"waist_flat",component:"bottom",attempt:1,status:"RECORDED",method:"Measure flat width with steel tape",typed_value:34.0,unit:"cm",is_final:true,evidence_ids:[bottomWaistPhoto]},
+      {item_key:"waist_flat",component:"bottom",attempt:2,status:"RECORDED",method:"Measure flat width with steel tape",typed_value:34.2,unit:"cm",is_final:false},
+      {item_key:"garment_weight",component:"bottom",attempt:1,status:"RECORDED",method:"Electronic scale 1g",typed_value:200,unit:"g",is_final:false},
+      {item_key:"garment_weight",component:"bottom",attempt:2,status:"RECORDED",method:"Electronic scale 1g",typed_value:205,unit:"g",is_final:false},
+      {item_key:"garment_weight",component:"bottom",attempt:3,status:"RECORDED",method:"Electronic scale 1g",typed_value:210,unit:"g",is_final:true,reason:"Thick drawstring moisture variance; median selected"},
+      {item_key:"stitch_defects",component:"bottom",attempt:1,status:"NOT_OBSERVED",method:"Visual observation",is_final:true},
+    ],
+  },"PUT");
+  taskRev=savedAllChecks.revision;
+
+  // 6. TASK-071 & TASK-075 (T15, T18, T48): Upload top front_full shot, try reusing it for bottom front_full (rejected), verify missing bottom front_full blocks submitTask!
+  const topShotPhoto=await inspector.photo("shot");
+  const afterTopShot=await inspector.fetch(`/staff/inspection-tasks/${taskId}/shots`,{
+    revision:taskRev,component:"top",shot_code:"front_full",media_id:topShotPhoto,
+  });
+  taskRev=afterTopShot.revision;
+
+  const shotReuseErr=await inspector.fetch(`/staff/inspection-tasks/${taskId}/shots`,{
+    revision:taskRev,component:"bottom",shot_code:"front_full",media_id:topShotPhoto,
+  },"POST",409);
+  assert.equal(shotReuseErr.error.code,"EVIDENCE_MISMATCH");
+
+  const compMissingBottomShot=await inspector.fetch(`/staff/inspection-tasks/${taskId}/completeness`);
+  assert.equal(compMissingBottomShot.ok,false);
+  assert.equal(compMissingBottomShot.missing.length,1);
+  assert.equal(compMissingBottomShot.missing[0].component,"bottom");
+  assert.equal(compMissingBottomShot.missing[0].code,"front_full");
+
+  const submitBlocked=await inspector.fetch(`/staff/inspection-tasks/${taskId}/submit`,{revision:taskRev},"POST",409);
+  assert.equal(submitBlocked.error.code,"INSPECTION_INCOMPLETE");
+
+  // 7. TASK-074 (T41): Stale offline revision conflict returns 409 VERSION_CONFLICT; uploading bottom front_full with fresh revision succeeds and allows submitTask!
+  const staleConflict=await inspector.fetch(`/staff/inspection-tasks/${taskId}/results`,{
+    revision:1,
+    results:[{item_key:"stitch_defects",component:"bottom",attempt:1,status:"NOT_OBSERVED",method:"Visual observation",is_final:true}],
+  },"PUT",409);
+  assert.equal(staleConflict.error.code,"VERSION_CONFLICT");
+
+  const bottomShotPhoto=await inspector.photo("shot");
+  const afterBottomShot=await inspector.fetch(`/staff/inspection-tasks/${taskId}/shots`,{
+    revision:taskRev,component:"bottom",shot_code:"front_full",media_id:bottomShotPhoto,
+  });
+  taskRev=afterBottomShot.revision;
+
+  const compOk=await inspector.fetch(`/staff/inspection-tasks/${taskId}/completeness`);
+  assert.equal(compOk.ok,true);
+  assert.deepEqual(compOk.missing,[]);
+
+  const submittedTask=await inspector.fetch(`/staff/inspection-tasks/${taskId}/submit`,{revision:taskRev});
+  assert.equal(submittedTask.state,"SUBMITTED");
+});
+
 test("all core operations have a validated success response",assertCoreCoverage);

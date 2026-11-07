@@ -12,7 +12,7 @@ import { failedJobs, retryFailedJob } from "./worker";
 import { customerEmailDeliveryStatus, receivePostmarkWebhook, retryEmailDelivery, staffEmailDeliveries } from "./email";
 import { catalog, issueManualQuote, orderDetail, quoteOrder, requestManualQuote, saveOrder, submitOrder } from "./orders";
 import { advise, assign, bindUnmatchedPackageOwner, checkIn, decideIntakeClaim, identifyItem, intakeItems, lookup, quarantineItem, quarantinePackage, requestIntakeClaim, savePhoto, unassignItem, waybill } from "./intake";
-import { amendReport, amendReportInput, approveReport, editReportRevision, readReport, recordResults, reportDesk, returnReport, revisionChanges, staffReport, startTask, submitReport, submitReportRevision, submitTask, taskDetail } from "./inspection";
+import { amendReport, amendReportInput, approveReport, checkTaskCompleteness, editReportRevision, findInspectionTaskByScan, readReport, recordResults, recordTaskShot, recordTaskStep, reportDesk, returnReport, revisionChanges, staffReport, startTask, submitReport, submitReportRevision, submitTask, taskDetail } from "./inspection";
 import { acceptQuote, confirmBatch, handover, instruct, packShipment, planBatch, quoteBatch, receiveReturn, releaseReferenceSample, storageQuote } from "./dispatch";
 import { checkout, demoPay, orderPayment, orderRefundPayments, refundApprove, refundRequest, stripeEvent, verifyStripe } from "./payments";
 import { approveTrackingTranslation, correctCustomerParcelTracking, correctStaffTracking, providerCallback, refreshTracking, submitTrackingTranslation, tracking, trackingAdmin, verificationState, verifyTracking } from "./logistics";
@@ -451,8 +451,30 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   const fulfillment=path.match(/^\/orders\/([a-f0-9-]{36})\/(quotes|shipments)\/([a-f0-9-]{36})$/i);
   if(method==="GET"&&fulfillment) return json(await transaction(db=>orderFulfillmentRecord(db,actorRequired(actor),
     idSchema.parse(fulfillment[1]),fulfillment[2].toLowerCase() as "quotes"|"shipments",idSchema.parse(fulfillment[3]))));
+  if(method==="GET" && path==="/staff/inspection-tasks/lookup") {
+    const code=z.string().trim().min(1).max(100).parse(url.searchParams.get("code"));
+    const orderId=idSchema.nullable().parse(url.searchParams.get("order_id"));
+    return json(await transaction(db=>findInspectionTaskByScan(db,actorRequired(actor),{code,order_id:orderId})));
+  }
   const task=path.match(/^\/staff\/inspection-tasks\/([a-f0-9-]{36})$/i);
   if(method==="GET" && task) return json(await transaction(db=>taskDetail(db,actorRequired(actor),idSchema.parse(task[1]))));
+  const taskCompleteness=path.match(/^\/staff\/inspection-tasks\/([a-f0-9-]{36})\/completeness$/i);
+  if(method==="GET" && taskCompleteness) return json(await transaction(db=>checkTaskCompleteness(db,actorRequired(actor),idSchema.parse(taskCompleteness[1]))));
+  const taskShots=path.match(/^\/staff\/inspection-tasks\/([a-f0-9-]{36})\/shots$/i);
+  if(method==="POST" && taskShots) return extraWrite(req,path,actor,z.object({
+    revision:revSchema,
+    component:z.string().trim().min(1).max(40),
+    shot_code:z.string().trim().min(1).max(80),
+    media_id:idSchema,
+  }),(db,a,b)=>recordTaskShot(db,a,idSchema.parse(taskShots[1]),b));
+  const taskSteps=path.match(/^\/staff\/inspection-tasks\/([a-f0-9-]{36})\/steps$/i);
+  if(method==="POST" && taskSteps) return extraWrite(req,path,actor,z.object({
+    step_code:z.enum(["prep","measure","visual","compare","qa_review"]),
+    action:z.enum(["start","stop","record"]).optional(),
+    started_at:z.string().optional(),
+    ended_at:z.string().optional(),
+    seconds:z.number().int().min(1).max(86400).optional(),
+  }),(db,a,b)=>recordTaskStep(db,a,idSchema.parse(taskSteps[1]),b));
   const report=path.match(/^\/orders\/([a-f0-9-]{36})\/report(?:\/versions\/(\d+)(\/file)?)?$/i);
   if(method==="GET" && report) return transaction(async db=>{
     const a=actorRequired(actor);

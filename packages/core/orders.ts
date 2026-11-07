@@ -8,8 +8,39 @@ export const checkSchema = z.object({
   key:z.string().min(1).max(80), label:z.string().min(1).max(120), zh:z.string().min(1).max(120),
   type:z.enum(["boolean","number","text"]), unit:z.string().optional(), method:z.string().min(1),
   required:z.boolean().default(true), evidence:z.boolean().default(false),
+  kind:z.enum(["measurement","observation","shot","order_shot"]).optional(),
+  component:z.string().min(1).max(40).optional(),
+  precision:z.number().positive().optional(),
+  diagram:z.string().max(200).nullable().optional(),
+  derived:z.object({circumference_cm:z.string().optional()}).optional(),
+  retry_threshold:z.number().positive().optional(),
+  parts:z.array(z.string().min(1).max(60)).optional(),
+  applies_if:z.record(z.string(),z.unknown()).optional(),
+  required_if:z.record(z.string(),z.unknown()).optional(),
 });
-export const templateSchema=z.object({checks:z.array(checkSchema).min(1).max(60)}).refine(
+export const templateShotSchema = z.object({
+  code:z.string().min(1).max(80),
+  name:z.string().min(1).max(120),
+  zh:z.string().max(120).optional(),
+  required:z.boolean().default(true),
+  component:z.string().min(1).max(40).optional(),
+  required_if:z.record(z.string(),z.unknown()).optional(),
+});
+export const templateSchema=z.object({
+  checks:z.array(checkSchema).min(1).max(60),
+  components:z.array(z.union([
+    z.string().min(1).max(40),
+    z.object({id:z.string().min(1).max(40),code:z.string().min(1).max(80)}),
+  ])).optional(),
+  measure_conditions:z.string().max(1000).optional(),
+  measurement_policy:z.object({
+    attempts:z.number().int().min(1).max(3).default(2),
+    extra_attempt_on_difference:z.boolean().default(true),
+    threshold_by_unit:z.record(z.string(),z.number().positive()).optional(),
+  }).optional(),
+  shots:z.array(templateShotSchema).optional(),
+  order_shots:z.array(z.string().min(1).max(80)).optional(),
+}).refine(
   t=>new Set(t.checks.map(c=>c.key)).size===t.checks.length,"Check keys must be unique.");
 export const priceSchema=z.object({
   minimum:z.number().int().positive(),maximum:z.number().int().positive(),unit_cents:z.number().int().positive().optional(),

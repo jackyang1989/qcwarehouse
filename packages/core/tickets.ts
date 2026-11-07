@@ -15,6 +15,7 @@ export const publicInquiry=z.object({
 export const customerTicketMessage=z.object({revision:version,body});
 export const staffTicketEvent=z.discriminatedUnion("kind",[
   z.object({kind:z.literal("claim"),revision:version}),
+  z.object({kind:z.literal("assign"),revision:version,assignee_id:z.uuid().nullable(),body:body.optional()}),
   z.object({kind:z.literal("reply"),revision:version,body,reply_by:z.iso.datetime().optional()}),
   z.object({kind:z.literal("internal_note"),revision:version,body}),
   z.object({kind:z.literal("resolve"),revision:version,body}),
@@ -65,9 +66,37 @@ export async function caseDetail(db:DB,actor:Actor,id:string,orderNumber:string|
     r.approved_by as admin_approver_id,r.execute_after as executable_after,r.executed_at,p.receiving_code,u.status as user_status
     from recovery_requests r left join users u on u.id=r.user_id left join customer_receiving_profiles p on p.user_id=u.id
     where r.evidence_ticket_id=$1 order by r.verified_at desc nulls last limit 1`,[id])).rows[0]??null:null;
+  const incidentRow=(await db.query(`select ic.id,ic.item_id,s.code as item_code,ic.order_line_id,ic.state,ic.resolution,ic.payment_proof
+    from incident_cases ic left join warehouse_items s on s.id=ic.item_id
+    where ic.ticket_id=$1 limit 1`,[id])).rows[0]??null;
+  const res=(incidentRow?.resolution??{}) as Record<string,unknown>;
+  const proof=(incidentRow?.payment_proof??{}) as Record<string,unknown>;
+  const incident=incidentRow?{
+    id:incidentRow.id,
+    item_id:incidentRow.item_id,
+    item_code:incidentRow.item_code,
+    order_line_id:incidentRow.order_line_id,
+    kind:res.kind??"damage",
+    status:incidentRow.state,
+    summary_en:res.summary_en??"",
+    service_refund_cents:res.service_refund_cents??0,
+    compensation_cents:res.compensation_cents??0,
+    currency:res.currency??"USD",
+    customer_decision:res.customer_decision??null,
+    customer_note:res.customer_note??null,
+    payout_reference:proof.payout_reference??null,
+    payout_method:proof.payout_method??null,
+    paid_amount_cents:proof.paid_amount_cents??null,
+    resolved_at:proof.paid_at??null,
+    ...(actor.kind==="staff"?{internal_note:res.internal_note??null}:{}),
+  }:null;
+  const staffCandidates=actor.kind==="staff"?(await db.query(`select distinct u.id,coalesce(u.display_name,u.id::text) as display_name
+    from users u join staff_roles sr on sr.user_id=u.id
+    where u.status='active' and sr.role in ('support','super_admin')
+    order by display_name,u.id`)).rows:[];
   return {id:k.id,public_no:k.public_no,subject:k.subject,category:k.category,state:k.state,revision:k.revision,
-    next_action_at:k.next_action_at,order_number:k.order_number,
-    ...(actor.kind==="staff"?{assignee_id:k.assignee_id,assignee:k.assignee,account_recovery:recovery,
+    next_action_at:k.next_action_at,order_number:k.order_number,incident,
+    ...(actor.kind==="staff"?{assignee_id:k.assignee_id,assignee:k.assignee,account_recovery:recovery,staff_candidates:staffCandidates,
       ...(k.details.public_inquiry?{inquiry:{contact_email:k.details.contact_email,category:k.details.category_labels,
         sample_count:k.details.sample_count,portal_reply:!!k.org_id}}:{})}:{}),events};
 }
@@ -79,12 +108,26 @@ export async function canReadCasePhoto(db:DB,actor:Actor,id:string) {
     where $1=any(e.media_ids) and ($2::boolean or k.org_id=$3 and e.kind='message') limit 1`,[id,staff,org]);
   return !!match.rowCount;
 }
-export async function staffTicketQueue(db:DB,actor:Actor,state:string|null,reference:string|null) {
+export async function staffTicketQueue(
+  db:DB,
+  actor:Actor,
+  state:string|null,
+  reference:string|null,
+  category:string|null=null,
+  assignee:string|null=null
+) {
   role(actor,...staffAccess.orders);
-  const {rows}=await db.query(`select k.id,k.public_no,k.subject,k.category,k.state,k.next_action_at,k.created_at,u.display_name assignee,o.public_no order_number
+  const {rows}=await db.query(`select k.id,k.public_no,k.subject,k.category,k.state,k.next_action_at,k.created_at,
+      k.assignee_id,u.display_name assignee,o.public_no order_number
     from tickets k left join users u on u.id=k.assignee_id left join orders o on o.id=k.order_id and o.org_id=k.org_id
-    where ($1::text is null or k.state=$1) and ($2::text is null or k.public_no=$2)
-    order by k.next_action_at nulls last,k.created_at desc,k.id limit 100`,[state,reference]);
+    where ($1::text is null or k.state=$1)
+      and ($2::text is null or k.public_no=$2 or o.public_no=$2)
+      and ($3::text is null or k.category=$3)
+      and ($4::text is null
+        or ($4='unassigned' and k.assignee_id is null)
+        or ($4='mine' and k.assignee_id=$5::uuid)
+        or ($4 not in ('unassigned','mine') and k.assignee_id::text=$4))
+    order by k.next_action_at nulls last,k.created_at desc,k.id limit 100`,[state,reference,category,assignee,actor.id]);
   return {rows};
 }
 async function append(db:DB,actor:Actor|null,id:string,kind:string,message:string,mediaIds:string[]=[]){
@@ -117,6 +160,18 @@ export async function writeStaffTicket(db:DB,actor:Actor,id:string,input:z.infer
     if(assignee===actor.id)return {id,state,revision:k.revision};
     assignee=actor.id;
     await append(db,actor,id,"state_change","Assigned to current employee.");
+  } else if(input.kind==="assign") {
+    if(input.assignee_id) {
+      const target=(await db.query(`select u.id,coalesce(u.display_name,u.id::text) as name
+        from users u join staff_roles sr on sr.user_id=u.id
+        where u.id=$1 and u.status='active' and sr.role in ('support','super_admin') limit 1`,[input.assignee_id])).rows[0];
+      guard(target,"ASSIGNEE_INVALID","Select an active support or admin employee.",422);
+      assignee=target.id;
+      await append(db,actor,id,"state_change",input.body?.trim()||`Assigned to ${target.name}.`);
+    } else {
+      assignee=null;
+      await append(db,actor,id,"state_change",input.body?.trim()||"Unassigned from current employee.");
+    }
   } else {
     guard(assignee===actor.id||actor.roles.includes("super_admin"),"CASE_ASSIGNED","Claim this case before making changes.");
     if(input.kind==="resolve") {

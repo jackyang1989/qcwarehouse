@@ -68,6 +68,10 @@ class Client {
       assert.equal(response.status,expected,path);
       return {image:Buffer.from(await response.arrayBuffer())};
     }
+    if(response.headers.get("content-type")?.startsWith("text/csv")) {
+      assert.equal(response.status,expected,path);
+      return {csv:await response.text()};
+    }
     const data=await response.json();
     assertCoreResponse(method,path,response.status,data);
     assert.equal(response.status,expected,path+" "+JSON.stringify(data));
@@ -4391,6 +4395,124 @@ test("Stocktake, warehouse incident compensation, stage refunds, dispute freezes
   // 7. TASK-105 (T53): Now that all items of oMain are outbound, closing the order succeeds
   const closedMain=await admin.fetch(`/staff/orders/${oMain.id}/close`,{});
   assert.equal(closedMain.state,"closed");
+});
+
+test("tickets queue assignment, linked incidents, work-hours contribution, and 30-order ledger with test isolation and CSV export (TASK-111..120, T25/T26/T39/T45/T52/T54/T56)",async()=>{
+  const {c,terms}=await signCustomer();
+  const stdOffer=(await c.fetch("/catalog")).offers.find((o:{sku_code:string})=>o.sku_code==="apparel-inspection-1")!;
+  const admin=await staffLogin("admin");
+  const receiving=await staffLogin("receiving");
+  const inspector=await staffLogin("inspector");
+  const support=admin;
+  const addr=(await c.fetch("/me/receiving-address")).warehouse_address.id as string;
+  const locId=((await receiving.fetch("/staff/desk")).locations.find((l:{code:string})=>l.code==="R-01")).id as string;
+
+  // 1. Create a production order and a test order (is_test = true)
+  const {draft:oProd}=await createAndPay(c,[{category_id:stdOffer.category_id,offer_id:stdOffer.offer_id,quantity:1,attributes:{name:"Ledger Prod Item"}}],terms);
+  const {draft:oTest}=await createAndPay(c,[{category_id:stdOffer.category_id,offer_id:stdOffer.offer_id,quantity:1,attributes:{name:"Ledger Test Item"}}],terms);
+  await pool.query("update orders set is_test=false where id=$1",[oProd.id]);
+  await pool.query("update orders set is_test=true where id=$1",[oTest.id]);
+
+  // Check in and assign 1 item to oProd, record step timings (1800s = 0.5h)
+  const trk="SF"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const adv=await c.fetch("/me/parcels",{address_id:addr,tracking_no:trk,carrier_code:"sf",order_ids:[oProd.id]},"POST",201);
+  const pkg=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:trk,carrier_code:"sf",advice_id:adv.id,weight_g:500,outer_media_ids:[await receiving.photo("intake_outer")]
+  },"POST",201);
+  const itemCode="S-"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const unp=await receiving.fetch(`/staff/packages/${pkg.id}/items`,{
+    revision:pkg.revision,items:[{code:itemCode,location_id:locId}]
+  },"POST",201);
+  const itemProd=unp.item_ids[0] as string;
+  const pos=(await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:itemCode}))).positions
+    .find((p:{public_no:string})=>p.public_no===oProd.public_no)!;
+  await receiving.fetch(`/staff/items/${itemProd}/identify`,{
+    revision:1,order_line_id:pos.order_line_id,expected_item_id:pos.id,matches_advice:true,media_ids:[await receiving.photo("label_photo")]
+  });
+  const taskRow=(await inspector.fetch("/staff/desk")).tasks.find((tk:{public_no:string})=>tk.public_no===oProd.public_no)!;
+  await inspector.fetch(`/staff/inspection-tasks/${taskRow.id}/steps`,{
+    step_code:"prep",action:"record",seconds:600
+  });
+  await inspector.fetch(`/staff/inspection-tasks/${taskRow.id}/steps`,{
+    step_code:"measure",action:"record",seconds:1200
+  });
+
+  // 2. Create a support ticket and verify category/assignee filters and staff assignment (TASK-111..114)
+  const createdCase=await c.fetch("/me/cases",{
+    order_id:oProd.id,
+    category:"payment_refund",
+    subject:"Question about invoice receipt",
+    message:"Can I download my invoice receipt?",
+  });
+  const unassignedQueue=await support.fetch("/staff/tickets?category=payment_refund&assignee=unassigned");
+  assert.ok(unassignedQueue.rows.some((r:{id:string})=>r.id===createdCase.id));
+
+  const ticketView=await support.fetch(`/staff/tickets/${createdCase.id}`);
+  assert.ok(Array.isArray(ticketView.staff_candidates) && ticketView.staff_candidates.length>0);
+  const supportCandidate=ticketView.staff_candidates.find((u:{email:string})=>u.email==="support@qcwarehouse.test")??ticketView.staff_candidates[0];
+
+  const assigned=await support.fetch(`/staff/tickets/${createdCase.id}/events`,{
+    kind:"assign",
+    revision:ticketView.revision,
+    assignee_id:supportCandidate.id,
+    body:"Assigning billing question to support specialist",
+  });
+  assert.equal(assigned.revision,ticketView.revision+1);
+
+  const myQueue=await support.fetch("/staff/tickets?category=payment_refund&assignee=mine");
+  assert.ok(myQueue.rows.some((r:{id:string})=>r.id===createdCase.id));
+
+  // Add internal note and verify customer cannot see internal note or state_change events (T25/T54)
+  await support.fetch(`/staff/tickets/${createdCase.id}/events`,{
+    kind:"internal_note",
+    revision:assigned.revision,
+    body:"Internal billing check passed",
+  });
+  const custCaseView=await c.fetch(`/cases/${createdCase.id}`);
+  assert.ok(custCaseView.events.every((e:{kind:string})=>e.kind==="message"));
+
+  // 3. Verify AdminDesk overviewMetrics & disputes (TASK-116, TASK-117)
+  const desk=await admin.fetch("/staff/admin/desk");
+  assert.ok(desk.overviewMetrics);
+  assert.ok(typeof desk.overviewMetrics.production_orders==="number" && desk.overviewMetrics.production_orders>=1);
+  assert.ok(typeof desk.overviewMetrics.test_orders==="number" && desk.overviewMetrics.test_orders>=1);
+  assert.ok(Array.isArray(desk.disputes));
+
+  // 4. Verify 30-order ledger, work-hours & contribution, test isolation, and CSV export (TASK-118..120, T39, T56)
+  const ledgerProd=await admin.fetch("/staff/admin/finance/ledger?include_test=0&limit=30");
+  assert.equal(ledgerProd.summary.include_test,false);
+  assert.equal(ledgerProd.summary.recomputable_balanced,true);
+  assert.equal(ledgerProd.summary.all_channel_reconciled,true);
+  assert.ok(ledgerProd.orders.every((r:{is_test:boolean})=>r.is_test===false),"Test orders must be excluded when include_test=0 (T39)");
+
+  const prodRow=ledgerProd.orders.find((r:{order_id:string})=>r.order_id===oProd.id);
+  assert.ok(prodRow,"Production order must appear in ledger");
+  assert.equal(prodRow.inspection_seconds,1800);
+  // Default hourly labor is 1500 cents ($15/h), so 1800s (0.5h) = 750 cents
+  assert.equal(prodRow.labor_cost_cents,750);
+  assert.equal(prodRow.contribution_cents,prodRow.net_inspection_cents+prodRow.storage_allocated_cents-prodRow.labor_cost_cents);
+  assert.equal(prodRow.channel_reconciled,true);
+  assert.ok(prodRow.provider_refs.length>=1);
+
+  // Verify summing order rows equals summary totals (T56: 订单明细可重算汇总，代收运费单列)
+  const sumNetInsp=ledgerProd.orders.reduce((n:number,r:{net_inspection_cents:number})=>n+r.net_inspection_cents,0);
+  const sumShipping=ledgerProd.orders.reduce((n:number,r:{pass_through_shipping_cents:number})=>n+r.pass_through_shipping_cents,0);
+  const sumLabor=ledgerProd.orders.reduce((n:number,r:{labor_cost_cents:number})=>n+r.labor_cost_cents,0);
+  const sumContrib=ledgerProd.orders.reduce((n:number,r:{contribution_cents:number})=>n+r.contribution_cents,0);
+  assert.equal(sumNetInsp,ledgerProd.summary.net_inspection_cents);
+  assert.equal(sumShipping,ledgerProd.summary.pass_through_shipping_cents);
+  assert.equal(sumLabor,ledgerProd.summary.total_labor_cost_cents);
+  assert.equal(sumContrib,ledgerProd.summary.total_contribution_cents);
+
+  // When include_test=1, oTest is included
+  const ledgerAll=await admin.fetch("/staff/admin/finance/ledger?include_test=1&limit=200");
+  assert.equal(ledgerAll.summary.include_test,true);
+  assert.ok(ledgerAll.orders.some((r:{order_id:string;is_test:boolean})=>r.order_id===oTest.id && r.is_test===true));
+
+  // Verify CSV export endpoint
+  const csvRes=await admin.fetch("/staff/admin/finance/ledger.csv?include_test=0");
+  assert.match(csvRes.csv,/^public_no,state,is_test,category_slug,service_code/);
+  assert.ok(csvRes.csv.includes("SUMMARY,TOTAL,0,ALL,ALL"));
 });
 
 test("all core operations have a validated success response",assertCoreCoverage);

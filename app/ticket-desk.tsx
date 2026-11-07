@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { Action, Empty, ErrorBlock, Field, Form, Panel, request, stamp, Table, Tag, text, useLoad, type Row } from "./ui";
+import { Action, Empty, ErrorBlock, Field, Form, Panel, request, stamp, Table, Tag, text, usd, useLoad, type Row } from "./ui";
 
 const status:Record<string,[string,string]>={
   open:["Open","待处理"],waiting_customer:["Awaiting your reply","待客户回复"],
@@ -40,6 +40,29 @@ export function CustomerCase({id,order}:{id:string;order?:string}) {
         {data.state==="waiting_customer"&&data.next_action_at&&<p className="notice">Please reply by {stamp(data.next_action_at)}.</p>}
         <Conversation events={data.events}/>
       </Panel>
+      {data.incident&&<Panel title="Incident & Compensation Proposal">
+        <dl className="location-facts">
+          <div><dt>Incident type</dt><dd>{data.incident.kind}</dd></div>
+          <div><dt>Status</dt><dd><Tag>{data.incident.status}</Tag></dd></div>
+          <div><dt>Service fee refund</dt><dd>{usd(data.incident.service_refund_cents??0)}</dd></div>
+          <div><dt>Compensation</dt><dd>{usd(data.incident.compensation_cents??0)}</dd></div>
+        </dl>
+        <p>{data.incident.summary_en}</p>
+        {data.incident.payout_reference&&<p className="muted">Payout reference: <span className="code">{data.incident.payout_reference}</span> ({data.incident.payout_method})</p>}
+        {data.incident.status==="customer_pending"&&<Form label="Submit compensation decision" run={async fields=>{
+          await request("/me/incidents/"+data.incident.id+"/response","POST",{
+            decision:text(fields,"decision"),
+            note:text(fields,"note")||undefined,
+          });
+          reload();
+        }}>
+          <label>Decision<select name="decision" defaultValue="accept">
+            <option value="accept">Accept compensation proposal</option>
+            <option value="reject">Reject and request further review</option>
+          </select></label>
+          <Field name="note" label="Response note (optional)" required={false}/>
+        </Form>}
+      </Panel>}
       {isOpen(data.state)&&<Panel title="Reply to support">
         <Form key={sent} label="Send reply" run={async fields=>{
           const photo=fields.get("photo");
@@ -59,20 +82,35 @@ export function CustomerCase({id,order}:{id:string;order?:string}) {
 
 export function StaffTicketQueue() {
   const [state,setState]=useState("");
+  const [category,setCategory]=useState("");
+  const [assignee,setAssignee]=useState("");
   const [reference,setReference]=useState("");
   const params=new URLSearchParams();
   if(state)params.set("state",state);
+  if(category)params.set("category",category);
+  if(assignee)params.set("assignee",assignee);
   if(reference)params.set("reference",reference);
   const {data,error,reload}=useLoad("/staff/tickets"+(params.size?"?"+params:""));
   return <>
     <div className="page-head"><p className="eyebrow">OPERATIONS / SUPPORT</p><h1>客户工单</h1>
-      <p className="muted">按下一处理时限查看工单、接手和回复。</p></div>
+      <p className="muted">按下一处理时限、分类和指派状态查看工单、接手和回复。</p></div>
     <Panel title="工单队列">
-      <div className="form inline-form"><label>工单状态<select value={state} onChange={e=>setState(e.target.value)}>
-        <option value="">全部</option>{Object.entries(status).map(([value,names])=><option key={value} value={value}>{names[1]}</option>)}
-      </select></label><button type="button" onClick={reload}>刷新</button></div>
+      <div className="form inline-form">
+        <label>工单状态<select value={state} onChange={e=>setState(e.target.value)}>
+          <option value="">全部</option>{Object.entries(status).map(([value,names])=><option key={value} value={value}>{names[1]}</option>)}
+        </select></label>
+        <label>工单分类<select value={category} onChange={e=>setCategory(e.target.value)}>
+          <option value="">全部分类</option>{Object.entries(categories).map(([value,labelText])=><option key={value} value={value}>{labelText}</option>)}
+        </select></label>
+        <label>指派范围<select value={assignee} onChange={e=>setAssignee(e.target.value)}>
+          <option value="">全部</option>
+          <option value="unassigned">未领取</option>
+          <option value="mine">我负责的</option>
+        </select></label>
+        <button type="button" onClick={reload}>刷新</button>
+      </div>
       <Form inline label="查工单" run={async fields=>setReference(text(fields,"reference").toUpperCase())}>
-        <Field name="reference" label="完整工单编号" required={false}/>
+        <Field name="reference" label="完整工单或订单号" required={false}/>
       </Form>
       {error&&<ErrorBlock error={error}/>}
       {!data&&!error&&<p role="status">正在读取工单…</p>}
@@ -116,8 +154,30 @@ export function StaffTicket({id,actor}:{id:string;actor:Row}) {
           </>}
         </dl>
         {open&&!data.assignee_id&&<div className="actions"><Action primary run={()=>update({kind:"claim"})}>领取工单</Action></div>}
+        {open&&(data.staff_candidates?.length??0)>0&&<Form inline label="指派/转派" run={async f=>{
+          const target=text(f,"assignee_id");
+          await update({kind:"assign",assignee_id:target||null,body:text(f,"body")||undefined});
+        }}>
+          <label>指派负责人<select name="assignee_id" defaultValue={data.assignee_id??""}>
+            <option value="">未领取（释放指派）</option>
+            {data.staff_candidates.map((c:Row)=><option key={c.id} value={c.id}>{c.display_name} ({c.email})</option>)}
+          </select></label>
+          <Field name="body" label="转派说明（可选）" required={false}/>
+        </Form>}
         {data.category==="identity_unclear"&&open&&<p><Link href={"/admin/orders#case-"+id}>打开专用认领核验</Link></p>}
       </Panel>
+      {data.incident&&<Panel title="关联丢损与赔付单（TASK-171）">
+        <dl className="location-facts">
+          <div><dt>实物编码</dt><dd className="code">{data.incident.item_code??data.incident.item_id}</dd></div>
+          <div><dt>类型</dt><dd>{data.incident.kind}</dd></div>
+          <div><dt>状态</dt><dd><Tag>{data.incident.status}</Tag></dd></div>
+          <div><dt>退质检费</dt><dd>{usd(data.incident.service_refund_cents??0)}</dd></div>
+          <div><dt>赔偿金额</dt><dd>{usd(data.incident.compensation_cents??0)}</dd></div>
+          <div><dt>客户决定</dt><dd>{data.incident.customer_decision??"待客户确认"}</dd></div>
+        </dl>
+        <p>{data.incident.summary_en}</p>
+        {data.incident.internal_note&&<p className="muted">内部备注：{data.incident.internal_note}</p>}
+      </Panel>}
       {data.account_recovery&&<Panel title="账号恢复与双人审批（FEAT-M18）">
         <dl className="location-facts">
           <div><dt>恢复状态</dt><dd><Tag>{data.account_recovery.state}</Tag></dd></div>

@@ -651,6 +651,28 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
           return <Link href={href} key={href} className="metric"><span>{name}</span><strong>{value}</strong><small>{detail}</small></Link>;
         })}
       </div>
+      {data.overviewMetrics&&<Panel title="履约与风险实时钻取（PAGE-M01）">
+        <div className="metric-strip">
+          <Link href="/admin/orders?state=awaiting_samples&test=production" className="metric">
+            <span>待收样委托</span><strong>{data.overviewMetrics.awaiting_samples}</strong><small>正式订单</small>
+          </Link>
+          <Link href="/admin/orders?state=queued&test=production" className="metric">
+            <span>排队/检验中</span><strong>{data.overviewMetrics.queued_or_inspecting}</strong><small>超时 {data.overviewMetrics.sla_overdue} 单</small>
+          </Link>
+          <Link href="/admin/orders?state=qa_review&test=production" className="metric">
+            <span>待 QA 审核</span><strong>{data.overviewMetrics.qa_review}</strong><small>报告出库门禁</small>
+          </Link>
+          <Link href="/wh/dispatch" className="metric">
+            <span>待发运批次</span><strong>{data.overviewMetrics.dispatch_pending}</strong><small>称重/待付/打包</small>
+          </Link>
+          <Link href="/admin/tickets?state=open" className="metric">
+            <span>待办工单</span><strong>{data.overviewMetrics.open_tickets}</strong><small>未匹配包裹 {data.overviewMetrics.unmatched_packages}</small>
+          </Link>
+          <Link href="/admin/finance" className="metric">
+            <span>支付争议冻结</span><strong>{data.overviewMetrics.open_disputes}</strong><small>正式 {data.overviewMetrics.production_orders} / 测试 {data.overviewMetrics.test_orders}</small>
+          </Link>
+        </div>
+      </Panel>}
       <div className={canHandleOrders?"ops-columns":"ops-columns single-column"}>
         {canHandleOrders&&<Panel title="客服待处理">
           <Table headers={["业务编号","待办","线索"]} rows={queue.map(entry=>[<Link className="code" href={entry.href}>{entry.number}</Link>,entry.action,entry.detail])}
@@ -715,6 +737,29 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
         r.reason,usd(r.amount_cents),r.state==="requested"?"待独立审批":label(r.state),r.provider_ref??"—",
         r.state==="requested"&&superAdmin?(r.requested_by===actor.id?<small>等待另一位超管审批</small>:<RefundApproval refund={r} reload={reload}/>):null,
       ])} empty="近期没有退款记录。"/></Panel>
+      <Panel title="支付争议与阻断处置（PAGE-M07 / TASK-110）">
+        <Table headers={["争议编号","关联订单/批次","争议金额","状态","原因","人工结论","操作"]} rows={(data.disputes??[]).map((d:Row)=>[
+          <span className="code">{d.provider_dispute_id}</span>,
+          d.public_no??(d.batch_id?`Batch ${d.batch_id.slice(0,8)}`:"—"),
+          usd(d.amount_cents),
+          <Tag>{d.status}</Tag>,
+          d.reason??"—",
+          d.staff_decision?`${d.staff_decision} (${d.staff_note??""})`:"—",
+          d.status==="open"?<Form inline label="裁决争议" run={async f=>{
+            await request("/staff/disputes/"+encodeURIComponent(d.provider_dispute_id)+"/resolve","POST",{
+              decision:text(f,"decision"),
+              reason:text(f,"reason"),
+            });
+            reload();
+          }}>
+            <Select name="decision" label="动作" choices={[
+              {id:"release_freeze",label:"解除出库与报告冻结"},
+              {id:"maintain_hold",label:"维持冻结"},
+            ]}/>
+            <Field name="reason" label="裁决原因"/>
+          </Form>:null,
+        ])} empty="当前无支付拒付或争议记录。"/>
+      </Panel>
       <FinanceReconciliationPanel/>
     </>}
     {page==="settings"&&<>
@@ -802,31 +847,82 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
 }
 
 function FinanceReconciliationPanel() {
-  const {data,error,reload}=useLoad("/staff/admin/reconciliation");
-  return <Panel title="多笔收费联合对账与跨单分摊（PAGE-M08）">
-    <div className="row"><p className="muted">展示质检费、运费（含跨单分摊与零委托分摊校验）、仓储延期费与退款汇总。</p>
-      <button type="button" onClick={reload}>刷新对账</button></div>
-    {error&&<ErrorBlock error={error}/>}
-    {!data&&!error&&<p role="status">正在加载对账数据…</p>}
-    {data&&<>
-      {data.summary&&<div className="metric-strip">
-        <div className="metric"><span>质检实收</span><strong>{usd(data.summary.inspection_paid_cents)}</strong></div>
-        <div className="metric"><span>运费实收</span><strong>{usd(data.summary.dispatch_paid_cents)}</strong></div>
-        <div className="metric"><span>仓储实收</span><strong>{usd(data.summary.storage_paid_cents)}</strong></div>
-        <div className="metric"><span>已退总额</span><strong>{usd(data.summary.refunded_cents)}</strong></div>
-        <div className="metric"><span>净实收</span><strong>{usd(data.summary.net_received_cents)}</strong></div>
-      </div>}
-      <Table headers={["收费项","类型","关联订单/批次","应收","实收","已退","跨单分摊校验","状态"]} rows={(data.rows??[]).map((r:Row)=>[
-        <span className="code">{r.charge_id.slice(0,8)}</span>,
-        ({inspection:"质检费",dispatch:"运费",storage:"仓储费"} as Row)[r.purpose]??r.purpose,
-        r.order_public_no??(r.batch_id?`Batch ${r.batch_id.slice(0,8)}`:"—"),
-        usd(r.amount_cents),usd(r.paid_cents),usd(r.refunded_cents),
-        r.purpose==="dispatch"?(r.allocation_balanced?
-          `平衡（订单分摊 ${usd(r.allocated_cents)}${r.unallocated_cents?` + 零委托 ${usd(r.unallocated_cents)}`:""}）`:"分摊异常"):"—",
-        <Tag>{label(r.state)}</Tag>,
-      ])} empty="暂无收费对账记录。"/>
-    </>}
-  </Panel>;
+  const [includeTest,setIncludeTest]=useState(false);
+  const query=`?include_test=${includeTest?"1":"0"}`;
+  const {data,error,reload}=useLoad("/staff/admin/reconciliation"+query);
+  const ledger=useLoad("/staff/admin/finance/ledger"+query);
+  return <>
+    <Panel title="多笔收费联合对账与跨单分摊（PAGE-M08）">
+      <div className="row">
+        <p className="muted">展示质检费、运费（含跨单分摊与零委托分摊校验）、仓储延期费与退款汇总。默认隔离测试订单。</p>
+        <div className="actions">
+          <label className="check"><input type="checkbox" checked={includeTest} onChange={e=>setIncludeTest(e.target.checked)}/> 包含测试单 (is_test)</label>
+          <button type="button" onClick={()=>{reload();ledger.reload();}}>刷新对账</button>
+        </div>
+      </div>
+      {error&&<ErrorBlock error={error}/>}
+      {!data&&!error&&<p role="status">正在加载对账数据…</p>}
+      {data&&<>
+        {data.summary&&<div className="metric-strip">
+          <div className="metric"><span>质检实收</span><strong>{usd(data.summary.inspection_paid_cents)}</strong></div>
+          <div className="metric"><span>运费实收</span><strong>{usd(data.summary.dispatch_paid_cents)}</strong></div>
+          <div className="metric"><span>仓储实收</span><strong>{usd(data.summary.storage_paid_cents)}</strong></div>
+          <div className="metric"><span>已退总额</span><strong>{usd(data.summary.refunded_cents)}</strong></div>
+          <div className="metric"><span>净实收</span><strong>{usd(data.summary.net_received_cents)}</strong></div>
+        </div>}
+        <Table headers={["收费项","类型","关联订单/批次","应收","实收","已退","跨单分摊校验","状态"]} rows={(data.rows??[]).map((r:Row)=>[
+          <span className="code">{r.charge_id.slice(0,8)}</span>,
+          ({inspection:"质检费",dispatch:"运费",storage:"仓储费"} as Row)[r.purpose]??r.purpose,
+          r.order_public_no??(r.batch_id?`Batch ${r.batch_id.slice(0,8)}`:"—"),
+          usd(r.amount_cents),usd(r.paid_cents),usd(r.refunded_cents),
+          r.purpose==="dispatch"?(r.allocation_balanced?
+            `平衡（订单分摊 ${usd(r.allocated_cents)}${r.unallocated_cents?` + 零委托 ${usd(r.unallocated_cents)}`:""}）`:"分摊异常"):"—",
+          <Tag>{label(r.state)}</Tag>,
+        ])} empty="暂无收费对账记录。"/>
+      </>}
+    </Panel>
+    <Panel title="工时成本、毛利贡献与 30 单对账账本（TASK-118 / TASK-119 / TASK-120）">
+      <div className="row">
+        <p className="muted">订单明细可重算汇总，代收运费单列，渠道付款/退款凭据逐单核对。</p>
+        <a className="button" href={"/api/v1/staff/admin/finance/ledger.csv"+query}>导出 CSV 账本</a>
+      </div>
+      {ledger.error&&<ErrorBlock error={ledger.error}/>}
+      {!ledger.data&&!ledger.error&&<p role="status">正在加载 30 单对账账本…</p>}
+      {ledger.data&&<>
+        <div className="metric-strip">
+          <div className="metric"><span>账本订单数</span><strong>{ledger.data.summary.order_count}</strong><small>{ledger.data.summary.include_test?"含测试单":"仅正式单"}</small></div>
+          <div className="metric"><span>净质检实收</span><strong>{usd(ledger.data.summary.net_inspection_cents)}</strong><small>实收 {usd(ledger.data.summary.inspection_paid_cents)} / 已退 {usd(ledger.data.summary.inspection_refunded_cents)}</small></div>
+          <div className="metric"><span>代收运费（单列）</span><strong>{usd(ledger.data.summary.pass_through_shipping_cents)}</strong><small>不计入质检毛利</small></div>
+          <div className="metric"><span>工时成本估算</span><strong>{usd(ledger.data.summary.total_labor_cost_cents)}</strong><small>总计 {ledger.data.summary.total_inspection_seconds}s · 时薪 {usd(ledger.data.summary.hourly_labor_cents)}/h</small></div>
+          <div className="metric"><span>净贡献毛利</span><strong>{usd(ledger.data.summary.total_contribution_cents)}</strong><small>{ledger.data.summary.recomputable_balanced?"明细重算平衡":"重算待核对"}</small></div>
+        </div>
+        <Table headers={["类目","服务","订单数","样品数","总作业秒数","单件均耗(s)","净质检收入","工时成本","净贡献"]} rows={(ledger.data.by_category_service??[]).map((g:Row)=>[
+          <span className="code">{g.category_slug}</span>,
+          <span className="code">{g.service_code}</span>,
+          g.order_count,
+          g.sample_count,
+          g.inspection_seconds,
+          g.avg_seconds_per_sample,
+          usd(g.net_inspection_cents),
+          usd(g.labor_cost_cents),
+          usd(g.contribution_cents),
+        ])} empty="暂无类目与服务工时统计。"/>
+        <Table headers={["订单号","状态","类目/服务","件数","净质检实收","代收运费(单列)","仓储实收","作业秒数","工时成本","毛利贡献","渠道凭据核对"]} rows={(ledger.data.orders??[]).map((o:Row)=>[
+          <span><Link className="code" href={"/admin/orders/"+o.public_no}>{o.public_no}</Link>{o.is_test&&<> <Tag>TEST</Tag></>}</span>,
+          <Tag>{label(o.state)}</Tag>,
+          `${o.category_slug} / ${o.service_code}`,
+          o.sample_count,
+          usd(o.net_inspection_cents),
+          usd(o.pass_through_shipping_cents),
+          usd(o.storage_allocated_cents),
+          `${o.inspection_seconds}s`,
+          usd(o.labor_cost_cents),
+          usd(o.contribution_cents),
+          o.channel_reconciled?<span className="code">{o.provider_refs.join(", ")||"无收费"}</span>:"渠道未对齐",
+        ])} empty="暂无符合过滤条件的订单账本记录。"/>
+      </>}
+    </Panel>
+  </>;
 }
 
 function ShippingRateConfigPanel({rates,onSave}:{rates:Row[];onSave:()=>void}) {
@@ -975,6 +1071,20 @@ export function StaffOrder({number}:{number:string}) {
         <Table headers={["阻断原因","开始","解除"]} rows={data.blocks.map((b:Row)=>[
           b.reason,stamp(b.opened_at),b.resolved_at?stamp(b.resolved_at):"尚未解除",
         ])}/>
+        <div className="ops-columns">
+          {data.order.state!=="on_hold"&&!["closed","cancelled"].includes(data.order.state)&&<Form inline label="暂停订单 (Hold)" run={async f=>{
+            await request("/staff/orders/"+data.order.id+"/hold","POST",{reason:text(f,"reason")});
+            reload();
+          }}><Field name="reason" label="暂停原因"/></Form>}
+          {data.order.state==="on_hold"&&<Form inline label="恢复订单 (Resume)" run={async f=>{
+            await request("/staff/orders/"+data.order.id+"/resume","POST",{reason:text(f,"reason")});
+            reload();
+          }}><Field name="reason" label="恢复说明"/></Form>}
+          {["report_published","disposition_in_progress"].includes(data.order.state)&&<Action run={async()=>{
+            await request("/staff/orders/"+data.order.id+"/close","POST",{revision:data.order.revision});
+            reload();
+          }}>全部实物终态后关闭订单</Action>}
+        </div>
       </Panel>
       <ScopeReview orderId={data.order.id} staff onSave={reload}/>
       <OrderRefundDesk initialOrder={number}/>

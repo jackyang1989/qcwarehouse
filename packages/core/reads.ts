@@ -315,8 +315,21 @@ export async function adminDesk(db:DB,actor:Actor) {
   const finance=hasStaffAccess(actor.roles,staffAccess.finance);
   const ops=hasStaffAccess(actor.roles,staffAccess.orders);
   const templates=hasStaffAccess(actor.roles,staffAccess.templates);
+  const overviewMetrics=ops?(await db.query(`select
+    count(*) filter (where coalesce(is_test,false)=false and state='awaiting_samples')::int awaiting_samples,
+    count(*) filter (where coalesce(is_test,false)=false and state in ('queued','inspecting'))::int queued_or_inspecting,
+    count(*) filter (where coalesce(is_test,false)=false and state in ('queued','inspecting','qa_review') and sla_due_at is not null and sla_due_at<=now())::int sla_overdue,
+    count(*) filter (where coalesce(is_test,false)=false and state='qa_review')::int qa_review,
+    count(*) filter (where coalesce(is_test,false)=false)::int production_orders,
+    count(*) filter (where coalesce(is_test,false)=true)::int test_orders,
+    (select count(*)::int from dispatch_batches where state in ('confirmed','quoted','paid')) dispatch_pending,
+    (select count(*)::int from tickets where state in ('open','waiting_customer','waiting_internal')) open_tickets,
+    (select count(*)::int from payment_disputes where state<>'resolved_by_staff') open_disputes,
+    (select count(*)::int from packages where state='unmatched' or org_id is null) unmatched_packages
+    from orders`)).rows[0]:null;
   return {
-    orders:ops?(await db.query("select id,public_no,state,created_at from orders order by created_at desc limit 150")).rows:[],
+    overviewMetrics,
+    orders:ops?(await db.query("select id,public_no,state,coalesce(is_test,false) is_test,sla_due_at,created_at from orders order by created_at desc limit 150")).rows:[],
     tickets:ops?(await db.query("select id,public_no,subject,category,state,next_action_at from tickets order by created_at desc limit 150")).rows:[],
     claims:ops?(await db.query(`select k.id,k.public_no,k.state,k.details->>'tracking_no' tracking_no,
       k.details->>'carrier_code' carrier_code,k.details->>'proof_id' proof_id,k.details->>'decision' decision,
@@ -335,7 +348,22 @@ export async function adminDesk(db:DB,actor:Actor) {
       r.provider_ref,r.source,c.purpose,o.public_no from refunds r join payments p on p.id=r.payment_id
       join charge_items c on c.id=p.charge_item_id left join inspection_quotes q on q.id=c.inspection_quote_id
       left join orders o on o.id=q.order_id order by r.created_at desc limit 100`)).rows:[],
-    payments:finance?(await db.query("select id,charge_item_id,state,amount_cents,provider_ref from payments order by created_at desc limit 150")).rows:[],
+    payments:finance?(await db.query(`select p.id,p.charge_item_id,p.state,p.amount_cents,p.provider_ref,p.created_at,
+      c.purpose,o.public_no,coalesce(o.is_test,false) is_test
+      from payments p join charge_items c on c.id=p.charge_item_id
+      left join inspection_quotes q on q.id=c.inspection_quote_id
+      left join orders o on o.id=q.order_id
+      order by p.created_at desc limit 150`)).rows:[],
+    disputes:finance?(await db.query(`select d.provider_id provider_dispute_id,d.payment_id,p.charge_item_id,
+      q.order_id,dq.batch_id,d.state status,p.amount_cents,c.currency,
+      d.evidence_due_at,d.updated_at,p.provider_ref payment_provider_ref,o.public_no
+      from payment_disputes d
+      join payments p on p.id=d.payment_id
+      join charge_items c on c.id=p.charge_item_id
+      left join inspection_quotes q on q.id=c.inspection_quote_id
+      left join orders o on o.id=q.order_id
+      left join dispatch_quote_versions dq on dq.id=c.dispatch_quote_id
+      order by d.updated_at desc limit 100`)).rows:[],
     shippingRates:(finance||actor.roles.includes("super_admin"))?(await db.query("select id,version,rules,effective_at from shipping_rate_versions order by version desc limit 50")).rows:[],
     warehouseAddressAlert:actor.roles.includes("super_admin")?(await db.query(`select 1 from notifications
       where user_id=$1 and template='warehouse.address_required'
@@ -529,4 +557,275 @@ export async function reconcileFinance(db:DB,actor:Actor,includeTest=true) {
   };
 
   return {summary,rows:items};
+}
+
+export async function orderLedger(db:DB,actor:Actor,opts:{includeTest?:boolean;limit?:number}={}) {
+  role(actor,...staffAccess.finance);
+  const includeTest=opts.includeTest===true;
+  const limit=Math.min(Math.max(opts.limit??30,1),200);
+  const hourlyLaborCents=1500;
+
+  const {rows:orderRows}=await db.query<{
+    id:string;
+    public_no:string;
+    state:string;
+    is_test:boolean;
+    created_at:string;
+    category_slugs:string[];
+    service_codes:string[];
+    sample_count:number;
+    inspection_paid_cents:number;
+    inspection_refunded_cents:number;
+    pass_through_shipping_cents:number;
+    storage_allocated_cents:number;
+    inspection_seconds:number;
+    provider_refs:string[];
+    anomaly_count:number;
+  }>(
+    `select o.id,
+            o.public_no,
+            o.state,
+            coalesce(o.is_test,false) is_test,
+            o.created_at,
+            coalesce(array(
+              select distinct cat.slug from order_lines ol join categories cat on cat.id=ol.category_id where ol.order_id=o.id order by cat.slug
+            ), array[]::text[]) category_slugs,
+            coalesce(array(
+              select distinct st.code from order_lines ol join service_offers so on so.id=ol.offer_id join service_types st on st.id=so.service_type_id where ol.order_id=o.id order by st.code
+            ), array[]::text[]) service_codes,
+            coalesce((select sum(ol.quantity)::int from order_lines ol where ol.order_id=o.id),0)::int sample_count,
+            coalesce((
+              select sum(p.amount_cents)::int
+              from inspection_quotes iq
+              join charge_items c on c.inspection_quote_id=iq.id and c.purpose='inspection' and c.voided_at is null
+              join payments p on p.id=c.applied_payment_id and p.state in ('succeeded','partially_refunded','refunded')
+              where iq.order_id=o.id
+            ),0)::int inspection_paid_cents,
+            coalesce((
+              select sum(r.amount_cents)::int
+              from inspection_quotes iq
+              join charge_items c on c.inspection_quote_id=iq.id and c.purpose='inspection'
+              join payments p on p.charge_item_id=c.id
+              join refunds r on r.payment_id=p.id and r.state in ('approved','succeeded')
+              where iq.order_id=o.id
+            ),0)::int inspection_refunded_cents,
+            coalesce((
+              select sum(ca.amount_cents)::int
+              from charge_allocations ca
+              join charge_items c on c.id=ca.charge_id and c.purpose='dispatch' and c.voided_at is null
+              join payments p on p.id=c.applied_payment_id and p.state in ('succeeded','partially_refunded','refunded')
+              where ca.order_id=o.id
+            ),0)::int pass_through_shipping_cents,
+            coalesce((
+              select sum(ca.amount_cents)::int
+              from charge_allocations ca
+              join charge_items c on c.id=ca.charge_id and c.purpose='storage' and c.voided_at is null
+              join payments p on p.id=c.applied_payment_id and p.state in ('succeeded','partially_refunded','refunded')
+              where ca.order_id=o.id
+            ),0)::int storage_allocated_cents,
+            coalesce((
+              select sum(coalesce(st_row.seconds,0))::int
+              from step_timings st_row
+              where st_row.order_id=o.id
+            ),0)::int inspection_seconds,
+            coalesce(array(
+              select distinct ref from (
+                select p.provider_ref as ref
+                from inspection_quotes iq
+                join charge_items c on c.inspection_quote_id=iq.id
+                join payments p on p.charge_item_id=c.id
+                where iq.order_id=o.id and p.provider_ref is not null
+                union
+                select r.provider_ref as ref
+                from inspection_quotes iq
+                join charge_items c on c.inspection_quote_id=iq.id
+                join payments p on p.charge_item_id=c.id
+                join refunds r on r.payment_id=p.id
+                where iq.order_id=o.id and r.provider_ref is not null
+                union
+                select p.provider_ref as ref
+                from charge_allocations ca
+                join charge_items c on c.id=ca.charge_id
+                join payments p on p.charge_item_id=c.id
+                where ca.order_id=o.id and p.provider_ref is not null
+              ) refs where ref is not null and ref<>'' order by ref
+            ), array[]::text[]) provider_refs,
+            coalesce((
+              select count(*)::int
+              from inspection_quotes iq
+              join charge_items c on c.inspection_quote_id=iq.id
+              join payments p on p.charge_item_id=c.id
+              where iq.order_id=o.id and p.state in ('amount_mismatch','disputed','late_payment')
+            ),0)::int anomaly_count
+     from orders o
+     where ($1::boolean or coalesce(o.is_test,false)=false)
+       and o.state<>'draft'
+     order by o.created_at desc,o.id desc
+     limit $2`,
+    [includeTest,limit]
+  );
+
+  const orders=orderRows.map(r=>{
+    const netInspectionCents=r.inspection_paid_cents-r.inspection_refunded_cents;
+    const laborCostCents=Math.round((r.inspection_seconds/3600)*hourlyLaborCents);
+    const contributionCents=netInspectionCents+r.storage_allocated_cents-laborCostCents;
+    const hasPaid=r.inspection_paid_cents>0||r.pass_through_shipping_cents>0||r.storage_allocated_cents>0;
+    const channelReconciled=r.anomaly_count===0&&(!hasPaid||r.provider_refs.length>0);
+    return {
+      order_id:r.id,
+      public_no:r.public_no,
+      state:r.state,
+      is_test:r.is_test,
+      created_at:r.created_at,
+      category_slug:r.category_slugs[0]??"apparel",
+      category_slugs:r.category_slugs,
+      service_code:r.service_codes[0]??"std",
+      service_codes:r.service_codes,
+      sample_count:r.sample_count,
+      inspection_paid_cents:r.inspection_paid_cents,
+      inspection_refunded_cents:r.inspection_refunded_cents,
+      net_inspection_cents:netInspectionCents,
+      pass_through_shipping_cents:r.pass_through_shipping_cents,
+      storage_allocated_cents:r.storage_allocated_cents,
+      inspection_seconds:r.inspection_seconds,
+      inspection_minutes:Number((r.inspection_seconds/60).toFixed(2)),
+      labor_cost_cents:laborCostCents,
+      contribution_cents:contributionCents,
+      provider_refs:r.provider_refs,
+      channel_reconciled:channelReconciled,
+    };
+  });
+
+  const groupMap=new Map<string,{
+    category_slug:string;
+    service_code:string;
+    order_count:number;
+    sample_count:number;
+    inspection_seconds:number;
+    net_inspection_cents:number;
+    labor_cost_cents:number;
+    contribution_cents:number;
+  }>();
+  for(const row of orders) {
+    const key=`${row.category_slug}:${row.service_code}`;
+    const cur=groupMap.get(key)??{
+      category_slug:row.category_slug,
+      service_code:row.service_code,
+      order_count:0,
+      sample_count:0,
+      inspection_seconds:0,
+      net_inspection_cents:0,
+      labor_cost_cents:0,
+      contribution_cents:0,
+    };
+    cur.order_count+=1;
+    cur.sample_count+=row.sample_count;
+    cur.inspection_seconds+=row.inspection_seconds;
+    cur.net_inspection_cents+=row.net_inspection_cents;
+    cur.labor_cost_cents+=row.labor_cost_cents;
+    cur.contribution_cents+=row.contribution_cents;
+    groupMap.set(key,cur);
+  }
+  const byCategoryService=[...groupMap.values()].map(g=>({
+    ...g,
+    avg_seconds_per_sample:g.sample_count>0?Math.round(g.inspection_seconds/g.sample_count):0,
+  }));
+
+  const sumInspectionPaid=orders.reduce((n,r)=>n+r.inspection_paid_cents,0);
+  const sumInspectionRefunded=orders.reduce((n,r)=>n+r.inspection_refunded_cents,0);
+  const sumNetInspection=orders.reduce((n,r)=>n+r.net_inspection_cents,0);
+  const sumPassThroughShipping=orders.reduce((n,r)=>n+r.pass_through_shipping_cents,0);
+  const sumStorageAllocated=orders.reduce((n,r)=>n+r.storage_allocated_cents,0);
+  const sumInspectionSeconds=orders.reduce((n,r)=>n+r.inspection_seconds,0);
+  const sumLaborCost=orders.reduce((n,r)=>n+r.labor_cost_cents,0);
+  const sumContribution=orders.reduce((n,r)=>n+r.contribution_cents,0);
+
+  const summary={
+    include_test:includeTest,
+    limit,
+    order_count:orders.length,
+    hourly_labor_cents:hourlyLaborCents,
+    inspection_paid_cents:sumInspectionPaid,
+    inspection_refunded_cents:sumInspectionRefunded,
+    net_inspection_cents:sumNetInspection,
+    pass_through_shipping_cents:sumPassThroughShipping,
+    storage_allocated_cents:sumStorageAllocated,
+    total_inspection_seconds:sumInspectionSeconds,
+    total_labor_cost_cents:sumLaborCost,
+    total_contribution_cents:sumContribution,
+    recomputable_balanced:
+      sumNetInspection===sumInspectionPaid-sumInspectionRefunded &&
+      sumContribution===sumNetInspection+sumStorageAllocated-sumLaborCost,
+    all_channel_reconciled:orders.every(r=>r.channel_reconciled),
+  };
+
+  return {summary,orders,by_category_service:byCategoryService};
+}
+
+function csvCell(value:unknown) {
+  const s=String(value??"");
+  return /[",\n\r]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;
+}
+
+export async function orderLedgerCsv(db:DB,actor:Actor,opts:{includeTest?:boolean;limit?:number}={}) {
+  const ledger=await orderLedger(db,actor,opts);
+  const headers=[
+    "public_no",
+    "state",
+    "is_test",
+    "category_slug",
+    "service_code",
+    "sample_count",
+    "inspection_paid_cents",
+    "inspection_refunded_cents",
+    "net_inspection_cents",
+    "pass_through_shipping_cents",
+    "storage_allocated_cents",
+    "inspection_seconds",
+    "labor_cost_cents",
+    "contribution_cents",
+    "channel_reconciled",
+    "provider_refs",
+  ];
+  const lines=[headers.join(",")];
+  for(const r of ledger.orders) {
+    lines.push([
+      r.public_no,
+      r.state,
+      r.is_test?"1":"0",
+      r.category_slug,
+      r.service_code,
+      r.sample_count,
+      r.inspection_paid_cents,
+      r.inspection_refunded_cents,
+      r.net_inspection_cents,
+      r.pass_through_shipping_cents,
+      r.storage_allocated_cents,
+      r.inspection_seconds,
+      r.labor_cost_cents,
+      r.contribution_cents,
+      r.channel_reconciled?"1":"0",
+      r.provider_refs.join("|"),
+    ].map(csvCell).join(","));
+  }
+  const s=ledger.summary;
+  lines.push([
+    "SUMMARY",
+    "TOTAL",
+    s.include_test?"1":"0",
+    "ALL",
+    "ALL",
+    ledger.orders.reduce((n,r)=>n+r.sample_count,0),
+    s.inspection_paid_cents,
+    s.inspection_refunded_cents,
+    s.net_inspection_cents,
+    s.pass_through_shipping_cents,
+    s.storage_allocated_cents,
+    s.total_inspection_seconds,
+    s.total_labor_cost_cents,
+    s.total_contribution_cents,
+    s.all_channel_reconciled?"1":"0",
+    "",
+  ].map(csvCell).join(","));
+  return lines.join("\n")+"\n";
 }

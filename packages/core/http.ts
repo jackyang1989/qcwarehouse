@@ -16,7 +16,7 @@ import { amendReport, amendReportInput, approveReport, checkTaskCompleteness, cr
 import { acceptQuote, amendDispatchBatch, calculateShippingPreview, cancelDisposition, checkStorageReminders, closeCompletedOrder, confirmBatch, handover, instruct, packShipment, planBatch, publishShippingRate, quoteBatch, readDispatchBatch, receiveReturn, releaseReferenceSample, storageQuote } from "./dispatch";
 import { checkout, demoPay, orderPayment, orderRefundPayments, refundApprove, refundRequest, resolvePaymentDispute, stripeEvent, verifyStripe } from "./payments";
 import { approveTrackingTranslation, correctCustomerParcelTracking, correctStaffTracking, providerCallback, refreshTracking, submitTrackingTranslation, tracking, trackingAdmin, verificationState, verifyTracking } from "./logistics";
-import { adminDesk, bills, customerActions, customerDesk, customerNotifications, dispatchQueueStates, items, markNotificationRead, readOrderByPublicNumber, reconcileFinance, searchStaffOrders, staffOrderDetail, staffOrderFilters, warehouseDesk, warehouseDispatchBatch, warehouseDispatchQueue, warehouseItem, warehousePackage } from "./reads";
+import { adminDesk, bills, customerActions, customerDesk, customerNotifications, dispatchQueueStates, items, markNotificationRead, orderLedger, orderLedgerCsv, readOrderByPublicNumber, reconcileFinance, searchStaffOrders, staffOrderDetail, staffOrderFilters, warehouseDesk, warehouseDispatchBatch, warehouseDispatchQueue, warehouseItem, warehousePackage } from "./reads";
 import { staffAccess } from "./staff-access";
 import { customerDestination, withDestination } from "./portal-routes";
 import { orderFulfillmentRecord } from "./fulfillment-reads";
@@ -363,7 +363,9 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   if(method==="GET"&&path==="/staff/tickets") {
     const state=z.enum(["open","waiting_customer","waiting_internal","resolved","closed"]).nullable().parse(url.searchParams.get("state"));
     const reference=z.string().trim().toUpperCase().pipe(z.string().regex(/^[A-Z][A-Z0-9-]{1,63}$/)).nullable().parse(url.searchParams.get("reference"));
-    return json(await transaction(db=>staffTicketQueue(db,actorRequired(actor),state,reference)));
+    const category=z.string().trim().min(2).max(60).nullable().parse(url.searchParams.get("category")||null);
+    const assignee=z.string().trim().min(2).max(60).nullable().parse(url.searchParams.get("assignee")||null);
+    return json(await transaction(db=>staffTicketQueue(db,actorRequired(actor),state,reference,category,assignee)));
   }
   const ticketRoute=path.match(/^\/staff\/tickets\/([a-f0-9-]{36})(\/events)?$/i);
   if(ticketRoute&&method==="GET"&&!ticketRoute[2]) {
@@ -768,6 +770,17 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   if(method==="GET" && path==="/staff/admin/reconciliation") {
     const includeTest=url.searchParams.get("include_test")!=="0" && url.searchParams.get("test")!=="production";
     return json(await transaction(db=>reconcileFinance(db,actorRequired(actor),includeTest)));
+  }
+  if(method==="GET" && path==="/staff/admin/finance/ledger") {
+    const includeTest=url.searchParams.get("include_test")==="1" || url.searchParams.get("test")==="all";
+    const limit=url.searchParams.get("limit")?z.coerce.number().int().min(1).max(200).parse(url.searchParams.get("limit")):30;
+    return json(await transaction(db=>orderLedger(db,actorRequired(actor),{includeTest,limit})));
+  }
+  if(method==="GET" && path==="/staff/admin/finance/ledger.csv") {
+    const includeTest=url.searchParams.get("include_test")==="1" || url.searchParams.get("test")==="all";
+    const limit=url.searchParams.get("limit")?z.coerce.number().int().min(1).max(200).parse(url.searchParams.get("limit")):30;
+    const csv=await transaction(db=>orderLedgerCsv(db,actorRequired(actor),{includeTest,limit}));
+    return new Response(csv,{status:200,headers:{"content-type":"text/csv; charset=utf-8","content-disposition":'attachment; filename="qcwarehouse-order-ledger.csv"','cache-control':"no-store"}});
   }
   const store=path.match(/^\/staff\/dispositions\/([a-f0-9-]{36})\/storage-quote$/i);
   if(method==="POST" && store) return extraWrite(req,path,actor,z.object({days:z.number().int().min(1).max(365).optional()}),(db,a,b)=>storageQuote(db,a,idSchema.parse(store[1]),b));

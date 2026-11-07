@@ -242,30 +242,32 @@ export function Catalog({path}:{path:string}) {
       </section>
     </>}
 
-    {path==="/catalog"&&<div className="land-services catalog-coverage" style={{marginBottom:18}}>
-      {Object.entries(servicePages).map(([href,code])=><Link className="land-svc" href={href} key={href}><span className="symbol"><PlatformIcon name={code==="compare"?"compare":code==="inspection"?"inspection":"packages"}/></span>
-        <h3>{serviceDetails[code].title}</h3><p>{serviceDetails[code].description}</p><span className="go">View service →</span></Link>)}
-    </div>}
+    {!isCategories&&!isPricing&&<>
+      {path==="/catalog"&&<div className="land-services catalog-coverage" style={{marginBottom:18}}>
+        {Object.entries(servicePages).map(([href,code])=><Link className="land-svc" href={href} key={href}><span className="symbol"><PlatformIcon name={code==="compare"?"compare":code==="inspection"?"inspection":"packages"}/></span>
+          <h3>{serviceDetails[code].title}</h3><p>{serviceDetails[code].description}</p><span className="go">View service →</span></Link>)}
+      </div>}
 
-    <Tabs path={path} links={[["/catalog","All services"],...Object.entries(servicePages).map(([href,code]):[string,string]=>[href,serviceDetails[code].title])]}/>
-    {error&&<><ErrorBlock error={error}/><button type="button" onClick={reload}>Try again</button></>}
-    {!data&&!error&&<p role="status">Loading services…</p>}
-    {categories.size>0&&<div className="catalog-filter"><h2>Available service packages</h2><div className="actions" aria-label="Product categories">{[...categories].map(([id,name])=>
-      <button type="button" className={selected===id?"primary":""} aria-pressed={selected===id} key={id} onClick={()=>setCategory(id)}>{name}</button>)}</div></div>}
-    {categories.size>0&&!selected&&<p className="muted">Select a category to see available checks and pricing.</p>}
-    {selected&&<section className="catalog-offers" aria-label={categories.get(selected)+" offers"}>
-      {offers.filter(o=>o.category_id===selected).map((o:Row)=><article className="catalog-offer" key={o.offer_id}>
-        <div><p className="eyebrow">{o.sku_code}</p><h2>{o.title.en}</h2>
-          <p>{o.rules.minimum===o.rules.maximum?o.rules.minimum:o.rules.minimum+"–"+o.rules.maximum} items · {o.rules.business_days} business days after all items are received and identified</p>
-          {o.rules.demo&&<p className="muted small">Development catalogue and prices</p>}
-        </div>
-        <div className="catalog-price"><div><strong>{usd(o.rules.unit_cents??o.rules.package_cents)}</strong><small>{o.rules.unit_cents!=null?"per item":"per group"}</small></div>
-          <Link className="button primary" href={"/orders/new?offer="+o.offer_id}>Choose service</Link>
-        </div>
-      </article>)}
-    </section>}
-    {data&&offers.length===0&&<Empty>No matching services are available for purchase yet.</Empty>}
-    <div className="catalog-support"><div><h2>Need a different scope?</h2><p className="muted">Tell us the category, quantity and checks you need.</p></div><Link className="button" href="/contact">Request a custom inspection →</Link></div>
+      <Tabs path={path} links={[["/catalog","All services"],...Object.entries(servicePages).map(([href,code]):[string,string]=>[href,serviceDetails[code].title])]}/>
+      {error&&<><ErrorBlock error={error}/><button type="button" onClick={reload}>Try again</button></>}
+      {!data&&!error&&<p role="status">Loading services…</p>}
+      {categories.size>0&&<div className="catalog-filter"><h2>Available service packages</h2><div className="actions" aria-label="Product categories">{[...categories].map(([id,name])=>
+        <button type="button" className={selected===id?"primary":""} aria-pressed={selected===id} key={id} onClick={()=>setCategory(id)}>{name}</button>)}</div></div>}
+      {categories.size>0&&!selected&&<p className="muted">Select a category to see available checks and pricing.</p>}
+      {selected&&<section className="catalog-offers" aria-label={categories.get(selected)+" offers"}>
+        {offers.filter(o=>o.category_id===selected).map((o:Row)=><article className="catalog-offer" key={o.offer_id}>
+          <div><p className="eyebrow">{o.sku_code}</p><h2>{o.title.en}</h2>
+            <p>{o.rules.minimum===o.rules.maximum?o.rules.minimum:o.rules.minimum+"–"+o.rules.maximum} items · {o.rules.business_days} business days after all items are received and identified</p>
+            {o.rules.demo&&<p className="muted small">Development catalogue and prices</p>}
+          </div>
+          <div className="catalog-price"><div><strong>{usd(o.rules.unit_cents??o.rules.package_cents)}</strong><small>{o.rules.unit_cents!=null?"per item":"per group"}</small></div>
+            <Link className="button primary" href={"/orders/new?offer="+o.offer_id}>Choose service</Link>
+          </div>
+        </article>)}
+      </section>}
+      {data&&offers.length===0&&<Empty>No matching services are available for purchase yet.</Empty>}
+      <div className="catalog-support"><div><h2>Need a different scope?</h2><p className="muted">Tell us the category, quantity and checks you need.</p></div><Link className="button" href="/contact">Request a custom inspection →</Link></div>
+    </>}
   </>;
 }
 const legalTitles:Record<string,string>={terms:"Terms of Service",privacy:"Privacy Policy",restricted_items:"Restricted Items",report_notice:"Report Limitations"};

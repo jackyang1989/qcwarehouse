@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 export function ApparelIllustration({kind="shirt"}:{kind?:"shirt"|"bag"|"shoe"}) {
-  return <svg viewBox="0 0 120 120" aria-hidden="true">
+  return <svg viewBox="0 0 120 120" width="84" height="84" fill="none" stroke="#6c8dad" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     {kind==="shirt"?<path d="M37 16 18 29 7 52l25 14 7-14v52h53V52l7 14 25-14-13-23-21-13c-12 17-28 17-43 0Z"/>:
      kind==="bag"?<path d="M27 48h68l7 53H20l7-53Zm17 0V37a17 17 0 0 1 34 0v11"/>:
      <path d="M11 79c25-3 38-31 54-46 18 27 24 27 45 37v20H11Z"/>}
@@ -10,7 +10,7 @@ export function ApparelIllustration({kind="shirt"}:{kind?:"shirt"|"bag"|"shoe"})
 
 export function PhotoCardPlaceholder({title,label="ILLUSTRATIVE"}:{title:string;label?:string}) {
   return <div className="photo">
-    <svg viewBox="0 0 64 64" aria-hidden="true">
+    <svg viewBox="0 0 64 64" width="56" height="56" aria-hidden="true">
       <rect x="9" y="13" width="46" height="38" rx="4" fill="none" stroke="currentColor" strokeWidth="2"/>
       <circle cx="24" cy="26" r="5" fill="none" stroke="currentColor" strokeWidth="2"/>
       <path d="M13 44 29 31l8 8 7-6 8 11" fill="none" stroke="currentColor" strokeWidth="2"/>

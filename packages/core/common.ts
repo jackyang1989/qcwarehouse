@@ -11,7 +11,7 @@ export function guard(condition: unknown, code: string, message: string, status?
 export const hash = (v: string | Uint8Array) => createHash("sha256").update(v).digest("hex");
 export const code = (prefix: string) => prefix + randomBytes(6).toString("hex").toUpperCase();
 export const isDemo = () => process.env.QCW_DEMO === "1" && process.env.NODE_ENV !== "production";
-export async function one<T extends QueryResultRow>(db: DB, sql: string, values: unknown[] = []): Promise<T> {
+export async function one<T extends QueryResultRow>(db: Pick<DB, "query">, sql: string, values: unknown[] = []): Promise<T> {
   const row = (await db.query<T>(sql, values)).rows[0];
   guard(row, "NOT_FOUND", "Record not found.", 404);
   return row;

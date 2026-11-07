@@ -795,43 +795,87 @@ function RefundApproval({refund,reload}:{refund:Row;reload:()=>void}) {
 }
 
 export function WarehouseScan() {
-  const [match,setMatch]=useState<{title:string;detail:string;link?:string;action?:string}>();
+  const [match,setMatch]=useState<{title:string;detail:string;link?:string|null;action?:string;allowed?:string[]}>();
+  const [cameraNotice,setCameraNotice]=useState<string>();
   const carriers=useLoad("/carriers");
+  async function lookupScan(code:string,carrier?:string) {
+    setMatch(undefined);
+    const query=carrier?"?"+new URLSearchParams({carrier_code:carrier}):"";
+    const result=await request("/staff/scan/"+encodeURIComponent(code)+query);
+    const actionLabel=result.kind==="package"?"打开包裹详情":result.kind==="item"?
+      (result.link?.startsWith("/wh/task/")?"打开质检任务":"打开实物识别"):
+      result.package_id?"打开拆包登记":"前往收货核对";
+    setMatch({
+      title:result.code,
+      detail:result.summary,
+      link:result.link,
+      action:actionLabel,
+      allowed:result.allowed_actions,
+    });
+  }
   return <>
     <div className="page-head row"><div><p className="eyebrow">WAREHOUSE / SCAN</p><h1>扫码查询</h1>
       <p className="muted">扫描或手输卖家运单、包裹码或实物码。</p></div><Link className="button" href="/wh/intake">收货入库</Link></div>
     <Panel title="查询仓库对象">
-      <div onChange={()=>setMatch(undefined)}><Form inline label="查询" run={async f=>{
-        setMatch(undefined);
-        const code=text(f,"scan_code"),carrier=text(f,"carrier");
-        if(/^P-[A-Z0-9-]{1,64}$/i.test(code)) {
-          const {parcel}=await request("/staff/packages/by-code/"+code.toUpperCase());
-          setMatch({title:parcel.code,detail:"仓库已实收 · 已登记 "+parcel.received_quantity+" 件",
-            link:"/wh/packages/"+parcel.code,action:"打开包裹详情"});
-        } else if(/^S-/i.test(code)) {
-          const {item}=await request("/staff/items/by-code?"+new URLSearchParams({code}));
-          setMatch({title:item.code,detail:label(item.custody_state)+" · 库位 "+(item.location??"未登记"),
-            link:"/wh/samples/"+encodeURIComponent(item.code),action:"打开实物识别"});
-        } else {
-          const result=await request("/staff/intake/lookup","POST",{tracking_no:code,...(carrier?{carrier_code:carrier}:{})});
-          if(result.match_state==="ambiguous") {
-            setMatch({title:code,detail:"发现多个候选。请选择面单上的承运商后重新查询。"});
+      <div className="actions">
+        <button type="button" onClick={async()=>{
+          setCameraNotice(undefined);
+          if(typeof navigator==="undefined" || !navigator.mediaDevices?.getUserMedia) {
+            setCameraNotice("当前设备或浏览器未开放相机扫码权限，请直接使用扫码枪或下方手动输入。");
             return;
           }
-          setMatch({title:code,detail:result.package_id?"仓库已有实收记录":result.receiving_code?
-            "已匹配收件码 "+result.receiving_code:"待核验包裹归属",
-            link:"/wh/intake?"+new URLSearchParams(result.package_id?{package:result.package_id}:{tracking:code}),
-            action:result.package_id?"打开拆包登记":"前往收货核对"});
-        }
+          try {
+            const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
+            stream.getTracks().forEach(t=>t.stop());
+            setCameraNotice("相机权限已就绪，请将条码对准取景框或直接输入条码。");
+          } catch {
+            setCameraNotice("未能获取相机权限，已切换为扫码枪/手动输入模式。");
+          }
+        }}>启用相机扫码</button>
+      </div>
+      {cameraNotice&&<p className="muted small" role="status">{cameraNotice}</p>}
+      <div onChange={()=>setMatch(undefined)}><Form inline label="查询" run={async f=>{
+        await lookupScan(text(f,"scan_code"),text(f,"carrier")||undefined);
       }}>
         <Field name="scan_code" label="条码或原始运单号"/>
         <Select name="carrier" label="承运商（运单查询）" required={false}
           choices={(carriers.data?.carriers??[]).map((c:Row)=>({id:c.code,label:c.labels["zh-CN"]??c.labels.en}))}/>
       </Form></div>
       {match&&<div className="notice" role="status"><strong className="code">{match.title}</strong><p>{match.detail}</p>
+        {match.allowed?.length?<p className="small muted">可执行操作：{match.allowed.join(" · ")}</p>:null}
         {match.link&&<Link className="button" href={match.link}>{match.action}</Link>}</div>}
     </Panel>
   </>;
+}
+
+function LabelPrintPanel({targetType,targetId,code}:{targetType:"package"|"item";targetId:string;code:string}) {
+  const [printed,setPrinted]=useState<{print_id:string;pdf_url:string;reprint:boolean;print_count:number}>();
+  const [verified,setVerified]=useState(false);
+  return <Panel title="内部标签打印与扫码回读">
+    <p className="muted">内部标签仅包含 <span className="code">{code}</span> 编码与二维码，不含任何客户姓名、邮箱或外部地址。</p>
+    <Form inline label="打印 / 重打标签" run={async f=>{
+      const reason=text(f,"reprint_reason");
+      const res=await request("/staff/labels/print","POST",{
+        ...(targetType==="package"?{package_id:targetId}:{item_ids:[targetId]}),
+        ...(reason?{reprint_reason:reason}:{}),
+      });
+      const first=res.labels?.[0];
+      setPrinted({print_id:res.print_id,pdf_url:res.pdf_url,reprint:Boolean(first?.reprint),print_count:first?.print_count??1});
+      setVerified(false);
+    }}>
+      <Field name="reprint_reason" label="重打原因（首次打印可留空）" required={false}/>
+    </Form>
+    {printed&&<p className="notice" role="status">
+      已生成标签（第 {printed.print_count} 次打印） · <a href={"/api/v1/staff/labels/"+printed.print_id+"/file"} target="_blank" rel="noreferrer">打开标签 PDF</a>
+    </p>}
+    <Form inline label="回读核验标签" run={async f=>{
+      await request("/staff/labels/verify","POST",{expected_code:code,scanned_code:text(f,"scanned_code")});
+      setVerified(true);
+    }}>
+      <Field name="scanned_code" label="扫描贴好后的标签条码以确认一致"/>
+    </Form>
+    {verified&&<p className="notice" role="status">标签回读核验通过：<span className="code">{code}</span></p>}
+  </Panel>;
 }
 
 export function WarehousePackageView({code}:{code:string}) {
@@ -859,6 +903,7 @@ export function WarehousePackageView({code}:{code:string}) {
             <li key={event.id}>{stamp(event.occurred_at)} · {event.text}</li>)}</ol>:<Empty>暂无承运商中文轨迹。</Empty>}
         </Panel>
       </div>
+      <LabelPrintPanel targetType="package" targetId={parcel.id} code={parcel.code}/>
       <Panel title="拆包实物">
         <Table headers={["实物码","库存状态","当前位置",""]} rows={data.items.map((item:Row)=>[
           <span className="code">{item.code}</span>,label(item.custody_state),item.location??"—",
@@ -899,6 +944,9 @@ export function WarehouseItemView({code}:{code:string}) {
       <p className="code">{code}</p></div><Link className="button" href="/wh/scan">返回扫码</Link></div>
     {error&&<><ErrorBlock error={error}/><button type="button" onClick={reload}>重试</button></>}
     {!data&&!error&&<p role="status">正在读取实物…</p>}
-    {data&&!error&&<Panel title="库存与委托"><ItemIdentity data={data} onSave={reload}/></Panel>}
+    {data&&!error&&<>
+      <Panel title="库存与委托"><ItemIdentity data={data} onSave={reload}/></Panel>
+      <LabelPrintPanel targetType="item" targetId={data.item.id} code={data.item.code}/>
+    </>}
   </>;
 }

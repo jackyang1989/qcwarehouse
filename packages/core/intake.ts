@@ -1,6 +1,6 @@
-import sharp from "sharp";
 import type { DB } from "../db";
 import { audit, code, event, guard, hash, lock, one, organization, revision, role, uuid, type Actor } from "./common";
+import { processImageBytes } from "./media";
 import { readyOrder } from "./orders";
 import { requireSpace } from "./storage";
 
@@ -54,23 +54,19 @@ export async function savePhoto(db:DB,actor:Actor,bytes:Buffer,kind:string) {
   const org=actor.kind==="customer"?organization(actor):null;
   if(org) guard(kind==="attachment","FORBIDDEN","Only claim documents can be uploaded.",403);
   else role(actor,"receiver","inspector","warehouse_admin");
-  guard(bytes.length>0 && bytes.length<=8_000_000,"FILE_INVALID","Upload a photo up to 8 MB.",422);
-  let data:Buffer;
-  try {
-    data=await sharp(bytes,{limitInputPixels:30_000_000}).rotate().resize({width:2400,height:2400,fit:"inside",withoutEnlargement:true}).jpeg({quality:86}).toBuffer();
-  } catch {
-    guard(false,"FILE_INVALID","Upload a valid raster image.",422);
-  }
-  const id=uuid(), key="media/"+id;
-  await db.query("insert into private_files(key,data,mime) values($1,$2,'image/jpeg')",[key,data]);
-  await db.query(`insert into media_assets(id,kind,object_key,mime,size_bytes,sha256,status,uploaded_by,org_id)
-    values($1,$2,$3,'image/jpeg',$4,$5,'ready',$6,$7)`,[id,kind,key,data.length,hash(data),actor.id,org]);
+  guard(bytes.length>0 && bytes.length<=25_000_000,"FILE_INVALID","Upload a photo up to 25 MB.",422);
+  const {fullData,thumbData,width,height,capturedAt}=await processImageBytes(bytes);
+  const id=uuid(), key="media/"+id, thumbKey="thumb/"+id;
+  await db.query("insert into private_files(key,data,mime) values($1,$2,'image/jpeg'),($3,$4,'image/jpeg')",[key,fullData,thumbKey,thumbData]);
+  await db.query(`insert into media_assets(id,kind,object_key,thumb_key,mime,size_bytes,width,height,sha256,status,captured_at,uploaded_by,org_id)
+    values($1,$2,$3,$4,'image/jpeg',$5,$6,$7,$8,'ready',$9,$10,$11)`,[id,kind,key,thumbKey,fullData.length,width,height,hash(fullData),capturedAt,actor.id,org]);
   return {id};
 }
 export async function attachEvidence(db:DB,actor:Actor,ids:string[],kind:string,scope:{org:string|null;package?:string;task?:string}) {
   guard(new Set(ids).size===ids.length && ids.length>0,"EVIDENCE_REQUIRED","Provide distinct supporting photos.",422);
   for(const id of [...ids].sort()) {
-    const m=await one(db,"select * from media_assets where id=$1 and uploaded_by=$2 and status='ready' for update",[id,actor.id]);
+    const m=await one(db,"select * from media_assets where id=$1 and uploaded_by=$2 for update",[id,actor.id]);
+    guard(m.status==="ready","MEDIA_NOT_READY","The referenced photo is not ready yet.",409);
     guard(m.kind===kind && (!m.org_id || m.org_id===scope.org) && (!m.package_id || m.package_id===scope.package) &&
       (!m.task_id || m.task_id===scope.task),"EVIDENCE_MISMATCH","The photo belongs to another operation.");
     await db.query("update media_assets set org_id=$2,package_id=coalesce($3,package_id),task_id=coalesce($4,task_id) where id=$1",

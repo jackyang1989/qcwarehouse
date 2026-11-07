@@ -22,11 +22,70 @@ export async function request(path:string,method="GET",body?:unknown,idempotency
   if(!r.ok) throw new RequestError(data.error?.message??"Request failed.",data.error?.code);
   return data;
 }
-export async function upload(file:FormDataEntryValue|null,kind:string):Promise<string> {
+async function compressImageClient(file:File):Promise<{bytes:ArrayBuffer;mime:string}> {
+  if(typeof window!=="undefined" && typeof createImageBitmap==="function" && file.type!=="image/heic") {
+    try {
+      const bitmap=await createImageBitmap(file);
+      const maxSide=Math.max(bitmap.width,bitmap.height);
+      const scale=maxSide>2400?2400/maxSide:1;
+      const width=Math.max(1,Math.round(bitmap.width*scale));
+      const height=Math.max(1,Math.round(bitmap.height*scale));
+      const canvas=document.createElement("canvas");
+      canvas.width=width;canvas.height=height;
+      const ctx=canvas.getContext("2d");
+      if(ctx) {
+        ctx.drawImage(bitmap,0,0,width,height);
+        bitmap.close();
+        const blob=await new Promise<Blob|null>(res=>canvas.toBlob(res,"image/jpeg",0.85));
+        if(blob) return {bytes:await blob.arrayBuffer(),mime:"image/jpeg"};
+      }
+      bitmap.close();
+    } catch {
+      // Fallback to raw file bytes if client-side canvas decode fails
+    }
+  }
+  return {bytes:await file.arrayBuffer(),mime:(["image/jpeg","image/png","image/webp","image/heic"].includes(file.type)?file.type:"image/jpeg")};
+}
+async function sha256Hex(buffer:ArrayBuffer):Promise<string> {
+  const digest=await crypto.subtle.digest("SHA-256",buffer);
+  return Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,"0")).join("");
+}
+async function withUploadRetry<T>(fn:()=>Promise<T>,attempts=3):Promise<T> {
+  let lastError:unknown;
+  for(let i=0;i<attempts;i++) {
+    try {
+      return await fn();
+    } catch(err) {
+      lastError=err;
+      if(err instanceof RequestError && err.code && !["SERVER_ERROR"].includes(err.code)) throw err;
+      if(i+1<attempts) await new Promise(r=>setTimeout(r,300*(2**i)));
+    }
+  }
+  throw lastError;
+}
+export async function upload(file:FormDataEntryValue|null,kind:string,scope?:Record<string,string>):Promise<string> {
   if(!(file instanceof File) || !file.size) throw new Error("请选择照片 / Choose a photo.");
-  const data=new FormData();
-  data.set("photo",file);data.set("kind",kind);
-  return (await request("/staff/media","POST",data)).id;
+  const {bytes,mime}=await compressImageClient(file);
+  const sha256=await sha256Hex(bytes);
+  const ticket=await withUploadRetry(()=>request("/media/upload-url","POST",{
+    kind,mime,size_bytes:bytes.byteLength,sha256,...(scope??{}),
+  }));
+  const csrf=browserCookie("qcw_csrf");
+  await withUploadRetry(async()=>{
+    const putPath=new URL(ticket.upload_url,location.origin);
+    const res=await fetch(putPath.pathname+putPath.search,{
+      method:"PUT",
+      headers:{"content-type":mime,...(csrf?{"X-CSRF-Token":csrf}:{})},
+      body:bytes,
+    });
+    if(!res.ok) {
+      const err=await res.json().catch(()=>({}));
+      throw new RequestError(err.error?.message??"Upload PUT failed.",err.error?.code);
+    }
+  });
+  const completedIdempotency=crypto.randomUUID();
+  await withUploadRetry(()=>request(`/media/${ticket.media_id}/complete`,"POST",{},completedIdempotency));
+  return ticket.media_id;
 }
 export const usd=(c:number)=>new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(c/100);
 export const stamp=(t?:string)=>t?new Date(t).toLocaleString():"—";
@@ -72,7 +131,7 @@ export function Select({name,label,choices,required=true,value}:{name:string;lab
     <option value="">{required?"— Select / 选择 —":"—"}</option>{choices.map(x=><option key={x.id} value={x.id}>{x.label}</option>)}</select></label>;
 }
 export function Photo({name="photo",label="照片 / Photo"}:{name?:string;label?:string}) {
-  return <label>{label}<input type="file" accept="image/jpeg,image/png,image/webp,image/heic" name={name} required/></label>;
+  return <label>{label}<input type="file" accept="image/jpeg,image/png,image/webp,image/heic" capture="environment" name={name} required/></label>;
 }
 export function Panel({title,children,id}:{title:string;children:ReactNode;id?:string}) {return <section id={id} className="panel"><h2>{title}</h2>{children}</section>;}
 export function Empty({children}:{children:ReactNode}) {return <p className="muted">{children}</p>;}

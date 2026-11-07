@@ -3,6 +3,7 @@ import { publishReport } from "./inspection";
 import { executeRefund } from "./payments";
 import { consumeTrackingCallback, subscribeTrackingOnce, syncTrackingOnce } from "./logistics";
 import { consumeEmailWebhook, deliverEmailOnce, queueNotificationEmail } from "./email";
+import { cleanupStaleMediaUploads } from "./media";
 import { audit, guard, one, role, type Actor } from "./common";
 import { requireStaffMfa } from "./auth";
 import type { DB } from "../db";
@@ -75,5 +76,6 @@ export async function workOnce() {
 export async function trackingTick() {
   const subscribed=await subscribeTrackingOnce();
   const synced=await syncTrackingOnce();
-  return subscribed||synced;
+  const cleaned=(await transaction(cleanupStaleMediaUploads)).cleaned>0;
+  return subscribed||synced||cleaned;
 }

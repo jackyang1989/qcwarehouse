@@ -25,6 +25,8 @@ import { createLocations, locationBatchSchema, locationMaster, setLocationActive
 import { acceptScope, approveCapability, cancelOrder, createCapability, createCategory, holdOrder, moveItem, newTemplate, orderCaseCategory, publishSkuPrice, publishTemplate, reportIssue, resumeOrder, revokeCapability, scopeProposal, scopeReview, setAddress, staffSchemas, updateCategoryStatus, upsertOffer } from "./operations";
 import { createReportShare, listPublishedReports, listReportShares, readSharedPhoto, readSharedReport, reportSharingEnabled, revokeReportShare, shareInput, shareTokenPattern } from "./report-shares";
 import { auditFilters, readAudit } from "./audit-read";
+import { completeMediaUpload, createMediaReadUrl, createMediaUploadUrl, putMediaStaging, readMediaBinary, uploadUrlInputSchema } from "./media";
+import { labelPrintInputSchema, labelVerifyInputSchema, printLabels, readLabelPdf, scanWarehouseCode, verifyLabelReadback } from "./labels";
 
 type ContractOperation={
   operationId:string; "x-roles":string[];
@@ -97,37 +99,6 @@ function authResult(result:{state:string;secret:string;kind:string}) {
 }
 function binary(file:{data:Buffer;mime:string}) {
   return new Response(new Uint8Array(file.data),{headers:{"content-type":file.mime,"cache-control":"private, no-store","x-content-type-options":"nosniff"}});
-}
-async function photoRead(db:DB,actor:Actor,id:string) {
-  const m=await one(db,"select * from media_assets where id=$1 and status='ready'",[id]);
-  if(m.kind==="attachment"&&await canReadCasePhoto(db,actor,id))
-    return binary(await one<{data:Buffer;mime:string}>(db,"select data,mime from private_files where key=$1",[m.object_key]));
-  if(actor.kind==="customer") {
-    const org=organization(actor);
-    if(m.kind==="attachment" && m.org_id===org && m.uploaded_by===actor.id) {
-      return binary(await one<{data:Buffer;mime:string}>(db,"select data,mime from private_files where key=$1",[m.object_key]));
-    }
-    guard(m.org_id===org && m.result_id,"NOT_FOUND","Photo not found.",404);
-    await one(db,`select v.id from report_versions v join reports r on r.id=v.report_id join orders o on o.id=r.order_id
-      where o.org_id=$2 and v.state in ('published','superseded') and exists(
-      select 1 from jsonb_array_elements(v.snapshot->'sections') s, jsonb_array_elements(s->'results') x
-      where (x->'evidence_ids') ? $1) limit 1`,[id,org]);
-  } else {
-    role(actor,"receiver","warehouse_admin","inspector","reviewer","support","super_admin");
-    const claimProof=m.kind==="attachment" && actor.roles.some(r=>["support","super_admin"].includes(r)) &&
-      (await db.query("select 1 from tickets where category='identity_unclear' and details->>'proof_id'=$1",[id])).rowCount;
-    const orderAttachment=m.kind==="attachment" && actor.roles.some(r=>["inspector","reviewer","support","warehouse_admin","super_admin"].includes(r)) &&
-      (await db.query("select 1 from order_lines where (attributes->'attachment_ids') ? $1 or exists(select 1 from jsonb_array_elements(draft_items) item where (item->'attachment_ids') ? $1)",[id])).rowCount;
-    const claimOuter=m.kind==="intake_outer" && m.org_id===null && actor.roles.some(r=>["support","super_admin"].includes(r)) &&
-      (await db.query(`select 1 from tracking_records t join tickets k on k.details->>'tracking_no'=t.tracking_norm
-        and coalesce(t.carrier_code,k.details->>'carrier_code')=k.details->>'carrier_code'
-        where t.package_id=$1 and t.closed_at is null and t.org_id is null
-        and k.category='identity_unclear' and k.state='open' and k.details ? 'proof_id'`,[m.package_id])).rowCount;
-    guard(claimProof || orderAttachment || claimOuter || m.uploaded_by===actor.id || actor.roles.includes("super_admin") && m.kind!=="attachment" ||
-      actor.roles.includes("warehouse_admin") && m.kind!=="attachment" ||
-      (actor.roles.includes("reviewer") && m.task_id),"NOT_FOUND","Photo not found.",404);
-  }
-  return binary(await one<{data:Buffer;mime:string}>(db,"select data,mime from private_files where key=$1",[m.object_key]));
 }
 async function extras(req:Request,path:string,actor:Actor|null):Promise<Response|null> {
   const method=req.method;
@@ -493,8 +464,62 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
     }
     return json({id:r.id,version:r.version,state:r.state,snapshot:r.snapshot,published_at:r.published_at,amend_reason:r.amend_reason,versions:r.versions});
   });
+  const mediaUrlRoute=path.match(/^\/media\/([a-f0-9-]{36})\/url$/i);
+  if(method==="GET" && mediaUrlRoute) {
+    return json(await transaction(db=>createMediaReadUrl(db,actorRequired(actor),idSchema.parse(mediaUrlRoute[1]))));
+  }
+  const mediaPutRoute=path.match(/^\/media\/([a-f0-9-]{36})\/put$/i);
+  if(method==="PUT" && mediaPutRoute) {
+    csrf(req);
+    guard(Number(req.headers.get("content-length")??0)<=25_100_000,"BODY_TOO_LARGE","Photo is too large.",413);
+    const bytes=Buffer.from(await req.arrayBuffer());
+    return json(await transaction(db=>putMediaStaging(
+      db,
+      idSchema.parse(mediaPutRoute[1]),
+      url.searchParams.get("expires")??"",
+      url.searchParams.get("sig")??"",
+      bytes
+    )));
+  }
+  const mediaCompleteRoute=path.match(/^\/media\/([a-f0-9-]{36})\/complete$/i);
+  if(method==="POST" && mediaCompleteRoute) {
+    return extraWrite(req,path,actor,z.object({}),
+      (db,a)=>completeMediaUpload(db,a,idSchema.parse(mediaCompleteRoute[1])));
+  }
+  if(method==="POST" && path==="/media/upload-url") {
+    return extraWrite(req,path,actor,uploadUrlInputSchema,
+      (db,a,b)=>createMediaUploadUrl(db,a,b),201);
+  }
   const media=path.match(/^\/media\/([a-f0-9-]{36})$/i);
-  if(method==="GET" && media) return transaction(db=>photoRead(db,actorRequired(actor),idSchema.parse(media[1])));
+  if(method==="GET" && media) {
+    const variant=z.enum(["original","thumb"]).default("original").parse(url.searchParams.get("variant")??"original");
+    return transaction(async db=>binary(await readMediaBinary(
+      db,
+      actorRequired(actor),
+      idSchema.parse(media[1]),
+      variant,
+      url.searchParams.get("expires"),
+      url.searchParams.get("sig")
+    )));
+  }
+  const scanRoute=path.match(/^\/staff\/scan\/([^/]+)$/);
+  if(method==="GET" && scanRoute) {
+    const code=decodeURIComponent(scanRoute[1]);
+    const carrierCode=url.searchParams.get("carrier_code")?.trim()||null;
+    return json(await transaction(db=>scanWarehouseCode(db,actorRequired(actor),code,carrierCode)));
+  }
+  if(method==="POST" && path==="/staff/labels/print") {
+    return extraWrite(req,path,actor,labelPrintInputSchema,
+      (db,a,b)=>printLabels(db,a,b));
+  }
+  if(method==="POST" && path==="/staff/labels/verify") {
+    return extraWrite(req,path,actor,labelVerifyInputSchema,
+      (db,a,b)=>verifyLabelReadback(db,a,b));
+  }
+  const labelPdfRoute=path.match(/^\/staff\/labels\/([a-f0-9-]{36})\/file$/i);
+  if(method==="GET" && labelPdfRoute) {
+    return transaction(async db=>binary(await readLabelPdf(db,actorRequired(actor),idSchema.parse(labelPdfRoute[1]))));
+  }
   if(method==="POST" && path==="/staff/media") {
     csrf(req);
     const a=actorRequired(actor);role(a,"receiver","warehouse_admin","inspector");

@@ -47,11 +47,12 @@ class Client {
   }
   async fetch(path:string,body?:unknown,method=body===undefined?"GET":"POST",expected=200,key=randomUUID()) {
     const multipart=body instanceof FormData;
+    const rawBinary=body instanceof Uint8Array;
     const csrf=this.jar.get("qcw_csrf");
     const req=new Request(origin+"/api/v1"+path,{method,headers:{
       cookie:[...this.jar].map(([k,v])=>k+"="+v).join("; "),
-      ...(method!=="GET"?{origin,"Idempotency-Key":key,...(csrf?{"x-csrf-token":csrf}:{}),...(!multipart?{"content-type":"application/json"}:{})}:{})
-    },...(body!==undefined?{body:multipart?body:JSON.stringify(body)}:{})});
+      ...(method!=="GET"?{origin,"Idempotency-Key":key,...(csrf?{"x-csrf-token":csrf}:{}),...(!multipart&&!rawBinary?{"content-type":"application/json"}:rawBinary?{"content-type":"image/png"}:{})}:{})
+    },...(body!==undefined?{body:multipart?body:rawBinary?new Uint8Array(body):JSON.stringify(body)}:{})});
     const response=await handle(req,path.split("?")[0]);
     for(const c of response.headers.getSetCookie()) {
       const match=c.match(/^([^=]+)=([^;]*)/);
@@ -2769,6 +2770,153 @@ test("account security, identity linking, email change, dual-control recovery, r
   // Re-signing in with the same email starts onboarding for a brand-new account with a different receiving_code
   const freshClient=new Client();
   assert.equal((await freshClient.login(recoveryEmail)).state,"onboarding");
+});
+
+test("presigned media upload, sha256 verification, 800px thumbnails, 24h stale cleanup, unified warehouse scan, and label print/readback (TASK-051 to TASK-055)",async()=>{
+  const receiving=await staffLogin("receiving");
+  const inspector=await staffLogin("inspector");
+  const {c,registration}=await signCustomer();
+  const {c:otherCustomer}=await signCustomer();
+
+  // 1. TASK-051 & T36: Presigned upload with checksum mismatch is rejected with 422 MEDIA_CHECKSUM_MISMATCH
+  const imgBytes=await sharp({create:{width:1200,height:900,channels:3,background:"#1f4e78"}})
+    .withExif({IFD0:{DateTime:"2026:11:06 08:15:30"}})
+    .jpeg({quality:90})
+    .toBuffer();
+  const realSha=createHash("sha256").update(imgBytes).digest("hex");
+  const wrongSha="0".repeat(64);
+
+  const badTicket=await receiving.fetch("/media/upload-url",{
+    kind:"intake_outer",mime:"image/jpeg",size_bytes:imgBytes.length,sha256:wrongSha,
+  },"POST",201);
+  // Referencing a pending media asset in check-in fails with 409 MEDIA_NOT_READY
+  const notReadyErr=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:"ZTO"+randomUUID().slice(0,8).toUpperCase(),carrier_code:"zto",outer_media_ids:[badTicket.media_id],
+  },"POST",409);
+  assert.equal(notReadyErr.error.code,"MEDIA_NOT_READY");
+
+  const badPutPath=new URL(badTicket.upload_url).pathname.replace(/^\/api\/v1/,"")+new URL(badTicket.upload_url).search;
+  await receiving.fetch(badPutPath,imgBytes,"PUT",200);
+  const checksumErr=await receiving.fetch(`/media/${badTicket.media_id}/complete`,{},"POST",422);
+  assert.equal(checksumErr.error.code,"MEDIA_CHECKSUM_MISMATCH");
+  const {rows:[rejectedRow]}=await pool.query("select status from media_assets where id=$1",[badTicket.media_id]);
+  assert.equal(rejectedRow.status,"rejected");
+
+  // 2. TASK-051 & TASK-052: Valid presigned upload generates 800px thumbnail, parses EXIF captured_at, and is idempotent on complete
+  const goodTicket=await receiving.fetch("/media/upload-url",{
+    kind:"intake_outer",mime:"image/jpeg",size_bytes:imgBytes.length,sha256:realSha,
+  },"POST",201);
+  const goodPutPath=new URL(goodTicket.upload_url).pathname.replace(/^\/api\/v1/,"")+new URL(goodTicket.upload_url).search;
+  await receiving.fetch(goodPutPath,imgBytes,"PUT",200);
+  const completed1=await receiving.fetch(`/media/${goodTicket.media_id}/complete`,{});
+  assert.equal(completed1.status,"ready");
+  assert.equal(completed1.width,1200);
+  assert.equal(completed1.height,900);
+  assert(completed1.thumb_key?.startsWith("thumb/"));
+  assert(String(completed1.captured_at).startsWith("2026-11-06T08:15:30"));
+  // Calling complete again is idempotent
+  const completed2=await receiving.fetch(`/media/${goodTicket.media_id}/complete`,{});
+  assert.equal(completed2.id,goodTicket.media_id);
+
+  // Signed URL endpoint returns 10-minute URLs for original and 800px thumbnail
+  const signedUrls=await receiving.fetch(`/media/${goodTicket.media_id}/url`);
+  assert(signedUrls.url.includes("variant=original"));
+  assert(signedUrls.thumb_url.includes("variant=thumb"));
+  const thumbPath=new URL(signedUrls.thumb_url).pathname.replace(/^\/api\/v1/,"")+new URL(signedUrls.thumb_url).search;
+  const thumbResp=await receiving.fetch(thumbPath);
+  const thumbMeta=await sharp(thumbResp.image).metadata();
+  assert.equal(thumbMeta.width,800);
+  assert.equal(thumbMeta.height,600);
+
+  // T25: Cross-tenant customer cannot get signed URL or read another org/staff photo (404)
+  const custTicket=await c.fetch("/media/upload-url",{
+    kind:"attachment",mime:"image/jpeg",size_bytes:imgBytes.length,sha256:realSha,
+  },"POST",201);
+  const custPutPath=new URL(custTicket.upload_url).pathname.replace(/^\/api\/v1/,"")+new URL(custTicket.upload_url).search;
+  await c.fetch(custPutPath,imgBytes,"PUT",200);
+  await c.fetch(`/media/${custTicket.media_id}/complete`,{});
+  assert((await c.fetch(`/media/${custTicket.media_id}/url`)).url);
+  await otherCustomer.fetch(`/media/${custTicket.media_id}/url`,undefined,"GET",404);
+  await otherCustomer.fetch(`/media/${custTicket.media_id}`,undefined,"GET",404);
+
+  // 3. T37: Stale pending uploads older than 24 hours are cleaned up
+  const staleTicket=await receiving.fetch("/media/upload-url",{
+    kind:"intake_outer",mime:"image/jpeg",size_bytes:imgBytes.length,sha256:realSha,
+  },"POST",201);
+  const stalePutPath=new URL(staleTicket.upload_url).pathname.replace(/^\/api\/v1/,"")+new URL(staleTicket.upload_url).search;
+  await receiving.fetch(stalePutPath,imgBytes,"PUT",200);
+  await pool.query("update media_assets set created_at=now()-interval '25 hours' where id=$1",[staleTicket.media_id]);
+  const {cleanupStaleMediaUploads}=await import("../packages/core/media");
+  const cleaned=await cleanupStaleMediaUploads(pool);
+  assert(cleaned.media_ids.includes(staleTicket.media_id));
+  const {rowCount:staleRemaining}=await pool.query("select 1 from media_assets where id=$1",[staleTicket.media_id]);
+  assert.equal(staleRemaining,0);
+
+  // 4. TASK-054: Unified warehouse scan (/staff/scan/{code}) for waybill, P- package, and S- item, plus role guard
+  const {warehouse_address:addr}=await c.fetch("/me/receiving-address");
+  const waybillNo="ZTO"+randomUUID().slice(0,8).toUpperCase();
+  const advice=await c.fetch("/me/parcels",{address_id:addr.id,tracking_no:waybillNo,carrier_code:"zto",order_ids:[]},"POST",201);
+  // Inspector without intake role cannot scan raw seller waybills (403)
+  await inspector.fetch("/staff/scan/"+waybillNo,undefined,"GET",403);
+  const scanWaybill=await receiving.fetch("/staff/scan/"+waybillNo);
+  assert.equal(scanWaybill.kind,"waybill");
+  assert.equal(scanWaybill.receiving_code,registration.receiving_code);
+  assert(scanWaybill.allowed_actions.includes("check_in"));
+
+  // Check in and unpack using the presigned outer photo
+  const pkg=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:waybillNo,advice_id:advice.id,carrier_code:"zto",outer_media_ids:[goodTicket.media_id],
+  },"POST",201);
+  const {locations}=await receiving.fetch("/staff/desk");
+  const r01=locations.find((l:{code:string})=>l.code==="R-01")??locations[0];
+  const sampleCode="S-"+randomUUID().slice(0,8).toUpperCase();
+  const unpacked=await receiving.fetch(`/staff/packages/${pkg.id}/items`,{
+    revision:pkg.revision,items:[{code:sampleCode,location_id:r01.id}],
+  },"POST",201);
+  const sampleItem={id:unpacked.item_ids[0],code:sampleCode};
+
+  const pkgDetail=await receiving.fetch("/staff/packages/"+pkg.id);
+  const pkgCode=pkgDetail.parcel.code;
+  const scanPkg=await receiving.fetch("/staff/scan/"+pkgCode);
+  assert.equal(scanPkg.kind,"package");
+  assert.equal(scanPkg.package_id,pkg.id);
+  assert(scanPkg.allowed_actions.includes("print_label"));
+
+  const scanItem=await receiving.fetch("/staff/scan/"+encodeURIComponent(sampleItem.code));
+  assert.equal(scanItem.kind,"item");
+  assert.equal(scanItem.item_id,sampleItem.id);
+  assert(scanItem.allowed_actions.includes("print_label"));
+
+  // 5. TASK-055: Label printing (P-/S- codes only, PDF output, reprint reason guard) and readback verification
+  const firstPrint=await receiving.fetch("/staff/labels/print",{
+    package_id:pkg.id,item_ids:[sampleItem.id],
+  });
+  assert.equal(firstPrint.labels.length,2);
+  assert.equal(firstPrint.labels[0].reprint,false);
+  assert.equal(firstPrint.labels[0].qr_payload,pkgCode);
+  assert.equal(firstPrint.labels[1].qr_payload,sampleItem.code);
+  const labelPdf=await receiving.fetch(`/staff/labels/${firstPrint.print_id}/file`);
+  assert.equal(labelPdf.pdf.subarray(0,5).toString(),"%PDF-");
+
+  // Reprinting without reprint_reason fails with 422 REPRINT_REASON_REQUIRED
+  const reprintErr=await receiving.fetch("/staff/labels/print",{package_id:pkg.id},"POST",422);
+  assert.equal(reprintErr.error.code,"REPRINT_REASON_REQUIRED");
+  const secondPrint=await receiving.fetch("/staff/labels/print",{
+    package_id:pkg.id,reprint_reason:"Label corner wrinkled during shelving",
+  });
+  assert.equal(secondPrint.labels[0].reprint,true);
+  assert.equal(secondPrint.labels[0].print_count,2);
+
+  // Readback verification rejects mismatched barcode and accepts matching barcode
+  const mismatchVerify=await receiving.fetch("/staff/labels/verify",{
+    expected_code:sampleItem.code,scanned_code:"S-WRONG-999",
+  },"POST",409);
+  assert.equal(mismatchVerify.error.code,"LABEL_READBACK_MISMATCH");
+  const okVerify=await receiving.fetch("/staff/labels/verify",{
+    expected_code:sampleItem.code,scanned_code:sampleItem.code,
+  });
+  assert.equal(okVerify.verified,true);
+  assert.equal(okVerify.target_id,sampleItem.id);
 });
 
 test("all core operations have a validated success response",assertCoreCoverage);

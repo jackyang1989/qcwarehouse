@@ -74,17 +74,15 @@ export function StorageLocations({warehouseLinks}:{warehouseLinks:[string,string
           }}>{location.active?(location.occupied?"占用中":"停用"):"启用"}</Action>,
         ])} empty="没有符合条件的库位。"/>
       </Panel>
-      <StocktakeReviewAndIncidentPanel/>
-      <OverdueDisposalDesk/>
     </>}
   </>;
 }
 
-function OverdueDisposalDesk() {
+export function OverdueDisposalDesk() {
   const disposals=useLoad("/staff/disposals");
   const d=disposals.data;
   const prodEnabled=Boolean(d?.production_execution_switch?.enabled);
-  return <Panel title="逾期与违禁件双人审批处置台（PAGE-M05 / TASK-172 / T104）">
+  return <Panel title="逾期与违禁件双人审批处置台">
     <p className="muted">保管期届满或违禁隔离实物须立项生成快照哈希（list_hash），经独立审批人复核（禁止自审），并在正式法律/协议生产开关开启后方可执行处置。</p>
     {disposals.error&&<ErrorBlock error={disposals.error}/>}
     {d&&<>
@@ -159,11 +157,11 @@ function OverdueDisposalDesk() {
   </Panel>;
 }
 
-function StocktakeReviewAndIncidentPanel() {
+export function StocktakeReviewAndIncidentPanel() {
   const stocktakes=useLoad("/staff/stocktakes");
   const incidents=useLoad("/staff/incidents");
   return <div className="ops-columns">
-    <Panel title="盘点差异复核（PAGE-M19）">
+    <Panel title="盘点差异复核">
       <p className="muted">盘点提交的缺失/错位差异须由独立主管或管理员复核，禁止盘点创建人自审。</p>
       {stocktakes.error&&<ErrorBlock error={stocktakes.error}/>}
       <Table headers={["盘点单","范围","状态","总数/匹配/差异","快照时间","独立复核"]} rows={(stocktakes.data?.rows??[]).map((st:Row)=>{
@@ -183,7 +181,7 @@ function StocktakeReviewAndIncidentPanel() {
         ];
       })} empty="暂无盘点记录。"/>
     </Panel>
-    <Panel title="库内丢损与事故赔偿（PAGE-M19 / §22.2）">
+    <Panel title="库内丢损与事故赔偿">
       <p className="muted">服务费退回受原支付单可退余额约束，货值赔付独立立项审批并登记打款凭证。非财务/超管角色隐藏具体赔付金额。</p>
       {incidents.error&&<ErrorBlock error={incidents.error}/>}
       <Form label="登记库内异常事故" run={async f=>{
@@ -246,16 +244,27 @@ function StocktakeReviewAndIncidentPanel() {
   </div>;
 }
 
-export function StorageMove() {
-  const {data,error,reload}=useLoad("/staff/storage");
+export function StorageMove({path="/wh/storage"}:{path?:string}) {
+  const {data,error,reload}=useLoad(path==="/wh/stocktakes"?null:"/staff/storage");
   const [code,setCode]=useState("");
   const [receipt,setReceipt]=useState("");
   useEffect(()=>setCode(new URLSearchParams(location.search).get("item")??""),[]);
   const found=useLoad(code?"/staff/items/by-code?"+new URLSearchParams({code}):null);
   const item=found.data?.item;
+  if(path==="/wh/stocktakes") {
+    return <>
+      <div className="page-head row">
+        <div><p className="eyebrow">WAREHOUSE / STOCKTAKES</p><h1>库存盘点</h1>
+          <p className="muted">按仓区创建盘点任务，不用人工直接修改库存事实。</p></div>
+        <Link className="button" href="/wh/storage">库位移转</Link>
+      </div>
+      <StocktakeWorkspace/>
+    </>;
+  }
   return <>
-    <div className="page-head row"><div><p className="eyebrow">WAREHOUSE / STORAGE</p><h1>实物库位移转</h1>
-      <p className="muted">扫码核对原库位，再确认目标位置。系统记录每次移动的操作者。</p></div><Link className="button" href="/wh/intake">收货入库</Link></div>
+    <div className="page-head row"><div><p className="eyebrow">WAREHOUSE / STORAGE</p><h1>样品库位移转</h1>
+      <p className="muted">逐件扫码，记录原位置、目标位置和操作人。</p></div>
+      <div className="head-actions"><Link className="button sm" href="/wh/samples">样品建档</Link><Link className="button sm" href="/admin/storage/locations">管理库位</Link></div></div>
     {error&&<><ErrorBlock error={error}/><button type="button" onClick={reload}>重试</button></>}
     <div className="ops-columns">
       <Panel title="01 / 扫描实物码">
@@ -296,7 +305,6 @@ export function StorageMove() {
         <span className="code">{row.code}</span>,row.origin??"—",row.destination??"—",row.operator,stamp(row.created_at),
       ])} empty="暂无移位记录。"/>}
     </Panel>
-    <StocktakeWorkspace/>
   </>;
 }
 
@@ -306,7 +314,7 @@ function StocktakeWorkspace() {
   const rows:Row[]=data?.rows??[];
   const active=rows.find(r=>r.id===selectedId)??rows[0];
   const activeItems:Row[]=active?.items??[];
-  return <Panel title="仓库盘点作业台（PAGE-H14 / §22.2）">
+  return <Panel title="盘点任务列表与扫码作业">
     <p className="muted">按仓区或全仓创建盘点快照；盘点期间并发移库/出库自动提示重盘，缺失/错位实物冻结出库直至寻回或事故结案。</p>
     {error&&<ErrorBlock error={error}/>}
     <div className="ops-columns">

@@ -282,14 +282,14 @@ export async function warehouseDispatchBatch(db:DB,actor:Actor,id:string) {
   return {batch,shipments,rates:(await db.query(activeRates)).rows,locations:(await db.query(activeLocations)).rows};
 }
 export async function warehouseDesk(db:DB,actor:Actor) {
-  role(actor,"receiver","warehouse_admin","inspector","reviewer");
-  const canReceive=actor.roles.some(r=>["receiver","warehouse_admin"].includes(r)),canShip=actor.roles.includes("warehouse_admin");
+  role(actor,"receiver","warehouse_admin","inspector","reviewer","super_admin");
+  const canReceive=actor.roles.some(r=>["receiver","warehouse_admin","super_admin"].includes(r)),canShip=actor.roles.some(r=>["warehouse_admin","super_admin"].includes(r));
   const packages=canReceive?(await db.query(`select p.id,p.code,p.state,p.org_id,p.revision,p.received_quantity,t.tracking_norm from packages p
     left join tracking_records t on t.package_id=p.id and t.direction='inbound' and t.closed_at is null order by p.received_at desc limit 100`)).rows:[];
   const items=canReceive?(await db.query(`select w.id,w.code,w.package_id,w.org_id,w.revision,w.custody_state,l.code location from warehouse_items w left join storage_locations l on l.id=w.location_id
     where w.custody_state in ('received','stored') order by w.received_at desc limit 400`)).rows:[];
   const locations=canReceive?(await db.query(activeLocations)).rows:[];
-  const tasks=actor.roles.some(r=>["inspector","reviewer"].includes(r))?(await db.query(`select t.id,t.state,t.revision,t.assignee_id,l.order_id,o.public_no,o.state order_state,o.sla_due_at,o.samples_ready_at,
+  const tasks=actor.roles.some(r=>["inspector","reviewer","warehouse_admin","super_admin"].includes(r))?(await db.query(`select t.id,t.state,t.revision,t.assignee_id,l.order_id,o.public_no,o.state order_state,o.sla_due_at,o.samples_ready_at,
     (o.sla_due_at is not null and o.sla_due_at<=now()) sla_overdue,
     so.title,st.code service,c.labels category_labels,w.id item_id,w.code item_code
     from inspection_tasks t join order_lines l on l.id=t.order_line_id join orders o on o.id=l.order_id
@@ -298,7 +298,7 @@ export async function warehouseDesk(db:DB,actor:Actor) {
     left join order_line_item_links a on a.id=t.assignment_id left join warehouse_items w on w.id=a.item_id
     where t.state in ('READY','IN_PROGRESS','SUBMITTED') and o.state in ('queued','inspecting','qa_review')
     order by o.sla_due_at asc nulls last,o.samples_ready_at asc nulls last,o.created_at asc,t.id asc limit 400`)).rows:[];
-  const reports=actor.roles.includes("reviewer")?(await db.query(`select v.id,v.version,v.state,v.revision,v.snapshot,r.published_version,o.public_no from report_versions v join reports r on r.id=v.report_id
+  const reports=actor.roles.some(r=>["reviewer","warehouse_admin","super_admin"].includes(r))?(await db.query(`select v.id,v.version,v.state,v.revision,v.snapshot,r.published_version,o.public_no from report_versions v join reports r on r.id=v.report_id
     join orders o on o.id=r.order_id where v.state in ('submitted','qa_approved') and o.state='qa_review' limit 100`)).rows:[];
   const batches=canShip?(await db.query(warehouseBatches+
     " where b.state in ('confirmed','quoted','paid') order by q.expires_at nulls last,b.id limit 100")).rows:[];

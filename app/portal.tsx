@@ -59,7 +59,7 @@ export function Portal({path,target,route,actor:a}:{path:string;target:string;ro
   else if(route.view==="staff-report") content=<StaffReport key={route.id} id={route.id} actor={a}/>;
   else if(route.view==="operations") content=<OperationsDesk/>;
   else if(path==="/admin/audit") content=<AuditDesk/>;
-  else if(route.view==="storage-move") content=<StorageMove/>;
+  else if(route.view==="storage-move") content=<StorageMove path={path}/>;
   else if(route.view==="storage-locations") content=<StorageLocations warehouseLinks={warehouseLinks}/>;
   else if(route.view==="admin") content=<AdminDesk path={path} actor={a}/>;
   else if(route.view==="staff-tickets") content=<StaffTicketQueue/>;
@@ -95,13 +95,13 @@ export function Portal({path,target,route,actor:a}:{path:string;target:string;ro
     <SiteFooter/>
   </>;
 
-  const section=route.area==="admin"?"运营后台":route.area==="warehouse"?"仓库工作台":"Workspace";
+  const section=route.area==="admin"?"运营总览":route.area==="warehouse"?"仓库总览":"Workspace";
   const currentLink=links.find(([href])=>href===path);
   const parentLink=links.filter(([href])=>href!=="/wh"&&href!=="/admin"&&path.startsWith(href+"/")).sort(([left],[right])=>right.length-left.length)[0];
   const topLinks:[string,string][]=route.area==="warehouse"?[
     ["/wh/scan","扫码查询"],["/wh/inspection","检查队列"],["/wh/review","报告复核"],["/wh/dispatch","出库管理"],
   ]:route.area==="admin"?[
-    ["/admin/orders","订单管理"],["/admin/finance","财务"],["/admin/logistics","物流监控"],["/admin/settings","模板配置"],["/admin/storage/locations","库位管理"],
+    ["/admin/orders","订单管理"],["/admin/finance","财务"],["/admin/logistics","物流监控"],["/admin/templates","模板配置"],["/admin/storage/locations","库位管理"],
   ]:[
     ["/catalog","Services"],["/categories","Product Categories"],["/how-it-works","How It Works"],["/report-guide","Reports"],["/pricing","Pricing"],
   ];

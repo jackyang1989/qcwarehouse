@@ -5,24 +5,43 @@ export const customerTabs:[string,string][]=[
   ["/reports","Reports"],["/account/billing","Billing"],["/support","Support"],
   ["/actions","Action required"],["/account/notifications","Notifications"],
 ];
-const warehouseOverview=[...staffAccess.intake,...staffAccess.inspection];
+const warehouseOverview=["receiver","warehouse_admin","inspector","reviewer","super_admin"] as const;
 const warehouseTabs=[
-  ["/wh","概览",warehouseOverview],["/wh/intake","收货",staffAccess.intake],
-  ["/wh/storage","库位移转",staffAccess.intake],
-  ["/wh/scan","扫码查询",staffAccess.intake],
-  ["/wh/inspection","质检与复核",staffAccess.inspection],["/wh/dispatch","出库",staffAccess.dispatch],
-  ["/wh/review","报告与修订",staffAccess.reportEditing],
+  ["/wh","仓库总览",warehouseOverview],
+  ["/wh/scan","扫码查询",warehouseOverview],
+  ["/wh/intake","收货入库",warehouseOverview],
+  ["/wh/packages","包裹详情",warehouseOverview],
+  ["/wh/samples","样品建档",warehouseOverview],
+  ["/wh/storage","库位移转",warehouseOverview],
+  ["/wh/inspection","检查队列",warehouseOverview],
+  ["/wh/execute","执行检查",warehouseOverview],
+  ["/wh/sync","同步队列",warehouseOverview],
+  ["/wh/review","报告复核",warehouseOverview],
+  ["/wh/dispatch","出库待办",warehouseOverview],
+  ["/wh/stocktakes","库存盘点",warehouseOverview],
   ["/wh/logistics","物流",staffAccess.tracking],
 ] as const;
 const adminTabs=[
-  ["/admin","概览",staffAccess.administration],["/admin/orders","订单及工单",staffAccess.orders],
+  ["/admin","运营总览",staffAccess.administration],
+  ["/admin/orders","全部订单",staffAccess.orders],
   ["/admin/tickets","客户工单",staffAccess.orders],
-  ["/admin/finance","财务",staffAccess.finance],["/admin/settings","仓址及模板",staffAccess.templates],
-  ["/admin/storage/locations","库位管理",staffAccess.locations],
+  ["/admin/dispositions","处置与报价",["super_admin"]],
+  ["/admin/refunds","退款审批",["super_admin"]],
+  ["/admin/payments","支付流水",["super_admin"]],
+  ["/admin/finance","财务分析",staffAccess.finance],
   ["/admin/logistics","物流监控",staffAccess.tracking],
+  ["/admin/incidents","库存事故",["super_admin"]],
+  ["/admin/catalog","品类与服务",["super_admin"]],
+  ["/admin/templates","检查模板",["super_admin"]],
+  ["/admin/settings","仓址及模板",staffAccess.templates],
+  ["/admin/storage/locations","库位管理",staffAccess.locations],
+  ["/admin/shipping-rates","运费费率",["super_admin"]],
+  ["/admin/config","业务配置",["super_admin"]],
+  ["/admin/legal","条款管理",["super_admin"]],
+  ["/admin/users","员工权限",["super_admin"]],
+  ["/admin/audit","审计日志",["super_admin"]],
+  ["/admin/operations","后台任务",["super_admin"]],
   ["/admin/integrations/logistics","物流接入",staffAccess.trackingConfiguration],
-  ["/admin/operations","后台作业",["super_admin"]],
-  ["/admin/audit","审计记录",["super_admin"]],
 ] as const;
 
 export function staffTabs(area:"admin"|"warehouse",roles:readonly string[]):[string,string][] {
@@ -37,7 +56,9 @@ export function canOpenStaffPage(path:string,route:PortalRoute,roles:readonly st
   if(route.view==="staff-report") return hasStaffAccess(roles,staffAccess.reportEditing);
   if(route.view==="staff-ticket"||route.view==="staff-order") return hasStaffAccess(roles,staffAccess.orders);
   if(route.view==="warehouse-package"||route.view==="warehouse-item") return hasStaffAccess(roles,staffAccess.intake);
-  if(["/admin/catalog","/admin/categories","/admin/templates"].includes(path)) return hasStaffAccess(roles,staffAccess.templates);
+  if(["/admin/catalog","/admin/categories","/admin/templates","/admin/shipping-rates","/admin/config","/admin/legal","/admin/users","/admin/settings"].includes(path)) return hasStaffAccess(roles,staffAccess.templates);
+  if(["/admin/dispositions","/admin/incidents"].includes(path)) return hasStaffAccess(roles,staffAccess.orders);
+  if(["/admin/refunds","/admin/payments"].includes(path)) return hasStaffAccess(roles,staffAccess.finance);
   return staffTabs(route.area,roles).some(([link])=>link===path);
 }
 
@@ -85,9 +106,9 @@ for(const [paths,route] of [
   [["/actions"],{area:"customer",view:"customer-actions"}],
   [["/admin/tickets"],{area:"admin",view:"staff-tickets"}],
   [["/admin/operations"],{area:"admin",view:"operations"}],
-  [["/admin/catalog","/admin/categories","/admin/templates"],{area:"admin",view:"admin"}],
+  [["/admin/catalog","/admin/categories","/admin/templates","/admin/dispositions","/admin/refunds","/admin/payments","/admin/incidents","/admin/shipping-rates","/admin/config","/admin/legal","/admin/users"],{area:"admin",view:"admin"}],
   [["/wh/logistics"],{area:"warehouse",view:"logistics"}],
-  [["/wh/storage"],{area:"warehouse",view:"storage-move"}],
+  [["/wh/storage","/wh/stocktakes"],{area:"warehouse",view:"storage-move"}],
   [["/wh/review"],{area:"warehouse",view:"report-desk"}],
   [["/wh/scan"],{area:"warehouse",view:"warehouse-scan"}],
   [["/admin/storage/locations"],{area:"admin",view:"storage-locations"}],

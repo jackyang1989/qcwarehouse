@@ -166,7 +166,7 @@ export function StaffTicket({id,actor}:{id:string;actor:Row}) {
         </Form>}
         {data.category==="identity_unclear"&&open&&<p><Link href={"/admin/orders#case-"+id}>打开专用认领核验</Link></p>}
       </Panel>
-      {data.incident&&<Panel title="关联丢损与赔付单（TASK-171）">
+      {data.incident&&<Panel title="关联丢损与赔付单">
         <dl className="location-facts">
           <div><dt>实物编码</dt><dd className="code">{data.incident.item_code??data.incident.item_id}</dd></div>
           <div><dt>类型</dt><dd>{data.incident.kind}</dd></div>
@@ -178,7 +178,7 @@ export function StaffTicket({id,actor}:{id:string;actor:Row}) {
         <p>{data.incident.summary_en}</p>
         {data.incident.internal_note&&<p className="muted">内部备注：{data.incident.internal_note}</p>}
       </Panel>}
-      {data.account_recovery&&<Panel title="账号恢复与双人审批（FEAT-M18）">
+      {data.account_recovery&&<Panel title="账号恢复与双人审批">
         <dl className="location-facts">
           <div><dt>恢复状态</dt><dd><Tag>{data.account_recovery.state}</Tag></dd></div>
           <div><dt>专属收件码</dt><dd className="code">{data.account_recovery.receiving_code??"—"}</dd></div>

@@ -1849,7 +1849,7 @@ function AccountSecurity({receivingCode}:{receivingCode:string}) {
         await request("/me/sessions/revoke-others","POST",{});sessions.reload();
       }}>Sign out all other devices</Action>}
     </Panel>
-    <Panel title="Privacy, data export &amp; retention policy (PAGE-C16)">
+    <Panel title="Privacy, data export &amp; retention policy">
       <p className="muted">Download a machine-readable archive of your account, orders, items, charges, and consent records, or submit a formal privacy request.</p>
       <div className="actions">
         <a className="button" href="/api/v1/me/privacy/export" target="_blank" rel="noreferrer">Download personal data JSON</a>

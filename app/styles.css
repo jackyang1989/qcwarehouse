@@ -669,6 +669,20 @@ button:disabled, .btn:disabled { opacity: 0.52; cursor: not-allowed; box-shadow:
 .between { justify-content: space-between; }
 .flexwrap { flex-wrap: wrap; }
 .sep, .divider { height: 1px; border: 0; background: var(--line); margin: 16px 0; }
+.label-inline { font-size: 10px; color: #8594a6; text-transform: uppercase; letter-spacing: .8px; font-weight: 800; }
+.bars { display: flex; align-items: flex-end; gap: 9px; height: 115px; padding: 7px 0; }
+.bars span { flex: 1; background: linear-gradient(0deg, #336cce, #b8d2f7); border-radius: 5px 5px 0 0; min-height: 7px; position: relative; }
+.bars span:hover::after { content: attr(data-v); position: absolute; bottom: 100%; left: 0; color: #244968; font-size: 10px; font-weight: 800; white-space: nowrap; }
+.selectbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 15px; }
+.selectbar .field { min-width: 170px; }
+.progressbar { height: 7px; overflow: hidden; background: #eaf0f6; border-radius: 99px; }
+.progressbar > div { height: 100%; background: #2c6ad5; border-radius: 99px; }
+.checklist .checkrow { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #edf2f7; padding: 11px 0; font-size: 12px; }
+.checklist .checkrow:last-child { border-bottom: 0; }
+.checkrow input { width: 16px; height: 16px; accent-color: #2463cc; }
+.def { background: #f9fbfe; border: 1px solid #e3eaf3; border-radius: 9px; padding: 14px; }
+.def dt { font-size: 10px; color: #8a99a9; }
+.def dd { margin: 4px 0 0; font-size: 13px; font-weight: 750; }
 
 .card, .panel {
   min-width: 0;

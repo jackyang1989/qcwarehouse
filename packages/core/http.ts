@@ -581,7 +581,7 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   }
   if(method==="POST" && path==="/staff/media") {
     csrf(req);
-    const a=actorRequired(actor);role(a,"receiver","warehouse_admin","inspector");
+    const a=actorRequired(actor);role(a,"receiver","warehouse_admin","inspector","super_admin");
     guard(Number(req.headers.get("content-length")??0)<=8_100_000,"BODY_TOO_LARGE","Photo is too large.",413);
     const form=await req.formData(),file=form.get("photo");
     guard(file instanceof File,"FILE_INVALID","Choose a photo.",422);

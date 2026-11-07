@@ -96,7 +96,7 @@ function SystemHealthAndRecoveryPanel() {
   const h=health.data;
   const counts=h?.counts??{};
   const runs=h?.recovery_runs??h?.recent_recovery_runs??[];
-  return <Panel title="系统健康、备份校验与恢复演练重放台（PAGE-M15 / TASK-130 / TASK-173）">
+  return <Panel title="系统健康、备份校验与恢复演练">
     <p className="muted">验证对象存储/私有媒体完整性，登记备份恢复演练并重放恢复时间点后的会话撤销、账号注销、解绑与退信抑制清单（T105），同时核对外部支付与出库交接一致性（T106）。</p>
     {health.error&&<ErrorBlock error={health.error}/>}
     {h&&<>
@@ -152,11 +152,11 @@ function SystemHealthAndRecoveryPanel() {
 }
 
 const scenarioLabels:Record<string,string>={
-  set_1_standard:"第 1 组：入仓建档 → 标准质检 → 报告发布 → 处置与交接（TASK-141）",
-  set_2_weak_network:"第 2 组：移动端/手持端弱网与上传重试、扫码回读与库位移动（TASK-141）",
-  set_3_return_retain:"第 3 组：退回商家、留样与合包/拆包发运（TASK-142）",
-  set_4_recovery_alerts:"第 4 组：退件实收、作业失败告警与恢复（TASK-142）",
-  three_carrier_30_items:"第 5 组：三承运商、30 件包裹与回执留痕实仓演练（TASK-165）",
+  set_1_standard:"第 1 组：入仓建档 → 标准质检 → 报告发布 → 处置与交接",
+  set_2_weak_network:"第 2 组：移动端/手持端弱网与上传重试、扫码回读与库位移动",
+  set_3_return_retain:"第 3 组：退回商家、留样与合包/拆包发运",
+  set_4_recovery_alerts:"第 4 组：退件实收、作业失败告警与恢复",
+  three_carrier_30_items:"第 5 组：三承运商、30 件包裹与回执留痕实仓演练",
 };
 
 const gateLabels:Record<string,string>={
@@ -164,9 +164,9 @@ const gateLabels:Record<string,string>={
   legal_terms:"4 类协议与须知均存在已发布生效版本",
   shipping_rates:"正式运费版本已发布",
   catalog_purity:"生产目录仅开放已准入 ACTIVE 品类",
-  legal_entity_configured:"香港法律主体与客服邮箱已配置（附录 C.12）",
-  recovery_drill_verified:"备份恢复与对账演练已验证（T105/T106）",
-  rehearsal_sets_completed:"5 组演练全部归档通过且完成复验（TASK-141~145/165）",
+  legal_entity_configured:"香港法律主体与客服邮箱已配置",
+  recovery_drill_verified:"备份恢复与对账演练已验证",
+  rehearsal_sets_completed:"5 组演练全部归档通过且完成复验",
   no_exhausted_jobs:"无耗尽重试的积压后台作业",
   oidc_configured:"Google / Microsoft OIDC 正式回调已就绪",
   postmark_live:"Postmark 正式发信通道已启用",
@@ -177,7 +177,7 @@ const gateLabels:Record<string,string>={
 function LaunchReadinessAndRehearsalPanel() {
   const readiness=useLoad("/staff/admin/launch-readiness");
   const d=readiness.data;
-  return <Panel title="实仓演练证据归档、香港法律主体与 §23 上线门禁签收台（TASK-141~150 / TASK-165）">
+  return <Panel title="实仓演练归档与生产上线门禁">
     <p className="muted">统一管理第 29 周 5 组实仓/预发布演练证据归档与复验（测试证据与生产证据严格分离）、第 30 周香港运营主体配置（附录 C.12）、在途订单/批次/库存预检，以及 §23 门禁逐项签署（缺任一项即锁定为预发布 staging_only）。</p>
     {readiness.error&&<ErrorBlock error={readiness.error}/>}
     {d&&<>
@@ -199,7 +199,7 @@ function LaunchReadinessAndRehearsalPanel() {
 
       <div className="ops-columns">
         <div>
-          <Form label="归档实仓 / 预发布演练证据（TASK-141~145 / TASK-165）" run={async f=>{
+          <Form label="归档实仓 / 预发布演练证据" run={async f=>{
             const carriers=text(f,"carrier_codes").split(",").map(s=>s.trim()).filter(Boolean);
             await request("/staff/admin/rehearsal-runs","POST",{
               scenario:text(f,"scenario"),
@@ -225,12 +225,12 @@ function LaunchReadinessAndRehearsalPanel() {
             <label>涉及承运商编码（逗号分隔）<input name="carrier_codes" defaultValue="sf,yto,zto"/></label>
             <div className="grid two">
               <label><input type="checkbox" name="passed" defaultChecked/> 本组演练验收通过</label>
-              <label><input type="checkbox" name="reverified" defaultChecked/> 已完成问题修复与复验（TASK-144）</label>
+              <label><input type="checkbox" name="reverified" defaultChecked/> 已完成问题修复与复验</label>
             </div>
-            <label>单号、包裹号、运单号与回执归档说明（TASK-145）<textarea name="notes" rows={2} required minLength={4}/></label>
+            <label>单号、包裹号、运单号与回执归档说明<textarea name="notes" rows={2} required minLength={4}/></label>
           </Form>
 
-          <Form label="配置香港法律主体信息（TASK-146 / 附录 C.12）" run={async f=>{
+          <Form label="配置香港法律主体信息" run={async f=>{
             await request("/staff/admin/legal-entity","POST",{
               entity_name:text(f,"entity_name"),
               entity_address:text(f,"entity_address"),
@@ -251,7 +251,7 @@ function LaunchReadinessAndRehearsalPanel() {
         </div>
 
         <div>
-          <Form label="签署 §23 上线决定与首单开放控制（TASK-148~150）" run={async f=>{
+          <Form label="签署上线决定与首单开放控制" run={async f=>{
             await request("/staff/admin/launch-signoff","POST",{
               target_mode:text(f,"target_mode"),
               rollback_contact:text(f,"rollback_contact"),
@@ -266,13 +266,13 @@ function LaunchReadinessAndRehearsalPanel() {
                 <option value="staging_only">维持预发布 (staging_only)</option>
                 <option value="production">申请开放正式生产 (production)</option>
               </select></label>
-              <label>回退负责人与紧急联络方式（TASK-148）<input name="rollback_contact" defaultValue={d.signoff?.rollback_contact??"ops-lead@qcwarehouse.com"} required/></label>
+              <label>回退负责人与紧急联络方式<input name="rollback_contact" defaultValue={d.signoff?.rollback_contact??"ops-lead@qcwarehouse.com"} required/></label>
             </div>
             <div className="grid two">
-              <label>真实小额付款/退款留证号（TASK-147，选填）<input name="live_penny_test_ref" defaultValue={d.signoff?.live_penny_test_ref??""}/></label>
-              <label><input type="checkbox" name="first_order_invite_enabled" defaultChecked={Boolean(d.signoff?.first_order_invite_enabled)}/> 允许受邀客户首单跟进（TASK-149）</label>
+              <label>真实小额付款/退款留证号（选填）<input name="live_penny_test_ref" defaultValue={d.signoff?.live_penny_test_ref??""}/></label>
+              <label><input type="checkbox" name="first_order_invite_enabled" defaultChecked={Boolean(d.signoff?.first_order_invite_enabled)}/> 允许受邀客户首单跟进</label>
             </div>
-            <label>§23 门禁核对与签署结论（TASK-150）<textarea name="notes" rows={2} required minLength={4} defaultValue={d.signoff?.notes??""}/></label>
+            <label>门禁核对与签署结论<textarea name="notes" rows={2} required minLength={4} defaultValue={d.signoff?.notes??""}/></label>
           </Form>
 
           <Table

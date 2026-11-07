@@ -102,11 +102,14 @@ const iconPaths:Record<string,string>={
 };
 const navIcons:Record<string,string>={
   "/account":"overview","/orders":"orders","/orders/new":"add","/parcels":"packages","/items":"packages","/reports":"reports",
-  "/account/billing":"finance","/support":"support","/actions":"orders","/wh":"overview","/wh/scan":"scan","/wh/intake":"packages","/wh/inspection":"inspection",
-  "/wh/dispatch":"dispatch","/wh/logistics":"dispatch","/admin":"overview","/admin/orders":"orders","/admin/finance":"finance",
-  "/admin/settings":"settings","/admin/logistics":"dispatch","/admin/integrations/logistics":"settings",
-  "/wh/storage":"packages","/admin/storage/locations":"packages",
-  "/admin/tickets":"support","/admin/audit":"reports","/admin/operations":"settings","/wh/review":"reports","/account/notifications":"support",
+  "/account/billing":"finance","/support":"support","/actions":"orders","/wh":"overview","/wh/scan":"scan","/wh/intake":"packages",
+  "/wh/packages":"packages","/wh/samples":"packages","/wh/storage":"packages","/wh/inspection":"inspection","/wh/execute":"inspection",
+  "/wh/sync":"settings","/wh/review":"reports","/wh/dispatch":"dispatch","/wh/stocktakes":"packages","/wh/logistics":"dispatch",
+  "/admin":"overview","/admin/orders":"orders","/admin/tickets":"support","/admin/dispositions":"dispatch","/admin/refunds":"finance",
+  "/admin/payments":"finance","/admin/finance":"finance","/admin/logistics":"dispatch","/admin/incidents":"packages",
+  "/admin/catalog":"settings","/admin/templates":"reports","/admin/settings":"settings","/admin/storage/locations":"packages",
+  "/admin/shipping-rates":"finance","/admin/config":"settings","/admin/legal":"orders","/admin/users":"overview",
+  "/admin/audit":"reports","/admin/operations":"settings","/admin/integrations/logistics":"settings","/account/notifications":"support",
 };
 
 export function PlatformIcon({name}:{name:string}) {
@@ -120,13 +123,11 @@ const navigationSections = {
     ["Account",["/account","/account/billing","/account/notifications","/support"]],
   ],
   warehouse: [
-    ["收货与库内",["/wh","/wh/scan","/wh/intake","/wh/storage"]],
-    ["质检与出库",["/wh/inspection","/wh/review","/wh/dispatch","/wh/logistics"]],
+    ["运营作业",["/wh","/wh/scan","/wh/intake","/wh/packages","/wh/samples","/wh/storage","/wh/inspection","/wh/execute","/wh/sync","/wh/review","/wh/dispatch","/wh/stocktakes"]],
   ],
   admin: [
-    ["总览与订单",["/admin","/admin/orders","/admin/tickets","/admin/finance"]],
-    ["目录与仓配",["/admin/settings","/admin/storage/locations","/admin/logistics","/admin/integrations/logistics"]],
-    ["风控与系统",["/admin/operations","/admin/audit"]],
+    ["运营管理",["/admin","/admin/orders","/admin/tickets","/admin/dispositions","/admin/refunds","/admin/payments","/admin/finance","/admin/logistics","/admin/incidents"]],
+    ["平台配置",["/admin/catalog","/admin/templates","/admin/storage/locations","/admin/shipping-rates","/admin/config","/admin/legal","/admin/users","/admin/audit","/admin/operations","/admin/integrations/logistics"]],
   ],
 } satisfies Record<string,[string,string[]][]>;
 
@@ -180,18 +181,21 @@ export function WorkspaceNavigation({area,title,links,path}:{area:keyof typeof n
 
   const current=links.find(([href])=>href===path)?.[0]
     ?? links.filter(([href])=>href!=="/wh"&&href!=="/admin"&&path.startsWith(href+"/")).sort(([left],[right])=>right.length-left.length)[0]?.[0]
-    ?? (path.startsWith("/wh/task/")?"/wh/inspection":path.startsWith("/shipments/")?"/parcels":undefined);
+    ?? (path.startsWith("/wh/task/")?"/wh/execute":path.startsWith("/shipments/")?"/parcels":undefined);
   const grouped = navigationSections[area].map(([name,paths])=>[name,paths.flatMap(href=>links.filter(([url])=>url===href))] as const);
-  const otherLinks = links.filter(([href])=>!grouped.some(([,group])=>group.some(([url])=>url===href)));
+  const hasAdminCatalog = links.some(([url])=>url==="/admin/catalog");
+  const otherLinks = area==="warehouse"
+    ? []
+    : links.filter(([href])=>!(area==="admin"&&hasAdminCatalog&&href==="/admin/settings") && !grouped.some(([,group])=>group.some(([url])=>url===href)));
   const isStaff = area==="warehouse" || area==="admin";
   return <aside className="workspace-sidebar">
     <div className="workspace-sidebar-title">
       <p className="eyebrow">{isStaff?"OPERATIONS / INTERNAL":"CUSTOMER WORKSPACE"}</p>
       <strong>{area==="customer"?"My Workspace":area==="warehouse"?"仓库作业中心":"运营管理中心"}</strong>
-      <p>{area==="customer"?"Your inspections, receiving address, samples and reports — organized in one place.":"统一实物、库位、检查证据和订单履约信息"}</p>
+      <p>{area==="customer"?"Your inspections, receiving address, samples and reports — organized in one place.":"统一实物、检查、证据和订单履约信息"}</p>
     </div>
     <nav className="workspace-nav" aria-label={title}>
-      {[...grouped,[area==="customer"?"More":"其他",otherLinks] as const].filter(([,group])=>group.length>0).map(([name,group])=><div className="workspace-nav-group" key={name}>
+      {[...grouped,[area==="customer"?"More":"平台配置",otherLinks] as const].filter(([,group])=>group.length>0).map(([name,group])=><div className="workspace-nav-group" key={name}>
         <p>{name}</p>
         {group.map(([href,label])=><Link key={href} href={href} aria-current={href===current?"page":undefined}>
           <PlatformIcon name={navIcons[href]??"orders"}/><span>{label}</span>
@@ -199,8 +203,8 @@ export function WorkspaceNavigation({area,title,links,path}:{area:keyof typeof n
       </div>)}
     </nav>
     <div className="sidebar-note">
-      <b>{isStaff?"作业与审计留痕":"Documented inspections"}</b>
-      {isStaff?"所有收货、库位、质检证据与资金操作均实时记录服务端审计台账。":"Item IDs, photo evidence and published report versions stay traceable throughout the process."}
+      <b>{isStaff?"演示环境提醒":"Documented inspections"}</b>
+      {isStaff?"所有操作均为本机模拟。实际资金、物流、客户资产和报告发布需要服务端授权。":"Item IDs, photo evidence and published report versions stay traceable throughout the process."}
     </div>
   </aside>;
 }

@@ -10,8 +10,10 @@ import { hasStaffAccess, staffAccess } from "./staff-access";
 import { effectiveDispatchCharge } from "./dispatch";
 
 export async function items(db:DB,actor:Actor) {
-  return (await db.query(`select w.id item_id,w.code,w.custody_state,w.revision,w.identity_state,w.storage_until,
-    a.order_line_id,o.id order_id,o.public_no order_no,sl.code location_code,
+  return (await db.query(`select w.id item_id,w.code,w.custody_state,w.revision,w.identity_state,w.condition_state,w.storage_until,w.received_at,
+    p.code package_code,a.order_line_id,o.id order_id,o.public_no order_no,sl.code location_code,
+    (select coalesce(jsonb_agg(jsonb_build_object('id',c.id,'code',c.code,'custody_state',c.custody_state) order by c.code),'[]'::jsonb)
+     from warehouse_items c where c.parent_item_id=w.id) components,
     (select jsonb_build_object(
       'reference_id',r.id,'state',r.state,'revision',r.revision,'expires_at',r.expires_at,
       'expired',r.expires_at<=now(),
@@ -19,11 +21,12 @@ export async function items(db:DB,actor:Actor) {
     ) from reference_samples r where r.item_id=w.id order by r.revision desc limit 1) reference_sample,
     array(select d.id from disposition_requests d where d.item_id=w.id and d.state='requested'
       and not exists(select 1 from dispatch_batch_items bi where bi.disposition_id=d.id and bi.released_at is null)) instructions
-    from warehouse_items w left join order_line_item_links a on a.item_id=w.id and a.unlinked_at is null
+    from warehouse_items w join packages p on p.id=w.package_id
+    left join order_line_item_links a on a.item_id=w.id and a.unlinked_at is null
     left join order_lines l on l.id=a.order_line_id left join orders o on o.id=l.order_id
     left join storage_locations sl on sl.id=w.location_id
     where w.org_id=$1 and w.parent_item_id is null order by w.received_at desc limit 400`,[organization(actor)])).rows.map(w=>({
-      ...w,allowed_actions:["stored","received"].includes(w.custody_state)?["request_disposition"]:[],
+      ...w,allowed_actions:["stored","received"].includes(w.custody_state)&&w.identity_state!=="quarantined"?["request_disposition"]:[],
     }));
 }
 export async function bills(db:DB,actor:Actor) {
@@ -152,39 +155,48 @@ export async function markNotificationRead(db:DB,actor:Actor,id:string) {
 export async function warehousePackage(db:DB,actor:Actor,value:string,byCode=false) {
   role(actor,...staffAccess.intake);
   const parcel=await one(db,`select p.id,p.code,p.state,p.revision,p.received_quantity,p.received_at,p.weight_g,
+    p.condition_note,p.org_id,sl.code location_code,
+    (select crp.receiving_code from customer_receiving_profiles crp where crp.org_id=p.org_id limit 1) receiving_code,
     t.tracking_norm,t.transport_state,t.sync_state,
     (select s.events_json from tracking_snapshots s where s.tracker_id=t.id and s.locale='zh-CN'
       order by s.latest_event_at desc nulls last,s.fetched_at desc limit 1) tracking_events,
     array(select o.public_no from advice_orders ao join orders o on o.id=ao.order_id
       where ao.advice_id=p.advice_id order by o.public_no) order_numbers
-    from packages p left join tracking_records t on t.package_id=p.id and t.direction='inbound' and t.closed_at is null
+    from packages p
+    left join storage_locations sl on sl.id=p.location_id
+    left join tracking_records t on t.package_id=p.id and t.direction='inbound' and t.closed_at is null
     where ${byCode?"p.code":"p.id"}=$1`,[value]);
-  const items=(await db.query(`select w.id,w.code,w.custody_state,l.code location
+  const items=(await db.query(`select w.id,w.code,w.parent_item_id,w.intake_batch_id,w.identity_state,w.condition_state,w.custody_state,l.code location
     from warehouse_items w left join storage_locations l on l.id=w.location_id
     where w.package_id=$1 order by w.received_at,w.code`,[parcel.id])).rows;
   return {parcel,items};
 }
 export async function warehouseItem(db:DB,actor:Actor,code:string) {
   role(actor,...staffAccess.intake);
-  const item=await one(db,`select w.id,w.code,w.org_id,w.revision,w.parent_item_id,w.custody_state,
-    p.code package_code,sl.code location,o.public_no order_number,
-    exists(select 1 from disposition_requests d where d.item_id=w.id and d.state not in ('completed','cancelled')) reserved
+  const item=await one(db,`select w.id,w.code,w.org_id,w.revision,w.parent_item_id,w.intake_batch_id,
+    w.identity_state,w.condition_state,w.custody_state,
+    p.code package_code,sl.code location,o.public_no order_number,o.state order_state,
+    exists(select 1 from disposition_requests d where d.item_id=w.id and d.state not in ('completed','cancelled')) reserved,
+    (select coalesce(jsonb_agg(jsonb_build_object('id',c.id,'code',c.code,'custody_state',c.custody_state) order by c.code),'[]'::jsonb)
+     from warehouse_items c where c.parent_item_id=w.id) components
     from warehouse_items w join packages p on p.id=w.package_id
     left join storage_locations sl on sl.id=w.location_id
     left join order_line_item_links a on a.item_id=w.id and a.unlinked_at is null
     left join order_lines l on l.id=a.order_line_id left join orders o on o.id=l.order_id
     where w.code=$1`,[code]);
   const movable=["received","stored"].includes(item.custody_state);
-  const eligible=item.org_id&&!item.parent_item_id&&!item.order_number&&!item.reserved&&movable;
+  const eligible=item.org_id&&!item.parent_item_id&&!item.order_number&&!item.reserved&&movable&&item.identity_state!=="quarantined";
   const positions=eligible?(await db.query(`select e.id,e.position,l.id order_line_id,o.public_no,s.title
     from expected_items e join order_lines l on l.id=e.order_line_id
     join orders o on o.id=l.order_id join service_offers s on s.id=l.offer_id
     where l.org_id=$1 and o.state='awaiting_samples' and o.paid_at is not null and e.in_scope
     and not exists(select 1 from order_line_item_links a where a.expected_item_id=e.id and a.unlinked_at is null)
     order by o.public_no,l.id,e.position`,[item.org_id])).rows:[];
-  return {item:{id:item.id,code:item.code,revision:item.revision,custody_state:item.custody_state,
-    package_code:item.package_code,location:item.location,order_number:item.order_number,
-    ownership_verified:!!item.org_id,movable},positions};
+  return {item:{id:item.id,code:item.code,revision:item.revision,parent_item_id:item.parent_item_id,
+    intake_batch_id:item.intake_batch_id,identity_state:item.identity_state,condition_state:item.condition_state,
+    custody_state:item.custody_state,package_code:item.package_code,location:item.location,order_number:item.order_number,
+    can_unassign:Boolean(item.order_number && item.order_state==="awaiting_samples"),
+    components:item.components,ownership_verified:!!item.org_id,movable},positions};
 }
 const warehouseBatches=`select b.id,b.revision,b.state,b.action,b.destination_snapshot,q.id quote_id,q.snapshot,
   q.revision quote_revision,q.amount_cents,q.expires_at,q.accepted_at,

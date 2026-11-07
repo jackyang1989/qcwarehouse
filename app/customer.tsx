@@ -571,10 +571,11 @@ export function CustomerDesk({path}:{path:string}) {
       ].map(([name,value])=><div className="metric" key={name}><span>{name}</span><strong>{value}</strong></div>)}
     </div>
     <Panel title="Your items">
-      <Table headers={["Item","Scope","Custody","Storage through","Reference status","Instructions"]} rows={data.items.map((w:Row)=>[
-        <span className="code">{w.code}</span>,
+      <Table headers={["Item","Package","Scope","Custody","Storage through","Reference status","Instructions"]} rows={data.items.map((w:Row)=>[
+        <div><span className="code">{w.code}</span>{w.components?.length>0&&<small className="muted"><br/>Components: {w.components.map((c:Row)=>c.code).join(", ")}</small>}</div>,
+        <span className="code">{w.package_code??"—"}</span>,
         w.order_no?<Link className="code" href={"/orders/"+w.order_no}>{w.order_no}</Link>:"Uncommissioned",
-        label(w.custody_state),stamp(w.storage_until),
+        w.identity_state==="quarantined"?"Quarantined":label(w.custody_state),stamp(w.storage_until),
         w.reference_sample?`${w.reference_sample.state==="active"?(w.reference_sample.expired?"Expired":"Active"):"Released"}${w.reference_sample.in_use?" · In comparison":""}`:"—",
         w.instructions.map((i:string)=><label key={i} className="small"><input type="checkbox" checked={batchIds.includes(i)} onChange={e=>setBatchIds(xs=>e.target.checked?[...xs,i]:xs.filter(x=>x!==i))}/> Select for shipping</label>)
       ])}/>
@@ -597,7 +598,8 @@ export function CustomerDesk({path}:{path:string}) {
       ])} empty="No reference samples reserved yet. Use the instruction form below to reserve a stored item as a reference sample."/>
     </Panel>
     <Panel title="Request handling for an item">
-      <ItemInstructionForm items={data.items.filter((w:Row)=>["stored","received"].includes(w.custody_state))} onSave={reload}/>
+      <p className="muted">Uncommissioned items can be returned directly to the seller or forwarded to your shipping agent without creating an inspection order.</p>
+      <ItemInstructionForm items={data.items.filter((w:Row)=>["stored","received"].includes(w.custody_state)&&w.identity_state!=="quarantined")} onSave={reload}/>
     </Panel></>}
     {isBills&&<><div className="page-head"><p className="eyebrow">Account services</p><h1>Billing</h1><p className="muted">Review shipping quotes, charges and refunds for your inspections.</p></div><Panel title="Quotes awaiting your approval">
       {data.quotes.map((quote:Row)=><FulfillmentQuote key={quote.id} quote={quote} onUpdate={reload}/>)}

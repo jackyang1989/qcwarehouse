@@ -11,7 +11,7 @@ import { integrationPreflight, signInMethods } from "./integrations";
 import { failedJobs, retryFailedJob } from "./worker";
 import { customerEmailDeliveryStatus, receivePostmarkWebhook, retryEmailDelivery, staffEmailDeliveries } from "./email";
 import { catalog, issueManualQuote, orderDetail, quoteOrder, requestManualQuote, saveOrder, submitOrder } from "./orders";
-import { advise, assign, checkIn, decideIntakeClaim, intakeItems, lookup, requestIntakeClaim, savePhoto, waybill } from "./intake";
+import { advise, assign, bindUnmatchedPackageOwner, checkIn, decideIntakeClaim, intakeItems, lookup, quarantineItem, quarantinePackage, requestIntakeClaim, savePhoto, unassignItem, waybill } from "./intake";
 import { amendReport, amendReportInput, approveReport, editReportRevision, readReport, recordResults, reportDesk, returnReport, revisionChanges, staffReport, startTask, submitReport, submitReportRevision, submitTask, taskDetail } from "./inspection";
 import { acceptQuote, confirmBatch, handover, instruct, packShipment, planBatch, quoteBatch, receiveReturn, releaseReferenceSample, storageQuote } from "./dispatch";
 import { checkout, demoPay, orderPayment, orderRefundPayments, refundApprove, refundRequest, stripeEvent, verifyStripe } from "./payments";
@@ -555,6 +555,22 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   if(method==="POST" && claim) return extraWrite(req,path,actor,z.object({
     decision:z.enum(["approve","reject"]),reason:z.string().trim().min(4).max(1000)
   }),(db,a,b)=>decideIntakeClaim(db,a,idSchema.parse(claim[1]),b.decision,b.reason));
+  const pkgQuarantine=path.match(/^\/staff\/packages\/([a-f0-9-]{36})\/quarantine$/i);
+  if(method==="POST" && pkgQuarantine) return extraWrite(req,path,actor,z.object({
+    revision:revSchema,reason:z.string().trim().min(4).max(1000),location_id:idSchema.optional(),evidence_ids:z.array(idSchema).optional()
+  }),(db,a,b)=>quarantinePackage(db,a,idSchema.parse(pkgQuarantine[1]),b));
+  const pkgBindOwner=path.match(/^\/staff\/packages\/([a-f0-9-]{36})\/bind-owner$/i);
+  if(method==="POST" && pkgBindOwner) return extraWrite(req,path,actor,z.object({
+    revision:revSchema,receiving_code:z.string().trim().min(3).max(64),evidence_ids:z.array(idSchema).min(1),reason:z.string().trim().min(4).max(1000)
+  }),(db,a,b)=>bindUnmatchedPackageOwner(db,a,idSchema.parse(pkgBindOwner[1]),b));
+  const itemQuarantine=path.match(/^\/staff\/items\/([a-f0-9-]{36})\/quarantine$/i);
+  if(method==="POST" && itemQuarantine) return extraWrite(req,path,actor,z.object({
+    revision:revSchema,reason:z.string().trim().min(4).max(1000),location_id:idSchema.optional()
+  }),(db,a,b)=>quarantineItem(db,a,idSchema.parse(itemQuarantine[1]),b));
+  const itemUnassign=path.match(/^\/staff\/items\/([a-f0-9-]{36})\/unassign$/i);
+  if(method==="POST" && itemUnassign) return extraWrite(req,path,actor,z.object({
+    revision:revSchema,reason:z.string().trim().min(4).max(1000)
+  }),(db,a,b)=>unassignItem(db,a,idSchema.parse(itemUnassign[1]),b));
   const verification=path.match(/^\/me\/parcels\/([a-f0-9-]{36})\/tracking-verification$/i);
   if(verification && method==="GET") return json(await transaction(db=>verificationState(db,actorRequired(actor),idSchema.parse(verification[1]))));
   if(verification && method==="POST") return extraWrite(req,path,actor,z.object({revision:revSchema,

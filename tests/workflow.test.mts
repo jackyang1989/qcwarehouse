@@ -2919,4 +2919,131 @@ test("presigned media upload, sha256 verification, 800px thumbnails, 24h stale c
   assert.equal(okVerify.target_id,sampleItem.id);
 });
 
+test("intake quarantine, half-unpacking, suit components, post-pay & cross-order mapping, unmatched owner binding, and zero-order return (TASK-056 to TASK-060, TASK-170)",async()=>{
+  const receiving=await staffLogin("receiving");
+  const {c,registration,terms}=await signCustomer();
+  const termsId=terms.find((t:{kind:string})=>t.kind==="terms")!.id;
+  const {locations,rates}=await receiving.fetch("/staff/desk");
+  const r01=locations.find((l:{code:string})=>l.code==="R-01")??locations[0];
+
+  // 1. TASK-059 & T11: Unmatched parcel check-in creates internal identity_unclear ticket; staff can bind owner via label receiving_code
+  const unmWaybill="ZTO"+randomUUID().slice(0,8).toUpperCase();
+  const outer1=await receiving.photo("intake_outer");
+  const outer2=await receiving.photo("intake_outer");
+  // TASK-060 & T12/T46: Concurrent check-in of the same waybill produces a single package
+  const [unmPkg1,unmPkg2]=await Promise.all([
+    receiving.fetch("/staff/intake/check-in",{tracking_no:unmWaybill,carrier_code:"zto",weight_g:820,outer_media_ids:[outer1]},"POST",201),
+    receiving.fetch("/staff/intake/check-in",{tracking_no:unmWaybill,carrier_code:"zto",weight_g:820,outer_media_ids:[outer2]},"POST",201),
+  ]);
+  assert.equal(unmPkg1.id,unmPkg2.id);
+  assert.equal(unmPkg1.state,"unmatched");
+
+  const {rows:unmTickets}=await pool.query(
+    "select id,state from tickets where category='identity_unclear' and org_id is null and details->>'package_id'=$1",
+    [unmPkg1.id]
+  );
+  assert.equal(unmTickets.length,1);
+  assert.equal(unmTickets[0].state,"open");
+
+  const bound=await receiving.fetch(`/staff/packages/${unmPkg1.id}/bind-owner`,{
+    revision:unmPkg1.revision,
+    receiving_code:registration.receiving_code,
+    evidence_ids:[await receiving.photo("label_photo")],
+    reason:"Verified customer receiving code printed on shipping label",
+  });
+  assert.equal(bound.state,"checked_in");
+  assert.equal(bound.receiving_code,registration.receiving_code);
+  const {rows:[resolvedUnm]}=await pool.query("select state from tickets where id=$1",[unmTickets[0].id]);
+  assert.equal(resolvedUnm.state,"resolved");
+
+  // 2. TASK-058 & TASK-170 & T101: Half-unpacking (2 batches) + suit sub-component (component_of does not inflate received_quantity)
+  const mainCode1="S-"+randomUUID().slice(0,8).toUpperCase();
+  const batch1=await receiving.fetch(`/staff/packages/${unmPkg1.id}/items`,{
+    revision:bound.revision,
+    items:[{code:mainCode1,location_id:r01.id}],
+  },"POST",201);
+  const mainItem1Id=batch1.item_ids[0];
+
+  const compCode1="S-"+randomUUID().slice(0,8).toUpperCase();
+  const mainCode2="S-"+randomUUID().slice(0,8).toUpperCase();
+  const batch2=await receiving.fetch(`/staff/packages/${unmPkg1.id}/items`,{
+    revision:batch1.revision,
+    items:[
+      {code:compCode1,location_id:r01.id,component_of:mainItem1Id},
+      {code:mainCode2,location_id:r01.id},
+    ],
+  },"POST",201);
+  const mainItem2Id=batch2.item_ids[1];
+
+  const pkgView=await receiving.fetch(`/staff/packages/${unmPkg1.id}`);
+  assert.equal(pkgView.parcel.received_quantity,2); // 2 top-level items, 1 sub-component excluded from billable count
+  const batchIds=new Set(pkgView.items.map((x:{intake_batch_id:string})=>x.intake_batch_id));
+  assert.equal(batchIds.size,2); // 2 distinct unpacking batches
+
+  const item1View=await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:mainCode1}));
+  assert.equal(item1View.item.components.length,1);
+  assert.equal(item1View.item.components[0].code,compCode1);
+
+  // 3. TASK-170 & T101: Post-payment order creation (先入仓后付费) and cross-order reassignment (跨本人订单映射)
+  const offer=(await c.fetch("/catalog")).offers.find((o:{sku_code:string})=>o.sku_code==="apparel-inspection-1");
+  const {draft:order1}=await createAndPay(c,[{category_id:offer.category_id,offer_id:offer.offer_id,quantity:2}],terms);
+  const {draft:order2}=await createAndPay(c,[{category_id:offer.category_id,offer_id:offer.offer_id,quantity:1}],terms);
+
+  // Assign mainItem1Id to order1 position 1 (leaves order1 in awaiting_samples because quantity is 2)
+  const item1Positions=(await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:mainCode1}))).positions;
+  const o1Pos=item1Positions.find((p:{public_no:string})=>p.public_no===order1.public_no);
+  assert(o1Pos);
+  const assigned1=await receiving.fetch(`/staff/items/${mainItem1Id}/assign`,{
+    revision:1,order_line_id:o1Pos.order_line_id,expected_item_id:o1Pos.id,evidence_ids:[await receiving.photo("label_photo")],
+  });
+  assert(assigned1.assignment_id);
+
+  // Now unassign mainItem1Id from order1 and reassign it to order2 (cross-order mapping on the same warehouse_item without recreating inventory)
+  const unassigned=await receiving.fetch(`/staff/items/${mainItem1Id}/unassign`,{
+    revision:assigned1.revision,reason:"Customer requested mapping this suit to their single-item order",
+  });
+  assert.equal(unassigned.unlinked_assignment_id,assigned1.assignment_id);
+
+  const refreshedPositions=(await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:mainCode1}))).positions;
+  const o2Pos=refreshedPositions.find((p:{public_no:string})=>p.public_no===order2.public_no);
+  assert(o2Pos);
+  await receiving.fetch(`/staff/items/${mainItem1Id}/assign`,{
+    revision:unassigned.revision,order_line_id:o2Pos.order_line_id,expected_item_id:o2Pos.id,evidence_ids:[await receiving.photo("label_photo")],
+  });
+  // order2 had 1 item and was already paid -> enters queued once!
+  const o2Detail=await c.fetch(`/orders/${order2.id}`);
+  assert.equal(o2Detail.state,"queued");
+
+  // 4. TASK-170 & T107: Zero-order uncommissioned item return to seller (mainItem2Id has no inspection order)
+  const disp=await c.fetch(`/me/items/${mainItem2Id}/dispositions`,{
+    action:"return_to_seller",
+    destination:{recipient:"Seller Return Dept",phone:"13800138000",address:"No. 88 Return Rd, Hangzhou"},
+    return_info:{requested_from_seller:true,customer_pays_shipping:true},
+    terms_version_id:termsId,
+  },"POST",201);
+  const {shipment,actual:returnWaybill}=await shipOne(c,receiving,rates[0].id,disp.id,mainItem2Id);
+  const returnTrack=await c.fetch(`/shipments/${shipment.shipment_id}/tracking`);
+  assert.equal(returnTrack.tracking_no,returnWaybill);
+  assert.equal(returnTrack.direction,"outbound_return");
+  assert.equal(returnTrack.warehouse_state,"shipped");
+
+  // 5. TASK-057: Restricted / prohibited parcel quarantine blocks unpacking and outbound release
+  const quarWaybill="ZTO"+randomUUID().slice(0,8).toUpperCase();
+  const quarAdvice=await c.fetch("/me/parcels",{
+    address_id:registration.warehouse_address.id,tracking_no:quarWaybill,carrier_code:"zto",order_ids:[],
+  },"POST",201);
+  const quarPkg=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:quarWaybill,advice_id:quarAdvice.id,carrier_code:"zto",outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+  const quarResult=await receiving.fetch(`/staff/packages/${quarPkg.id}/quarantine`,{
+    revision:quarPkg.revision,reason:"Contains prohibited pressurized aerosol container",
+  });
+  assert.equal(quarResult.state,"quarantined");
+  assert(quarResult.ticket_id);
+  const unpackQuarErr=await receiving.fetch(`/staff/packages/${quarPkg.id}/items`,{
+    revision:quarResult.revision,items:[{code:"S-"+randomUUID().slice(0,8).toUpperCase(),location_id:r01.id}],
+  },"POST",409);
+  assert.equal(unpackQuarErr.error.code,"PACKAGE_QUARANTINED");
+});
+
 test("all core operations have a validated success response",assertCoreCoverage);

@@ -122,19 +122,29 @@ export function WarehouseDesk({path,actor}:{path:string;actor:Row}) {
         </select></label>
         {packageId&&packageDetail.error&&<><ErrorBlock error={packageDetail.error}/><button type="button" onClick={packageDetail.reload}>重新读取包裹</button></>}
         {packageId&&!selectedPackage&&!packageDetail.error&&<p role="status">正在读取包裹…</p>}
-        {selectedPackage&&<><p><Link className="code" href={"/wh/packages/"+selectedPackage.parcel.code}>{selectedPackage.parcel.code}</Link> · 已登记 {selectedPackage.parcel.received_quantity} 件</p>
+        {selectedPackage&&<><p><Link className="code" href={"/wh/packages/"+selectedPackage.parcel.code}>{selectedPackage.parcel.code}</Link> · 已登记 {selectedPackage.parcel.received_quantity} 件 · <Tag>{label(selectedPackage.parcel.state)}</Tag></p>
           {selectedPackage.parcel.order_numbers.length>0&&<p>关联订单 {selectedPackage.parcel.order_numbers.join("、")}</p>}
-          <Table headers={["实物码","库存状态","库位","操作"]} rows={selectedPackage.items.map((i:Row)=>[
-            i.code,label(i.custody_state),i.location??"—",
+          <Table headers={["实物码","类型","库存状态","库位","操作"]} rows={selectedPackage.items.map((i:Row)=>[
+            i.code,i.parent_item_id?"套装组件":"主件",label(i.custody_state),i.location??"—",
             <a href="#item-intake" onClick={()=>selectItem(i.code)}>定位实物</a>,
           ])}/>
-          <Form key={packageId} label="逐件建档" run={async f=>{
+          {selectedPackage.parcel.state!=="quarantined"&&<Form key={packageId} label="逐件建档（支持分批半拆包与套装组件）" run={async f=>{
             const n=Number(text(f,"quantity"));
+            const parentId=text(f,"component_of");
             if(!Number.isInteger(n) || n<1 || n>100)throw new Error("请填写实际件数。");
-            const items=Array.from({length:n},()=>({code:"S-"+crypto.randomUUID().replaceAll("-","").slice(0,12).toUpperCase(),location_id:text(f,"location")}));
+            const items=Array.from({length:n},()=>({
+              code:"S-"+crypto.randomUUID().replaceAll("-","").slice(0,12).toUpperCase(),
+              location_id:text(f,"location"),
+              ...(parentId?{component_of:parentId}:{}),
+            }));
             await request("/staff/packages/"+selectedPackage.parcel.id+"/items","POST",{revision:selectedPackage.parcel.revision,items});
             packageDetail.reload();reload();
-          }}><Field name="quantity" label="本次新增实物件数" type="number" min={1} max={100} value={1}/><Select name="location" label="目标库位" choices={locations}/></Form>
+          }}>
+            <Field name="quantity" label="本次新增实物件数" type="number" min={1} max={100} value={1}/>
+            <Select name="location" label="目标库位" choices={locations}/>
+            <Select name="component_of" label="套装主件（登记子组件时选择，主件留空）" required={false}
+              choices={selectedPackage.items.filter((i:Row)=>!i.parent_item_id).map((i:Row)=>({id:i.id,label:i.code}))}/>
+          </Form>}
         </>}
       </Panel>
       <Panel title="03 / 实物识别与委托" id="item-intake">
@@ -890,10 +900,14 @@ export function WarehousePackageView({code}:{code:string}) {
       <div className="ops-columns">
         <Panel title="仓库实收">
           <dl className="location-facts">
+            <div><dt>包裹状态</dt><dd><Tag>{label(parcel.state)}</Tag></dd></div>
             <div><dt>实际入仓时间</dt><dd>{stamp(parcel.received_at)}</dd></div>
             <div><dt>实收件数</dt><dd>{parcel.received_quantity} 件</dd></div>
             <div><dt>外箱实重</dt><dd>{parcel.weight_g==null?"未记录":parcel.weight_g+" 克"}</dd></div>
+            <div><dt>存放库位</dt><dd className="code">{parcel.location_code??"未设定"}</dd></div>
+            <div><dt>客户收件码</dt><dd className="code">{parcel.receiving_code??"待核验"}</dd></div>
             <div><dt>关联委托</dt><dd className="code">{parcel.order_numbers.join("、")||"尚未关联"}</dd></div>
+            {parcel.condition_note&&<div><dt>异常与隔离说明</dt><dd>{parcel.condition_note}</dd></div>}
           </dl>
         </Panel>
         <Panel title="承运商运输">
@@ -903,10 +917,41 @@ export function WarehousePackageView({code}:{code:string}) {
             <li key={event.id}>{stamp(event.occurred_at)} · {event.text}</li>)}</ol>:<Empty>暂无承运商中文轨迹。</Empty>}
         </Panel>
       </div>
+      {parcel.state==="unmatched"&&<Panel title="无预报包裹归属核验">
+        <p className="muted">若外箱面单写有客户专属收件码（QCW-），上传面单标签照并核验绑定归属。</p>
+        <Form label="核验面单并绑定客户" run={async f=>{
+          const proof=await upload(f.get("photo"),"label_photo");
+          await request("/staff/packages/"+parcel.id+"/bind-owner","POST",{
+            revision:parcel.revision,
+            receiving_code:text(f,"receiving_code"),
+            reason:text(f,"reason"),
+            evidence_ids:[proof],
+          });
+          reload();
+        }}>
+          <Field name="receiving_code" label="面单上的客户专属收件码"/>
+          <Field name="reason" label="核验依据说明"/>
+          <Photo label="面单收件码核对照"/>
+        </Form>
+      </Panel>}
+      {parcel.state!=="quarantined"&&<Panel title="禁限品与异常包裹隔离">
+        <details className="card">
+          <summary>登记为禁限品或拒收异常并转入隔离区（Quarantine）</summary>
+          <Form label="确认转入隔离区" run={async f=>{
+            await request("/staff/packages/"+parcel.id+"/quarantine","POST",{
+              revision:parcel.revision,
+              reason:text(f,"reason"),
+            });
+            reload();
+          }}>
+            <Field name="reason" label="禁限品或异常原因"/>
+          </Form>
+        </details>
+      </Panel>}
       <LabelPrintPanel targetType="package" targetId={parcel.id} code={parcel.code}/>
       <Panel title="拆包实物">
-        <Table headers={["实物码","库存状态","当前位置",""]} rows={data.items.map((item:Row)=>[
-          <span className="code">{item.code}</span>,label(item.custody_state),item.location??"—",
+        <Table headers={["实物码","类型","库存状态","当前位置",""]} rows={data.items.map((item:Row)=>[
+          <span className="code">{item.code}</span>,item.parent_item_id?"套装组件":"主件",label(item.custody_state),item.location??"—",
           <Link href={"/wh/samples/"+encodeURIComponent(item.code)}>核对实物</Link>,
         ])} empty="尚未登记包内实物。"/>
       </Panel>
@@ -919,8 +964,9 @@ function ItemIdentity({data,onSave}:{data:Row;onSave:()=>void}) {
   const positions:Row[]=data.positions;
   return <>
     <div className="notice">
-      <strong className="code">{item.code}</strong> · {label(item.custody_state)} · 库位 {item.location??"未登记"}
-      <p>实收包裹 <Link href={"/wh/packages/"+item.package_code}>{item.package_code}</Link>{item.order_number?" · 委托 "+item.order_number:""}</p>
+      <strong className="code">{item.code}</strong> · {label(item.custody_state)} · 身份状态 {label(item.identity_state)} · 库位 {item.location??"未登记"}
+      <p>实收包裹 <Link href={"/wh/packages/"+item.package_code}>{item.package_code}</Link>{item.order_number?" · 委托 "+item.order_number:" · 无委托实物"}</p>
+      {item.components?.length>0&&<p className="small">包含套装组件：{item.components.map((c:Row)=>c.code).join("、")}</p>}
       {!item.ownership_verified&&<p>待核验客户归属。完成认领后才能关联委托。</p>}
     </div>
     {positions.length>0?<Form key={item.id} label="核对并绑定" run={async f=>{
@@ -932,7 +978,16 @@ function ItemIdentity({data,onSave}:{data:Row;onSave:()=>void}) {
       onSave();
     }}><Select name="position" label="同一客户的待收委托位置" choices={positions.map(p=>({id:p.id,label:p.public_no+" · "+p.title["zh-CN"]+" · "+p.position}))}/>
       <Photo label="商品标签核对照"/>
-    </Form>:item.ownership_verified&&!item.order_number&&<Empty>当前实物没有可绑定的委托位置。</Empty>}
+    </Form>:item.ownership_verified&&!item.order_number&&<Empty>当前实物没有可绑定的委托位置（可保留为无委托实物或由客户直接发起退回/转运）。</Empty>}
+    {item.can_unassign&&<details className="card">
+      <summary>解除当前委托绑定（跨本人订单重新映射）</summary>
+      <Form label="确认解除委托位置关联" run={async f=>{
+        await request("/staff/items/"+item.id+"/unassign","POST",{revision:item.revision,reason:text(f,"reason")});
+        onSave();
+      }}>
+        <Field name="reason" label="解除并重新映射原因"/>
+      </Form>
+    </details>}
     {item.movable&&<Link className="button" href={"/wh/storage?"+new URLSearchParams({item:item.code})}>移转此实物</Link>}
   </>;
 }

@@ -3,7 +3,7 @@ import { pool, type DB } from "../db";
 import { currentTerms, requireCustomerActive } from "./auth";
 import { audit, code, event, guard, lock, one, organization, revision, role, uuid, type Actor } from "./common";
 import { validCarrier, waybill } from "./intake";
-import { requireSpace } from "./storage";
+import { assertItemNotFrozen, requireSpace } from "./storage";
 
 type Destination={recipient:string;phone:string;address:string;member_code?:string};
 type InstructionInput={action:string;item_id?:string;destination?:Destination;return_info?:Record<string,unknown>;terms_version_id:string;condition_note?:string;days?:number};
@@ -14,6 +14,7 @@ export async function instruct(db:DB,actor:Actor,itemId:string,input:Instruction
   const w=await one(db,"select * from warehouse_items where id=$1 and org_id=$2 for update",[itemId,org]);
   guard(["stored","received"].includes(w.custody_state) && !w.parent_item_id && w.identity_state!=="quarantined",
     "ITEM_UNAVAILABLE","This item cannot be released.");
+  await assertItemNotFrozen(db,[itemId],"ITEM_UNAVAILABLE");
   const order=(await db.query(`select o.id,o.state,l.category_id from orders o join order_lines l on l.order_id=o.id
     join order_line_item_links a on a.order_line_id=l.id where a.item_id=$1 and a.unlinked_at is null`,[itemId])).rows[0];
   guard(!orderId || order?.id===orderId,"NOT_FOUND","Item is not in this order.",404);
@@ -476,12 +477,27 @@ export async function checkStorageReminders(db:DB) {
   return {reminded:sent,sent_count:sent};
 }
 export const effectiveDispatchCharge=`c.voided_at is null and (c.free_authorization is not null or exists(select 1 from payments p
-    where p.id=c.applied_payment_id and p.state='succeeded' and not exists(select 1 from payment_disputes d where d.payment_id=p.id)
-    and not exists(select 1 from refunds r where r.payment_id=p.id and r.state in ('approved','succeeded'))))`;
+    where p.id=c.applied_payment_id and p.state='succeeded' and not exists(select 1 from payment_disputes d where d.payment_id=p.id and d.state<>'resolved_by_staff')
+    and not exists(select 1 from refunds r where r.payment_id=p.id and r.state in ('approved','succeeded'))))
+    and not exists(select 1 from charge_allocations ca join inspection_quotes iq on iq.order_id=ca.order_id
+      join charge_items ic on ic.inspection_quote_id=iq.id join payments ip on ip.charge_item_id=ic.id
+      join payment_disputes idisp on idisp.payment_id=ip.id where ca.charge_id=c.id and idisp.state<>'resolved_by_staff')`;
 async function paidBatch(db:DB,b:{id:string}) {
-  return one(db,`select q.*,c.id charge_id from dispatch_quote_versions q join charge_items c on c.dispatch_quote_id=q.id
+  const q=(await db.query(`select q.*,c.id charge_id from dispatch_quote_versions q join charge_items c on c.dispatch_quote_id=q.id
     where q.batch_id=$1 and ${effectiveDispatchCharge}
-    order by q.revision desc limit 1`,[b.id]);
+    order by q.revision desc limit 1`,[b.id])).rows[0];
+  guard(q,"SHIPMENT_BLOCKED","The dispatch payment has an active dispute or refund block.");
+  return q;
+}
+async function assertItemsNotBlockedByOrderOrDispute(db:DB,itemIds:string[]) {
+  await assertItemNotFrozen(db,itemIds,"SHIPMENT_BLOCKED");
+  const blocked=(await db.query(`select 1 from order_line_item_links a join order_lines l on l.id=a.order_line_id join orders o on o.id=l.order_id
+    where a.item_id=any($1::uuid[]) and a.unlinked_at is null and (o.state='on_hold' or
+    exists(select 1 from order_blocks ob where ob.order_id=o.id and ob.resolved_at is null)
+    or exists(select 1 from inspection_quotes iq join charge_items c on c.inspection_quote_id=iq.id
+      join payments p on p.charge_item_id=c.id join payment_disputes d on d.payment_id=p.id
+      where iq.order_id=o.id and d.state<>'resolved_by_staff'))`,[itemIds])).rowCount;
+  guard(!blocked,"SHIPMENT_BLOCKED","A linked inspection or payment has an active block.");
 }
 async function shipEvidence(db:DB,actor:Actor,shipmentId:string,org:string,ids:string[]) {
   for(const id of [...new Set(ids)].sort()) {
@@ -497,6 +513,7 @@ export async function packShipment(db:DB,actor:Actor,id:string,input:{revision:n
   const q=await paidBatch(db,b as {id:string});
   guard(q.id===input.quote_id && q.snapshot.parcels.some((p:ParcelPlan)=>sameItems(p.item_ids,input.item_ids) && p.weight_g===input.weight_g),
     "PACK_MISMATCH","Match the quoted parcel contents and weight.");
+  await assertItemsNotBlockedByOrderOrDispute(db,input.item_ids);
   const sh=await one<{id:string;revision:number}>(db,`insert into shipments(batch_id,weight_g,state,packed_media_ids) values($1,$2,'packed',$3) returning id,revision`,[id,input.weight_g,input.packed_media_ids]);
   await shipEvidence(db,actor,sh.id,b.org_id,input.packed_media_ids);
   for(const item of input.item_ids) {
@@ -520,12 +537,7 @@ export async function handover(db:DB,actor:Actor,id:string,input:{revision:numbe
     join disposition_requests d on d.id=bi.disposition_id where si.shipment_id=$1 and d.state='requested' for update of w,d`,[id])).rows;
   guard(sameItems(input.item_ids,list.map(r=>r.item_id)) && list.every(r=>["received","stored"].includes(r.custody_state) &&
     (!r.return_info?.deadline || new Date(r.return_info.deadline)>new Date())),"PACK_MISMATCH","Verify the authorized items and deadline.");
-  const blocked=(await db.query(`select 1 from order_line_item_links a join order_lines l on l.id=a.order_line_id join orders o on o.id=l.order_id
-    where a.item_id=any($1::uuid[]) and a.unlinked_at is null and (o.state='on_hold' or
-    exists(select 1 from order_blocks ob where ob.order_id=o.id and ob.resolved_at is null)
-    or exists(select 1 from inspection_quotes iq join charge_items c on c.inspection_quote_id=iq.id
-      join payments p on p.charge_item_id=c.id join payment_disputes d on d.payment_id=p.id where iq.order_id=o.id))`,[input.item_ids])).rowCount;
-  guard(!blocked,"SHIPMENT_BLOCKED","A linked inspection or payment has an active block.");
+  await assertItemsNotBlockedByOrderOrDispute(db,input.item_ids);
   const carrier=await validCarrier(db,input.carrier_code),tracking=waybill(input.tracking_no);
   await lock(db,"waybill:"+tracking);
   guard(!(await db.query("select 1 from tracking_records where carrier_code=$1 and tracking_norm=$2 and closed_at is null",[carrier,tracking])).rowCount,
@@ -548,6 +560,30 @@ export async function handover(db:DB,actor:Actor,id:string,input:{revision:numbe
   await audit(db,actor,"handover","shipments",id,{tracking_id:t.id});
   await event(db,"shipment.handed_over",{shipment_id:id,tracking_id:t.id});
   return {shipment_id:id,tracking_id:t.id,state:"shipped"};
+}
+export async function closeCompletedOrder(db:DB,actor:Actor,orderId:string,input?:{revision?:number}) {
+  role(actor,"warehouse_admin","support","super_admin");
+  const initial=await one(db,"select org_id from orders where id=$1",[orderId]);
+  await lock(db,"org:"+initial.org_id);
+  const o=await one(db,"select * from orders where id=$1 for update",[orderId]);
+  if(input?.revision!==undefined) revision(o.revision,input.revision);
+  guard(["report_ready","action_pending"].includes(o.state),"ORDER_CLOSE_UNAVAILABLE","Only orders with published reports can be closed.");
+  const openBlocks=(await db.query("select 1 from order_blocks where order_id=$1 and resolved_at is null",[orderId])).rowCount;
+  guard(!openBlocks,"ORDER_BLOCKED","Resolve all active order blocks before closing.");
+  const inStorage=(await db.query(
+    `select w.id from order_lines l join order_line_item_links a on a.order_line_id=l.id and a.unlinked_at is null
+     join warehouse_items w on w.id=a.item_id
+     where l.order_id=$1 and w.custody_state in ('received','stored') limit 1`,
+    [orderId]
+  )).rowCount;
+  guard(!inStorage,"ITEMS_STILL_IN_STORAGE","Cannot close an order while physical samples remain in warehouse storage.");
+  const updated=await one<{id:string;state:string;revision:number;closed_at:Date}>(
+    db,
+    "update orders set state='closed',closed_at=now(),revision=revision+1 where id=$1 returning id,state,revision,closed_at",
+    [orderId]
+  );
+  await audit(db,actor,"close_order","orders",orderId);
+  return updated;
 }
 export async function receiveReturn(db:DB,actor:Actor,id:string,input:{revision:number;item_ids:string[];evidence_ids:string[];location_id:string;received_at:string}) {
   role(actor,"warehouse_admin","super_admin");

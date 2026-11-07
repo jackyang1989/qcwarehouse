@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Action, checked, Empty, ErrorBlock, Field, Form, Panel, request, Select, stamp, Table, Tag, text, useLoad, type Row } from "./ui";
+import { Action, checked, Empty, ErrorBlock, Field, Form, Panel, request, Select, stamp, Table, Tag, text, useLoad, usd, type Row } from "./ui";
 
 const zones:Record<string,string>={
   receiving:"收货区",queue:"待检区",inspecting:"检查区",post_inspection:"检后存放区",
@@ -74,8 +74,96 @@ export function StorageLocations({warehouseLinks}:{warehouseLinks:[string,string
           }}>{location.active?(location.occupied?"占用中":"停用"):"启用"}</Action>,
         ])} empty="没有符合条件的库位。"/>
       </Panel>
+      <StocktakeReviewAndIncidentPanel/>
     </>}
   </>;
+}
+
+function StocktakeReviewAndIncidentPanel() {
+  const stocktakes=useLoad("/staff/stocktakes");
+  const incidents=useLoad("/staff/incidents");
+  return <div className="ops-columns">
+    <Panel title="盘点差异复核（PAGE-M19）">
+      <p className="muted">盘点提交的缺失/错位差异须由独立主管或管理员复核，禁止盘点创建人自审。</p>
+      {stocktakes.error&&<ErrorBlock error={stocktakes.error}/>}
+      <Table headers={["盘点单","范围","状态","总数/匹配/差异","快照时间","独立复核"]} rows={(stocktakes.data?.rows??[]).map((st:Row)=>{
+        const items:Row[]=st.items??[];
+        const matched=items.filter(i=>i.state==="matched"||i.state==="adjusted").length;
+        const disc=items.filter(i=>i.state==="investigating").length;
+        return [
+          <strong className="code">{st.id.slice(0,8)}</strong>,
+          st.scope?.zone?`仓区: ${st.scope.zone}`:"全仓",
+          <Tag>{st.state}</Tag>,
+          `${items.length} / ${matched} / ${disc}`,
+          stamp(st.snapshot_at),
+          st.state==="submitted"?<Action run={async()=>{
+            await request(`/staff/stocktakes/${st.id}/approve`,"POST",{decision:"approve",reason:"Supervisor reviewed stocktake discrepancy"});
+            stocktakes.reload();
+          }}>批准差异结案</Action>:"—",
+        ];
+      })} empty="暂无盘点记录。"/>
+    </Panel>
+    <Panel title="库内丢损与事故赔偿（PAGE-M19 / §22.2）">
+      <p className="muted">服务费退回受原支付单可退余额约束，货值赔付独立立项审批并登记打款凭证。非财务/超管角色隐藏具体赔付金额。</p>
+      {incidents.error&&<ErrorBlock error={incidents.error}/>}
+      <Form label="登记库内异常事故" run={async f=>{
+        await request("/staff/incidents","POST",{
+          item_id:text(f,"item_id"),
+          kind:text(f,"kind"),
+          summary_en:text(f,"summary_en"),
+        });
+        incidents.reload();
+      }}>
+        <div className="grid two">
+          <Field label="关联实物 ID" name="item_id"/>
+          <Select label="事故类型" name="kind" choices={[
+            {id:"loss",label:"库内缺失 (loss)"},
+            {id:"damage",label:"库内破损 (damage)"},
+            {id:"wrong_inspection",label:"质检重大差错 (wrong_inspection)"},
+          ]}/>
+        </div>
+        <Field label="事故说明与取证摘要 (English)" name="summary_en"/>
+      </Form>
+      <Table headers={["事故工单","实物/订单","类型","状态","服务费退回 / 货值赔付","审批与结案操作"]} rows={(incidents.data?.rows??[]).map((inc:Row)=>[
+        <strong className="code">{inc.ticket_no}</strong>,
+        <span>{inc.item_code??"—"} / {inc.order_no??"—"}</span>,
+        inc.resolution?.kind??"—",
+        <Tag>{inc.state}</Tag>,
+        inc.resolution?.financial_restricted
+          ?<span className="muted">仅财务/超管可见</span>
+          :<span>{usd(inc.resolution?.service_refund_cents??0)} / {usd(inc.resolution?.compensation_cents??0)} {inc.payment_proof?"(已打款)":"(未打款)"}</span>,
+        <div className="row" style={{gap:6,flexWrap:"wrap"}}>
+          {(inc.state==="open"||inc.state==="customer_rejected")&&<Action run={async()=>{
+            const srv=window.prompt("服务费退回金额（美分，0 表示不退服务费）","0");
+            const comp=window.prompt("货值协商赔付金额（美分，独立于平台收费）","2000");
+            if(srv===null||comp===null)return;
+            await request(`/staff/incidents/${inc.id}/propose`,"POST",{
+              service_refund_cents:Number(srv||0),
+              compensation_cents:Number(comp||0),
+              currency:"USD",
+              summary_en:"Proposed compensation solution",
+            });
+            incidents.reload();
+          }}>提交方案</Action>}
+          {inc.state==="proposed"&&<Action run={async()=>{
+            await request(`/staff/incidents/${inc.id}/approve`,"POST",{reason:"Approved by independent reviewer"});
+            incidents.reload();
+          }}>独立审批</Action>}
+          {inc.state==="awaiting_payout"&&<Action run={async()=>{
+            const proof=window.prompt("登记打款凭证编号（入账后标记已赔付）","PAYOUT-PROOF-001");
+            if(!proof)return;
+            await request(`/staff/incidents/${inc.id}/resolve`,"POST",{
+              payout_reference:proof,
+              payout_method:"bank_transfer",
+              paid_amount_cents:Number(inc.resolution?.compensation_cents??0),
+              note:"Compensation payout completed",
+            });
+            incidents.reload();
+          }}>登记打款结案</Action>}
+        </div>,
+      ])} empty="暂无库内事故单。"/>
+    </Panel>
+  </div>;
 }
 
 export function StorageMove() {
@@ -128,5 +216,83 @@ export function StorageMove() {
         <span className="code">{row.code}</span>,row.origin??"—",row.destination??"—",row.operator,stamp(row.created_at),
       ])} empty="暂无移位记录。"/>}
     </Panel>
+    <StocktakeWorkspace/>
   </>;
+}
+
+function StocktakeWorkspace() {
+  const {data,error,reload}=useLoad("/staff/stocktakes");
+  const [selectedId,setSelectedId]=useState("");
+  const rows:Row[]=data?.rows??[];
+  const active=rows.find(r=>r.id===selectedId)??rows[0];
+  const activeItems:Row[]=active?.items??[];
+  return <Panel title="仓库盘点作业台（PAGE-H14 / §22.2）">
+    <p className="muted">按仓区或全仓创建盘点快照；盘点期间并发移库/出库自动提示重盘，缺失/错位实物冻结出库直至寻回或事故结案。</p>
+    {error&&<ErrorBlock error={error}/>}
+    <div className="ops-columns">
+      <div>
+        <Form label="创建盘点任务" run={async f=>{
+          const zoneVal=text(f,"zone");
+          const res=await request("/staff/stocktakes","POST",{
+            ...(zoneVal?{zone:zoneVal}:{}),
+            note:text(f,"note"),
+          });
+          setSelectedId(res.id);
+          reload();
+        }}>
+          <Select label="仓区范围（留空为全仓在库实物）" name="zone" required={false} choices={zoneChoices}/>
+          <Field label="盘点备注" name="note" required={false}/>
+        </Form>
+      </div>
+      <div>
+        {active?<div className="stack">
+          <div className="row" style={{justifyContent:"space-between"}}>
+            <div>
+              <strong className="code">{active.id.slice(0,8)}</strong> · <Tag>{active.state}</Tag>
+              <p className="muted">快照时间：{stamp(active.snapshot_at)} · 总数 {activeItems.length} / 匹配 {activeItems.filter(i=>i.state==="matched"||i.state==="adjusted").length} / 差异 {activeItems.filter(i=>i.state==="investigating").length}</p>
+            </div>
+            {rows.length>1&&<select value={active.id} onChange={e=>setSelectedId(e.target.value)}>
+              {rows.map(r=><option key={r.id} value={r.id}>{r.id.slice(0,8)} ({r.state})</option>)}
+            </select>}
+          </div>
+          {active.state==="in_progress"&&<Form label="录入盘点结果" run={async f=>{
+            const raw=text(f,"item_code");
+            const loc=text(f,"actual_location");
+            await request(`/staff/stocktakes/${active.id}/scan`,"POST",{
+              ...(raw.length===36?{item_id:raw}:{item_code:raw}),
+              status:text(f,"status"),
+              ...(loc?{actual_location:loc}:{}),
+              note:text(f,"note"),
+            });
+            reload();
+          }}>
+            <div className="grid two">
+              <Field label="实物编号或 ID" name="item_code"/>
+              <Select label="盘点结果" name="status" choices={[
+                {id:"matched",label:"账实相符 (matched)"},
+                {id:"missing",label:"缺失冻结 (missing)"},
+                {id:"relocated",label:"错位 (relocated)"},
+                {id:"found",label:"寻回解冻 (found)"},
+              ]}/>
+            </div>
+            <div className="grid two">
+              <Field label="实盘库位 ID（错位/寻回时填写）" name="actual_location" required={false}/>
+              <Field label="差异说明" name="note" required={false}/>
+            </div>
+          </Form>}
+          {active.state==="in_progress"&&<Action run={async()=>{
+            await request(`/staff/stocktakes/${active.id}/submit`,"POST",{reason:"Submitted from H14"});
+            reload();
+          }}>提交盘点结果（有差异自动转主管复核）</Action>}
+          <Table headers={["实物编号","快照库位","实盘库位","盘点状态","备注"]} rows={activeItems.map((it:Row)=>[
+            <span className="code">{it.item_code}</span>,
+            <span className="code">{it.expected_location_code??"—"}</span>,
+            <span className="code">{it.actual_location_code??"—"}</span>,
+            <Tag>{it.state}</Tag>,
+            it.adjustment_reason||"—",
+          ])} empty="该盘点范围下无在库实物。"/>
+        </div>:<Empty>尚无盘点任务，请先在左侧创建。</Empty>}
+      </div>
+    </div>
+  </Panel>;
 }

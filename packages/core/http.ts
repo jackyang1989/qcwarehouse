@@ -13,16 +13,16 @@ import { customerEmailDeliveryStatus, receivePostmarkWebhook, retryEmailDelivery
 import { catalog, issueManualQuote, orderDetail, quoteOrder, requestManualQuote, saveOrder, submitOrder } from "./orders";
 import { advise, assign, bindUnmatchedPackageOwner, checkIn, decideIntakeClaim, identifyItem, intakeItems, lookup, quarantineItem, quarantinePackage, requestIntakeClaim, savePhoto, unassignItem, waybill } from "./intake";
 import { amendReport, amendReportInput, approveReport, checkTaskCompleteness, createReportDispute, editReportRevision, findInspectionTaskByScan, readReport, recordResults, recordTaskShot, recordTaskStep, reportDesk, returnReport, revisionChanges, staffReport, startTask, submitReport, submitReportRevision, submitTask, taskDetail, translateReportCandidate } from "./inspection";
-import { acceptQuote, amendDispatchBatch, calculateShippingPreview, cancelDisposition, checkStorageReminders, confirmBatch, handover, instruct, packShipment, planBatch, publishShippingRate, quoteBatch, readDispatchBatch, receiveReturn, releaseReferenceSample, storageQuote } from "./dispatch";
-import { checkout, demoPay, orderPayment, orderRefundPayments, refundApprove, refundRequest, stripeEvent, verifyStripe } from "./payments";
+import { acceptQuote, amendDispatchBatch, calculateShippingPreview, cancelDisposition, checkStorageReminders, closeCompletedOrder, confirmBatch, handover, instruct, packShipment, planBatch, publishShippingRate, quoteBatch, readDispatchBatch, receiveReturn, releaseReferenceSample, storageQuote } from "./dispatch";
+import { checkout, demoPay, orderPayment, orderRefundPayments, refundApprove, refundRequest, resolvePaymentDispute, stripeEvent, verifyStripe } from "./payments";
 import { approveTrackingTranslation, correctCustomerParcelTracking, correctStaffTracking, providerCallback, refreshTracking, submitTrackingTranslation, tracking, trackingAdmin, verificationState, verifyTracking } from "./logistics";
 import { adminDesk, bills, customerActions, customerDesk, customerNotifications, dispatchQueueStates, items, markNotificationRead, readOrderByPublicNumber, reconcileFinance, searchStaffOrders, staffOrderDetail, staffOrderFilters, warehouseDesk, warehouseDispatchBatch, warehouseDispatchQueue, warehouseItem, warehousePackage } from "./reads";
 import { staffAccess } from "./staff-access";
 import { customerDestination, withDestination } from "./portal-routes";
 import { orderFulfillmentRecord } from "./fulfillment-reads";
 import { canReadCasePhoto, caseDetail, createPublicInquiry, customerTicketMessage, inquiryCategories, publicInquiry, replyToCase, staffTicketEvent, staffTicketQueue, writeStaffTicket } from "./tickets";
-import { createLocations, locationBatchSchema, locationMaster, setLocationActive, storageMovementDesk } from "./storage";
-import { acceptScope, approveCapability, cancelOrder, convertOrderToTwo, createCapability, createCategory, extendOrderArrival, holdOrder, moveItem, newTemplate, orderCaseCategory, publishSkuPrice, publishTemplate, reportIssue, respondOrderMismatch, resumeOrder, revokeCapability, scopeProposal, scopeReview, setAddress, staffSchemas, updateCategoryStatus, upsertOffer } from "./operations";
+import { approveIncidentResolution, approveStocktake, createIncident, createLocations, createStocktake, customerReadIncident, customerRespondIncident, listIncidents, listStocktakes, locationBatchSchema, locationMaster, proposeIncidentResolution, resolveIncidentCompensation, scanStocktakeItem, setLocationActive, storageMovementDesk, submitStocktake } from "./storage";
+import { acceptScope, approveCapability, cancelOrder, computeOrderRefundStage, convertOrderToTwo, createCapability, createCategory, extendOrderArrival, holdOrder, moveItem, newTemplate, orderCaseCategory, publishSkuPrice, publishTemplate, reportIssue, requestOrderAfterSales, respondOrderMismatch, resumeOrder, revokeCapability, scopeProposal, scopeReview, setAddress, staffSchemas, updateCategoryStatus, upsertOffer } from "./operations";
 import { createReportShare, listPublishedReports, listReportShares, readSharedPhoto, readSharedReport, reportSharingEnabled, revokeReportShare, shareInput, shareTokenPattern } from "./report-shares";
 import { auditFilters, readAudit } from "./audit-read";
 import { completeMediaUpload, createMediaReadUrl, createMediaUploadUrl, putMediaStaging, readMediaBinary, uploadUrlInputSchema } from "./media";
@@ -771,6 +771,132 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   }
   const store=path.match(/^\/staff\/dispositions\/([a-f0-9-]{36})\/storage-quote$/i);
   if(method==="POST" && store) return extraWrite(req,path,actor,z.object({days:z.number().int().min(1).max(365).optional()}),(db,a,b)=>storageQuote(db,a,idSchema.parse(store[1]),b));
+  if(method==="GET" && path==="/staff/stocktakes") {
+    return json(await transaction(db=>listStocktakes(db,actorRequired(actor))));
+  }
+  if(method==="POST" && path==="/staff/stocktakes") {
+    return extraWrite(req,path,actor,z.object({
+      zone:z.string().trim().max(40).optional(),
+      location_ids:z.array(idSchema).optional(),
+      note:z.string().trim().max(500).optional(),
+    }),createStocktake,201);
+  }
+  const stScan=path.match(/^\/staff\/stocktakes\/([a-f0-9-]{36})\/scan$/i);
+  if(method==="POST" && stScan) {
+    return extraWrite(req,path,actor,z.object({
+      item_id:idSchema.optional(),
+      item_code:z.string().trim().min(2).max(100).optional(),
+      actual_location:idSchema.nullable().optional(),
+      status:z.enum(["matched","relocated","missing","found"]),
+      note:z.string().trim().max(1000).optional(),
+      evidence_ids:z.array(idSchema).optional(),
+    }),(db,a,b)=>scanStocktakeItem(db,a,idSchema.parse(stScan[1]),b));
+  }
+  const stSubmit=path.match(/^\/staff\/stocktakes\/([a-f0-9-]{36})\/submit$/i);
+  if(method==="POST" && stSubmit) {
+    return extraWrite(req,path,actor,z.object({
+      reason:z.string().trim().max(1000).optional(),
+    }),(db,a,b)=>submitStocktake(db,a,idSchema.parse(stSubmit[1]),b));
+  }
+  const stApprove=path.match(/^\/staff\/stocktakes\/([a-f0-9-]{36})\/approve$/i);
+  if(method==="POST" && stApprove) {
+    return extraWrite(req,path,actor,z.object({
+      decision:z.enum(["approve","recount"]),
+      reason:z.string().trim().min(2).max(1000),
+    }),(db,a,b)=>approveStocktake(db,a,idSchema.parse(stApprove[1]),b));
+  }
+  if(method==="GET" && path==="/staff/incidents") {
+    return json(await transaction(db=>listIncidents(db,actorRequired(actor))));
+  }
+  if(method==="POST" && path==="/staff/incidents") {
+    return extraWrite(req,path,actor,z.object({
+      item_id:idSchema,
+      order_id:idSchema.optional(),
+      order_line_id:idSchema.optional(),
+      kind:z.enum(["damage","loss","wrong_inspection"]),
+      summary_en:z.string().trim().min(4).max(1000),
+      internal_note:z.string().trim().max(1000).optional(),
+      evidence_ids:z.array(idSchema).optional(),
+    }),createIncident,201);
+  }
+  const incPropose=path.match(/^\/staff\/incidents\/([a-f0-9-]{36})\/propose$/i);
+  if(method==="POST" && incPropose) {
+    return extraWrite(req,path,actor,z.object({
+      service_refund_cents:z.number().int().nonnegative().optional(),
+      compensation_cents:z.number().int().nonnegative().optional(),
+      currency:z.string().trim().max(10).optional(),
+      summary_en:z.string().trim().min(4).max(1000),
+      internal_note:z.string().trim().max(1000).optional(),
+    }),(db,a,b)=>proposeIncidentResolution(db,a,idSchema.parse(incPropose[1]),b));
+  }
+  const incApprove=path.match(/^\/staff\/incidents\/([a-f0-9-]{36})\/approve$/i);
+  if(method==="POST" && incApprove) {
+    return extraWrite(req,path,actor,z.object({
+      reason:z.string().trim().max(1000).optional(),
+    }),(db,a,b)=>approveIncidentResolution(db,a,idSchema.parse(incApprove[1]),b));
+  }
+  const incResolve=path.match(/^\/staff\/incidents\/([a-f0-9-]{36})\/resolve$/i);
+  if(method==="POST" && incResolve) {
+    return extraWrite(req,path,actor,z.object({
+      payout_reference:z.string().trim().min(2).max(200),
+      payout_method:z.string().trim().min(2).max(100),
+      paid_amount_cents:z.number().int().nonnegative(),
+      currency:z.string().trim().max(10).optional(),
+      proof_media_ids:z.array(idSchema).optional(),
+      note:z.string().trim().max(1000).optional(),
+    }),(db,a,b)=>resolveIncidentCompensation(db,a,idSchema.parse(incResolve[1]),b));
+  }
+  const meIncRead=path.match(/^\/me\/incidents\/([a-f0-9-]{36})$/i);
+  if(method==="GET" && meIncRead) {
+    return json(await transaction(db=>customerReadIncident(db,actorRequired(actor),idSchema.parse(meIncRead[1]))));
+  }
+  const meIncResp=path.match(/^\/me\/incidents\/([a-f0-9-]{36})\/response$/i);
+  if(method==="POST" && meIncResp) {
+    return extraWrite(req,path,actor,z.object({
+      decision:z.enum(["accept","reject"]),
+      note:z.string().trim().max(1000).optional(),
+    }),(db,a,b)=>customerRespondIncident(db,a,idSchema.parse(meIncResp[1]),b));
+  }
+  const refundPrev=path.match(/^\/orders\/([a-f0-9-]{36})\/refund-preview$/i);
+  if(method==="GET" && refundPrev) {
+    return json(await transaction(async db=>{
+      const a=actorRequired(actor);
+      const ordId=idSchema.parse(refundPrev[1]);
+      if(a.kind==="customer") {
+        await one(db,"select id from orders where id=$1 and org_id=$2",[ordId,organization(a)]);
+      } else {
+        role(a,"support","finance","super_admin");
+      }
+      const preview=await computeOrderRefundStage(db,ordId,{
+        platform_fault:url.searchParams.get("platform_fault")==="1",
+        restricted_item:url.searchParams.get("restricted_item")==="1",
+      });
+      return {...preview,stage:preview};
+    }));
+  }
+  const afterSales=path.match(/^\/orders\/([a-f0-9-]{36})\/after-sales$/i);
+  if(method==="POST" && afterSales) {
+    return extraWrite(req,path,actor,z.object({
+      kind:z.enum(["re_inspect","service_refund"]).optional(),
+      resolution_type:z.enum(["re_inspect","service_refund"]).optional(),
+      reason:z.string().trim().min(2).max(1000),
+      platform_fault:z.boolean().optional(),
+      restricted_item:z.boolean().optional(),
+    }),(db,a,b)=>requestOrderAfterSales(db,a,idSchema.parse(afterSales[1]),b),201);
+  }
+  const staffCloseOrder=path.match(/^\/staff\/orders\/([a-f0-9-]{36})\/close$/i);
+  if(method==="POST" && staffCloseOrder) {
+    return extraWrite(req,path,actor,z.object({
+      revision:revSchema.optional(),
+    }),(db,a,b)=>closeCompletedOrder(db,a,idSchema.parse(staffCloseOrder[1]),b));
+  }
+  const staffResolveDispute=path.match(/^\/staff\/disputes\/([^/]+)\/resolve$/i);
+  if(method==="POST" && staffResolveDispute) {
+    return extraWrite(req,path,actor,z.object({
+      decision:z.enum(["release_freeze","maintain_hold"]),
+      reason:z.string().trim().min(2).max(1000),
+    }),(db,a,b)=>resolvePaymentDispute(db,a,decodeURIComponent(staffResolveDispute[1]),b));
+  }
   const cancel=path.match(/^\/orders\/([a-f0-9-]{36})\/cancel$/i);
   if(method==="POST" && cancel) return extraWrite(req,path,actor,z.object({revision:revSchema}),(db,a,b)=>cancelOrder(db,a,idSchema.parse(cancel[1]),b.revision));
   const hold=path.match(/^\/staff\/orders\/([a-f0-9-]{36})\/(hold|resume)$/i);

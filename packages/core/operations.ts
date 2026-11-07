@@ -2,7 +2,81 @@ import { z } from "zod";
 import type { DB } from "../db";
 import { audit, code, event, guard, hash, lock, one, organization, revision, role, uuid, type Actor } from "./common";
 import { activatePaidOrder, priceSchema, readyOrder, templateSchema } from "./orders";
-import { requireSpace } from "./storage";
+import { assertItemNotFrozen, requireSpace } from "./storage";
+
+export async function computeOrderRefundStage(
+  db:DB,
+  orderId:string,
+  opts?:{platform_fault?:boolean;restricted_item?:boolean}
+) {
+  const o=await one<{id:string;state:string;paid_at:Date|null;price_cents:number|null}>(
+    db,
+    "select id,state,paid_at,price_cents from orders where id=$1",
+    [orderId]
+  );
+  const {assigned_count,received_pkg_count,started_task_count}=await one<{assigned_count:number;received_pkg_count:number;started_task_count:number}>(
+    db,
+    `select
+       (select count(*)::int from order_lines l join order_line_item_links a on a.order_line_id=l.id and a.unlinked_at is null where l.order_id=$1) assigned_count,
+       (select count(*)::int from advice_orders ao join tracking_records tr on tr.advice_id=ao.advice_id where ao.order_id=$1 and tr.package_id is not null) received_pkg_count,
+       (select count(*)::int from order_lines l join inspection_tasks t on t.order_line_id=l.id where l.order_id=$1 and t.state in ('IN_PROGRESS','SUBMITTED','QA_APPROVED')) started_task_count`,
+    [orderId]
+  );
+  const {paid_cents,refundable_cents}=await one<{paid_cents:number;refundable_cents:number}>(
+    db,
+    `select
+       coalesce(sum(p.amount_cents),0)::int paid_cents,
+       coalesce(sum(p.amount_cents - coalesce((select sum(r.amount_cents) from refunds r where r.payment_id=p.id and r.state in ('approved','succeeded')),0)),0)::int refundable_cents
+     from inspection_quotes q
+     join charge_items c on c.inspection_quote_id=q.id
+     join payments p on p.charge_item_id=c.id
+     where q.order_id=$1 and p.state in ('succeeded','partially_refunded')`,
+    [orderId]
+  );
+  let stage:"before_receipt"|"received_before_inspection"|"inspecting"|"report_published"|"restricted_item";
+  let refundableRatio:number;
+  let policySummary:string;
+  if(opts?.restricted_item) {
+    stage="restricted_item";
+    refundableRatio=1;
+    policySummary="Restricted item unable to inspect: 100% service fee refund";
+  } else if(["report_ready","action_pending","closed"].includes(o.state)) {
+    stage="report_published";
+    refundableRatio=opts?.platform_fault?1:0;
+    policySummary=opts?.platform_fault
+      ?"Report published with verified platform error: 100% service fee refund"
+      :"Report published: 0% standard refund (re-inspection or platform-fault review available)";
+  } else if(["inspecting","qa_review"].includes(o.state) || started_task_count>0) {
+    stage="inspecting";
+    refundableRatio=opts?.platform_fault?1:0.5;
+    policySummary=opts?.platform_fault
+      ?"Inspection in progress with platform fault: 100% service fee refund"
+      :"Inspection in progress (before report publication): 50% service fee refund";
+  } else if(assigned_count>0 || received_pkg_count>0) {
+    stage="received_before_inspection";
+    refundableRatio=1;
+    policySummary="Received at warehouse before inspection starts: 100% service fee refund (outbound shipping billed separately)";
+  } else {
+    stage="before_receipt";
+    refundableRatio=1;
+    policySummary="Before warehouse receipt: 100% service fee refund";
+  }
+  const recommendedRefundCents=Math.min(refundable_cents,Math.round(paid_cents*refundableRatio));
+  return {
+    order_id:o.id,
+    state:o.state,
+    stage,
+    refundable_ratio:refundableRatio,
+    refund_rate_pct:Math.round(refundableRatio*100),
+    paid_cents,
+    already_refunded_cents:Math.max(0,paid_cents-refundable_cents),
+    refundable_cents,
+    recommended_refund_cents:recommendedRefundCents,
+    policy_summary:policySummary,
+    assigned_count,
+    started_task_count,
+  };
+}
 
 export async function cancelOrder(db:DB,actor:Actor,id:string,rev:number) {
   const org=organization(actor);
@@ -11,6 +85,7 @@ export async function cancelOrder(db:DB,actor:Actor,id:string,rev:number) {
   revision(o.revision,rev);
   guard(["draft","awaiting_payment","awaiting_samples","queued","inspecting","qa_review","on_hold"].includes(o.state),
     "CANCELLATION_UNAVAILABLE","Contact support about an already completed order.");
+  const preview=o.paid_at?await computeOrderRefundStage(db,id):null;
   await db.query(`update charge_items c set voided_at=now() from inspection_quotes q where q.id=c.inspection_quote_id
     and q.order_id=$1 and c.applied_payment_id is null and c.voided_at is null`,[id]);
   await db.query(`update inspection_tasks t set state='VOID',revision=t.revision+1 from order_lines l
@@ -19,11 +94,107 @@ export async function cancelOrder(db:DB,actor:Actor,id:string,rev:number) {
     where r.group_id=g.id and g.order_line_id=l.id and l.order_id=$1 and r.released_at is null`,[id]);
   await db.query("update order_blocks set resolved_at=now() where order_id=$1 and resolved_at is null",[id]);
   await db.query("update orders set state='cancelled',held_at=null,held_from_state=null,hold_reason=null,revision=revision+1 where id=$1",[id]);
-  if(o.paid_at) await db.query(`insert into tickets(id,public_no,org_id,order_id,category,subject)
-    values($1,$2,$3,$4,'payment_refund','Review cancellation and refundable amount')`,[uuid(),code("C-"),org,id]);
-  await audit(db,actor,"cancel_order","orders",id);
+  if(o.paid_at && preview) {
+    await db.query(
+      `insert into tickets(id,public_no,org_id,order_id,category,subject,details)
+       values($1,$2,$3,$4,'payment_refund','Review cancellation and refundable amount',$5)`,
+      [
+        uuid(),
+        code("C-"),
+        org,
+        id,
+        {
+          stage:preview.stage,
+          refundable_ratio:preview.refundable_ratio,
+          recommended_refund_cents:preview.recommended_refund_cents,
+          paid_cents:preview.paid_cents,
+        },
+      ]
+    );
+  }
+  await audit(db,actor,"cancel_order","orders",id,preview?{stage:preview.stage,recommended_refund_cents:preview.recommended_refund_cents}:undefined);
   await event(db,"order.cancelled",{order_id:id});
-  return {state:"cancelled"};
+  return {
+    state:"cancelled",
+    ...(preview?{
+      refund_stage:preview.stage,
+      refundable_ratio:preview.refundable_ratio,
+      recommended_refund_cents:preview.recommended_refund_cents,
+    }:{}),
+  };
+}
+
+export async function requestOrderAfterSales(
+  db:DB,
+  actor:Actor,
+  orderId:string,
+  input:{
+    kind?:"re_inspect"|"service_refund";
+    resolution_type?:"re_inspect"|"service_refund";
+    reason:string;
+    platform_fault?:boolean;
+    restricted_item?:boolean;
+  }
+) {
+  const kind=input.kind??input.resolution_type??"service_refund";
+  const org=actor.kind==="customer"?organization(actor):null;
+  if(org===null) role(actor,"support","super_admin");
+  const o=await one<{id:string;org_id:string;state:string}>(
+    db,
+    "select id,org_id,state from orders where id=$1 and ($2::uuid is null or org_id=$2)",
+    [orderId,org]
+  );
+  await lock(db,"org:"+o.org_id);
+  if(kind==="re_inspect") {
+    guard(["report_ready","action_pending"].includes(o.state),"REINSPECT_UNAVAILABLE","Re-inspection is only available after a report has been published.");
+  }
+  const preview=await computeOrderRefundStage(db,orderId,{
+    platform_fault:input.platform_fault,
+    restricted_item:input.restricted_item,
+  });
+  const ticketId=uuid(),publicNo=code("TKT-");
+  const category=kind==="re_inspect"?"measurement_dispute":"payment_refund";
+  const subject=kind==="re_inspect"?"After-sales re-inspection request":"Stage-based service refund request";
+  await db.query(
+    `insert into tickets(id,public_no,org_id,order_id,category,state,subject,details,next_action_at)
+     values($1,$2,$3,$4,$5,'open',$6,$7,now()+interval '24 hours')`,
+    [
+      ticketId,
+      publicNo,
+      o.org_id,
+      orderId,
+      category,
+      subject,
+      {
+        after_sales_kind:kind,
+        reason:input.reason.trim(),
+        platform_fault:Boolean(input.platform_fault),
+        restricted_item:Boolean(input.restricted_item),
+        stage:preview.stage,
+        refundable_ratio:preview.refundable_ratio,
+        recommended_refund_cents:preview.recommended_refund_cents,
+      },
+    ]
+  );
+  await db.query(
+    `insert into ticket_events(id,ticket_id,actor_type,actor_id,kind,body)
+     values($1,$2,$3,$4,'message',$5)`,
+    [uuid(),ticketId,actor.kind==="staff"?"staff":"customer",actor.id,input.reason.trim()]
+  );
+  await audit(db,actor,"request_order_after_sales","orders",orderId,{
+    ticket_id:ticketId,
+    kind,
+    stage:preview.stage,
+    recommended_refund_cents:preview.recommended_refund_cents,
+  });
+  return {
+    ticket_id:ticketId,
+    public_no:publicNo,
+    ticket_no:publicNo,
+    kind,
+    resolution_type:kind,
+    ...preview,
+  };
 }
 export async function holdOrder(db:DB,actor:Actor,id:string,reason:string) {
   role(actor,"receiver","warehouse_admin","inspector","reviewer","support","finance","template_admin","super_admin");
@@ -214,6 +385,7 @@ export async function moveItem(db:DB,actor:Actor,id:string,rev:number,location:s
   const w=await one(db,"select * from warehouse_items where id=$1 for update",[id]);
   revision(w.revision,rev);
   guard(["stored","received"].includes(w.custody_state),"ITEM_UNAVAILABLE","This item is not in storage.");
+  await assertItemNotFrozen(db,[id],"ITEM_UNAVAILABLE");
   guard(w.location_id!==location,"LOCATION_UNCHANGED","Choose a different storage location.");
   await requireSpace(db,location,1);
   await db.query("update warehouse_items set location_id=$2,revision=revision+1 where id=$1",[id,location]);

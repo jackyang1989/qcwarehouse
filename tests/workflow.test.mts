@@ -3987,4 +3987,410 @@ test("TASK-086..100 & TASK-160: per-item dispositions, shipping rates & calculat
   assert.equal(dispatchReconRow.allocated_cents+dispatchReconRow.unallocated_cents,dispatchReconRow.amount_cents);
 });
 
+test("Stocktake, warehouse incident compensation, stage refunds, dispute freezes, and order closure (TASK-171, TASK-101..110, TASK-157, T33..T35, T52..T53, T102..T103)",async t=>{
+  const {c,terms}=await signCustomer();
+  const termsId=terms.find((x:{kind:string})=>x.kind==="terms")!.id;
+  const stdOffer=(await c.fetch("/catalog")).offers.find((o:{sku_code:string})=>o.sku_code==="apparel-inspection-1")!;
+  const receiving=await staffLogin("receiving");
+  const inspector=await staffLogin("inspector");
+  const reviewer=await staffLogin("reviewer");
+  const admin=await staffLogin("admin");
+  const addr=(await c.fetch("/me/receiving-address")).warehouse_address.id as string;
+  const desk=await receiving.fetch("/staff/desk");
+  const locId=(desk.locations.find((l:{code:string})=>l.code==="R-01")??desk.locations[0]).id as string;
+
+  // 1. T33: Stage-based refund policy before_receipt (100%)
+  const {draft:oBefore}=await createAndPay(c,[{category_id:stdOffer.category_id,offer_id:stdOffer.offer_id,quantity:1,attributes:{name:"Stage Before Receipt"}}],terms);
+  const prevBefore=await c.fetch(`/orders/${oBefore.id}/refund-preview`);
+  assert.equal(prevBefore.stage.stage,"before_receipt");
+  assert.equal(prevBefore.stage.refund_rate_pct,100);
+  assert.equal(prevBefore.stage.recommended_refund_cents,prevBefore.stage.paid_cents);
+
+  // 2. Receive physical items for Order oMain (2 items) and verify received_before_inspection (100%) -> inspecting (50%) -> report_published (0% / 100% platform fault)
+  const {draft:oMain}=await createAndPay(c,[{category_id:stdOffer.category_id,offer_id:stdOffer.offer_id,quantity:2,attributes:{name:"Stocktake & Incident Jacket"}}],terms);
+  const trk="SF"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const adv=await c.fetch("/me/parcels",{address_id:addr,tracking_no:trk,carrier_code:"sf",order_ids:[oMain.id]},"POST",201);
+  const pkg=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:trk,carrier_code:"sf",advice_id:adv.id,weight_g:950,outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+  const codeA="S-"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const codeB="S-"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const unpacked=await receiving.fetch(`/staff/packages/${pkg.id}/items`,{
+    revision:pkg.revision,
+    items:[{code:codeA,location_id:locId},{code:codeB,location_id:locId}],
+  },"POST",201);
+  const itemA=unpacked.item_ids[0] as string;
+  const itemB=unpacked.item_ids[1] as string;
+
+  const prevReceived=await c.fetch(`/orders/${oMain.id}/refund-preview`);
+  assert.equal(prevReceived.stage.stage,"received_before_inspection");
+  assert.equal(prevReceived.stage.refund_rate_pct,100);
+
+  // Identify both items onto oMain and start inspection -> stage becomes inspecting (50%)
+  const positions=(await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:codeA}))).positions
+    .filter((p:{public_no:string})=>p.public_no===oMain.public_no);
+  await receiving.fetch(`/staff/items/${itemA}/identify`,{
+    revision:1,order_line_id:positions[0].order_line_id,expected_item_id:positions[0].id,matches_advice:true,media_ids:[await receiving.photo("label_photo")],
+  });
+  await receiving.fetch(`/staff/items/${itemB}/identify`,{
+    revision:1,order_line_id:positions[1].order_line_id,expected_item_id:positions[1].id,matches_advice:true,media_ids:[await receiving.photo("label_photo")],
+  });
+  const staffTasks=(await inspector.fetch("/staff/desk")).tasks.filter((tk:{public_no:string})=>tk.public_no===oMain.public_no);
+  assert.equal(staffTasks.length,2);
+  const started0=await inspector.fetch(`/staff/inspection-tasks/${staffTasks[0].id}/start`,{revision:staffTasks[0].revision});
+
+  const prevInspecting=await c.fetch(`/orders/${oMain.id}/refund-preview`);
+  assert.equal(prevInspecting.stage.stage,"inspecting");
+  assert.equal(prevInspecting.stage.refund_rate_pct,50);
+  assert.equal(prevInspecting.stage.recommended_refund_cents,Math.round(prevInspecting.stage.paid_cents*0.5));
+
+  // Complete and publish report -> stage becomes report_published (0% standard, 100% platform fault)
+  for(let idx=0;idx<staffTasks.length;idx++) {
+    const tk=staffTasks[idx];
+    const startRev=idx===0?started0.revision:(await inspector.fetch(`/staff/inspection-tasks/${tk.id}/start`,{revision:tk.revision})).revision;
+    const view=await inspector.fetch(`/staff/inspection-tasks/${tk.id}`);
+    const resultsPayload=[];
+    for(const comp of view.components.map((m:{id:string})=>m.id)) {
+      for(const ch of view.content.checks) {
+        resultsPayload.push({
+          item_key:ch.key,component:comp,attempt:1,status:"RECORDED",
+          typed_value:ch.type==="boolean"?true:ch.type==="number"?52:"OK",
+          ...(ch.unit?{unit:ch.unit}:{}),
+          method:ch.method,evidence_ids:[await inspector.photo("shot")],is_final:true,
+        });
+      }
+    }
+    const saved=await inspector.fetch(`/staff/inspection-tasks/${tk.id}/results`,{revision:startRev,results:resultsPayload},"PUT");
+    await inspector.fetch(`/staff/inspection-tasks/${tk.id}/submit`,{revision:saved.revision});
+  }
+  const ordReady=await c.fetch(`/orders/${oMain.id}`);
+  const repSub=await inspector.fetch(`/staff/orders/${oMain.id}/report/submit`,{revision:ordReady.revision,task_ids:staffTasks.map((tk:{id:string})=>tk.id)});
+  await reviewer.fetch(`/staff/reports/${repSub.id}/approve`,{revision:1,checklist:["reviewed_en","evidence_checked"]},"POST",202);
+  for(let i=0;i<50;i++){if(!await workOnce())break;}
+
+  const prevPublished=await c.fetch(`/orders/${oMain.id}/refund-preview`);
+  assert.equal(prevPublished.stage.stage,"report_published");
+  assert.equal(prevPublished.stage.refund_rate_pct,0);
+  assert.equal(prevPublished.stage.recommended_refund_cents,0);
+  const prevFault=await c.fetch(`/orders/${oMain.id}/refund-preview?platform_fault=1`);
+  assert.equal(prevFault.stage.refund_rate_pct,100);
+  assert.equal(prevFault.stage.recommended_refund_cents,prevFault.stage.paid_cents);
+
+  // T52: Customer requests after-sales re-inspection
+  const afterSales=await c.fetch(`/orders/${oMain.id}/after-sales`,{
+    resolution_type:"re_inspect",
+    reason:"Please re-verify sleeve measurement on Jacket-A",
+  },"POST",201);
+  assert.match(afterSales.ticket_no,/^TKT-/);
+  assert.equal(afterSales.resolution_type,"re_inspect");
+
+  // 3. TASK-171 (T102): Stocktake creation, concurrent move triggering recount_required, missing item freezing outbound/move, found unfreezing, and independent supervisor approval
+  // Move itemA and itemB to a dedicated newly-created location so the stocktake snapshot contains exactly [itemA, itemB]
+  const stLocBatch=await admin.fetch("/staff/admin/storage/locations",{
+    prefix:"Z",zone:"post_inspection",rack:99,level:1,start:1,end:2,capacity:10,notes:"Stocktake test locations",
+  });
+  const stLoc1=stLocBatch.added[0] ?? (await admin.fetch("/staff/admin/storage/locations")).rows.find((r:{code:string})=>r.code==="Z-99-01-01")!;
+  const stLoc2=stLocBatch.added[1] ?? (await admin.fetch("/staff/admin/storage/locations")).rows.find((r:{code:string})=>r.code==="Z-99-01-02")!;
+  for(const itId of [itemA,itemB]) {
+    const rev=(await pool.query<{revision:number}>("select revision from warehouse_items where id=$1",[itId])).rows[0].revision;
+    await receiving.fetch("/staff/storage/move",{item_id:itId,revision:rev,location_id:stLoc1.id});
+  }
+
+  const stCreated=await receiving.fetch("/staff/stocktakes",{
+    location_ids:[stLoc1.id],
+    note:"Routine post-inspection stocktake",
+  },"POST",201);
+  const stId=stCreated.id;
+  assert.ok(stCreated.item_ids.includes(itemA));
+  assert.ok(stCreated.item_ids.includes(itemB));
+
+  // Simulate concurrent move of itemA after stocktake snapshot -> scanning itemA as missing at old location detects concurrent movement and requires recount
+  const curItemA=await pool.query<{revision:number}>("select revision from warehouse_items where id=$1",[itemA]);
+  await receiving.fetch("/staff/storage/move",{item_id:itemA,revision:curItemA.rows[0].revision,location_id:stLoc2.id});
+
+  const scanConcurrent=await receiving.fetch(`/staff/stocktakes/${stId}/scan`,{
+    item_id:itemA,
+    status:"missing",
+  });
+  assert.equal(scanConcurrent.state,"recount_required","Concurrent move after snapshot must mark item recount_required (T102)");
+  assert.equal(scanConcurrent.recount_required,true);
+
+  // Recount itemA at its actual new location -> matched
+  const scanRecounted=await receiving.fetch(`/staff/stocktakes/${stId}/scan`,{
+    item_id:itemA,
+    status:"matched",
+    actual_location:stLoc2.id,
+  });
+  assert.equal(scanRecounted.state,"matched");
+
+  // Mark itemB as missing -> state becomes investigating and freezes itemB from disposition/move/outbound
+  const scanMissing=await receiving.fetch(`/staff/stocktakes/${stId}/scan`,{
+    item_id:itemB,
+    status:"missing",
+    note:"Not found on shelf during initial count",
+  });
+  assert.equal(scanMissing.state,"investigating");
+  assert.equal(scanMissing.frozen,true);
+
+  const frozenDispErr=await c.fetch(`/orders/${oMain.id}/dispositions`,{
+    item_id:itemB,
+    action:"to_forwarder",
+    terms_version_id:termsId,
+    destination:{recipient:"Fwd",phone:"13800001111",address:"Shenzhen Fwd",member_code:"FWD-B"},
+  },"POST",409);
+  assert.equal(frozenDispErr.error.code,"ITEM_UNAVAILABLE");
+  const curItemB=await pool.query<{revision:number}>("select revision from warehouse_items where id=$1",[itemB]);
+  const frozenMoveErr=await receiving.fetch("/staff/storage/move",{item_id:itemB,revision:curItemB.rows[0].revision,location_id:stLoc2.id},"POST",409);
+  assert.equal(frozenMoveErr.error.code,"ITEM_UNAVAILABLE");
+
+  // Submit stocktake with discrepancy -> state becomes submitted; creator cannot self-approve
+  const stSubmitted=await receiving.fetch(`/staff/stocktakes/${stId}/submit`,{reason:"1 missing item"});
+  assert.equal(stSubmitted.state,"submitted");
+  const selfApproveSt=await receiving.fetch(`/staff/stocktakes/${stId}/approve`,{decision:"approve",reason:"Self approve"},"POST",403);
+  assert.equal(selfApproveSt.error.code,"SELF_REVIEW_FORBIDDEN");
+
+  // Recover itemB (found) before final approval -> unfreezes itemB
+  const scanFound=await receiving.fetch(`/staff/stocktakes/${stId}/scan`,{
+    item_id:itemB,
+    status:"found",
+    actual_location:stLoc1.id,
+    note:"Found on back of shelf Z-99-01-01",
+  });
+  assert.equal(scanFound.state,"matched");
+  assert.equal(scanFound.recovered,true);
+
+  const adminApproveSt=await admin.fetch(`/staff/stocktakes/${stId}/approve`,{decision:"approve",reason:"Approved after item recovery"});
+  assert.equal(adminApproveSt.state,"approved");
+
+  // 4. TASK-171 (T103): Warehouse incident & compensation workflow on itemB
+  const incCreated=await receiving.fetch("/staff/incidents",{
+    item_id:itemB,
+    kind:"damage",
+    summary_en:"Minor water stain on outer sleeve during storage move",
+  },"POST",201);
+  const incId=incCreated.id;
+  assert.equal(incCreated.state,"open");
+
+  // While incident is unresolved, itemB is frozen again
+  const incFrozenErr=await c.fetch(`/orders/${oMain.id}/dispositions`,{
+    item_id:itemB,
+    action:"to_forwarder",
+    terms_version_id:termsId,
+    destination:{recipient:"Fwd",phone:"13800001111",address:"Shenzhen Fwd",member_code:"FWD-B"},
+  },"POST",409);
+  assert.equal(incFrozenErr.error.code,"ITEM_UNAVAILABLE");
+
+  // Propose resolution separating service fee refund (within Stripe balance) and merchandise compensation
+  // First verify excessive service_refund_cents (> paid order balance) is rejected with 409 REFUND_EXCEEDS_PAYMENT
+  const excessSrvErr=await admin.fetch(`/staff/incidents/${incId}/propose`,{
+    service_refund_cents:999999,
+    compensation_cents:1500,
+    currency:"USD",
+    summary_en:"Excessive service refund test",
+  },"POST",409);
+  assert.equal(excessSrvErr.error.code,"REFUND_EXCEEDS_PAYMENT");
+
+  const proposedInc=await receiving.fetch(`/staff/incidents/${incId}/propose`,{
+    service_refund_cents:500,
+    compensation_cents:2500,
+    currency:"USD",
+    summary_en:"Refund $5 service fee + $25 merchandise compensation",
+  });
+  assert.equal(proposedInc.state,"proposed");
+
+  // Non-finance staff (receiving) listing incidents sees resolution.financial_restricted = true and undefined compensation_cents
+  const recvIncList=await receiving.fetch("/staff/incidents");
+  const recvIncRow=recvIncList.rows.find((r:{id:string})=>r.id===incId)!;
+  assert.equal(recvIncRow.resolution.financial_restricted,true);
+  assert.equal(recvIncRow.resolution.compensation_cents,undefined);
+
+  // Admin (finance/super_admin) approves independently
+  const approvedInc=await admin.fetch(`/staff/incidents/${incId}/approve`,{
+    reason:"Approved $5 service refund and $25 compensation",
+  });
+  assert.equal(approvedInc.state,"approved_awaiting_customer");
+  assert.ok(approvedInc.service_refund_id,"Service refund creates a linked refund record without mixing merchandise compensation into Stripe refund");
+
+  // Verify the created refund record only has 500 cents (service fee), NOT 3000 cents
+  const srvRefundRow=await pool.query<{amount_cents:number}>("select amount_cents from refunds where id=$1",[approvedInc.service_refund_id]);
+  assert.equal(srvRefundRow.rows[0].amount_cents,500);
+
+  // Customer reads and accepts incident proposal -> state becomes awaiting_payout (NOT paid yet!)
+  const custIncView=await c.fetch(`/me/incidents/${incId}`);
+  assert.equal(custIncView.service_refund_cents,500);
+  assert.equal(custIncView.compensation_cents,2500);
+  const custAcceptInc=await c.fetch(`/me/incidents/${incId}/response`,{
+    decision:"accept",
+    note:"I accept the $5 service refund + $25 compensation.",
+  });
+  assert.equal(custAcceptInc.state,"awaiting_payout");
+  assert.equal(custAcceptInc.paid,false,"Accepting compensation proposal must not mark payout as completed until payment_proof is recorded (T103)");
+
+  // Admin records actual payout proof -> state becomes resolved and paid = true, unfreezing itemB
+  const resolvedInc=await admin.fetch(`/staff/incidents/${incId}/resolve`,{
+    payout_reference:"BANK-TXN-20261107-8899",
+    payout_method:"bank_transfer",
+    paid_amount_cents:2500,
+    note:"Payout transferred and verified",
+  });
+  assert.equal(resolvedInc.state,"resolved");
+  assert.equal(resolvedInc.paid,true);
+
+  // 5. TASK-105 (T53): Closing order while items are still in storage fails with 409 ITEMS_STILL_IN_STORAGE
+  const closeEarlyErr=await admin.fetch(`/staff/orders/${oMain.id}/close`,{},"POST",409);
+  assert.equal(closeEarlyErr.error.code,"ITEMS_STILL_IN_STORAGE");
+
+  // 6. TASK-109, TASK-110 (T34, T35): Dispatch batch payment, Stripe dashboard refund sync (T34), and Stripe dispute freeze/unfreeze (T35)
+  const dispA=await c.fetch(`/orders/${oMain.id}/dispositions`,{
+    item_id:itemA,
+    action:"to_forwarder",
+    terms_version_id:termsId,
+    destination:{recipient:"Fwd",phone:"13800001111",address:"Shenzhen Fwd",member_code:"FWD-MAIN"},
+  },"POST",201);
+  const dispB=await c.fetch(`/orders/${oMain.id}/dispositions`,{
+    item_id:itemB,
+    action:"to_forwarder",
+    terms_version_id:termsId,
+    destination:{recipient:"Fwd",phone:"13800001111",address:"Shenzhen Fwd",member_code:"FWD-MAIN"},
+  },"POST",201);
+  const batchMain=await c.fetch("/dispatch-batches",{disposition_ids:[dispA.id,dispB.id]},"POST",201);
+  const confirmedBatch=await c.fetch(`/dispatch-batches/${batchMain.batch_id}/confirm`,{revision:batchMain.revision});
+  const rateId=(await pool.query<{id:string}>("select id from shipping_rate_versions order by version desc limit 1")).rows[0].id;
+  const qMain=await receiving.fetch(`/staff/dispatch-batches/${batchMain.batch_id}/quote`,{
+    revision:confirmedBatch.revision,
+    rate_version_id:rateId,
+    parcels:[{item_ids:[itemA,itemB],weight_g:950}],
+  });
+  const accMain=await c.fetch(`/quotes/${qMain.quote_id}/accept`,{revision:qMain.revision});
+  const chkMain=await c.fetch(`/charges/${accMain.charge_item_id}/checkout`,{quote_revision:qMain.revision});
+  await c.fetch(`/checkout/demo/${chkMain.attempt_id}`,{});
+
+  const payRow=(await pool.query<{id:string;provider_payment_intent_id:string}>(
+    "select id,provider_data->>'payment_intent' as provider_payment_intent_id from payments where id=$1",[chkMain.attempt_id]
+  )).rows[0];
+  const oBeforePayRow=(await pool.query<{id:string;provider_payment_intent_id:string}>(
+    `select p.id,p.provider_data->>'payment_intent' as provider_payment_intent_id
+     from inspection_quotes q join charge_items c on c.inspection_quote_id=q.id join payments p on p.charge_item_id=c.id
+     where q.order_id=$1 limit 1`,
+    [oBefore.id]
+  )).rows[0];
+
+  setFixtureEnv(t,{QCW_DEMO:"0",STRIPE_SECRET_KEY:"sk_test_fixture",STRIPE_WEBHOOK_SECRET:"whsec_fixture"});
+  function sendStripeWebhook(payload:object) {
+    const body=JSON.stringify(payload);
+    const signature=Stripe.webhooks.generateTestHeaderString({payload:body,secret:"whsec_fixture"});
+    return handle(new Request(origin+"/api/v1/webhooks/stripe",{method:"POST",headers:{"stripe-signature":signature},body}),"/webhooks/stripe");
+  }
+
+  // T34: Stripe dashboard direct refund (no pre-existing local refund row) creates provider_dashboard refund + reconciliation ticket
+  const extRefundId="re_dashboard_"+randomUUID().slice(0,8);
+  const refWebhookRes=await sendStripeWebhook({
+    id:"evt_ref_"+randomUUID(),
+    object:"event",
+    livemode:false,
+    type:"refund.created",
+    data:{object:{
+      id:extRefundId,
+      payment_intent:oBeforePayRow.provider_payment_intent_id,
+      amount:100,
+      currency:"usd",
+      status:"succeeded",
+      reason:"requested_by_customer",
+    }},
+  });
+  assert.equal(refWebhookRes.status,200);
+  const dashRefRow=await pool.query<{source:string;state:string}>("select source,state from refunds where provider_ref=$1",[extRefundId]);
+  assert.equal(dashRefRow.rowCount,1);
+  assert.equal(dashRefRow.rows[0].source,"provider_dashboard");
+  assert.equal(dashRefRow.rows[0].state,"succeeded");
+
+  // T35: Stripe charge.dispute.created freezes dispatch batch packing/handover and places linked order on_hold
+  const disputeId="dp_test_"+randomUUID().slice(0,8);
+  const dispCreatedRes=await sendStripeWebhook({
+    id:"evt_dp_open_"+randomUUID(),
+    object:"event",
+    livemode:false,
+    type:"charge.dispute.created",
+    data:{object:{
+      id:disputeId,
+      payment_intent:payRow.provider_payment_intent_id,
+      amount:qMain.amount_cents,
+      currency:"usd",
+      status:"needs_response",
+      reason:"fraudulent",
+    }},
+  });
+  assert.equal(dispCreatedRes.status,200);
+
+  // Order oMain is now on_hold due to payment_dispute
+  const oMainFrozen=await c.fetch(`/orders/${oMain.id}`);
+  assert.equal(oMainFrozen.state,"on_hold");
+
+  // Attempting to pack shipment while dispute is active fails with 409 SHIPMENT_BLOCKED
+  const batchBeforePack=await c.fetch(`/dispatch-batches/${batchMain.batch_id}`);
+  const packBlockedErr=await receiving.fetch(`/staff/dispatch-batches/${batchMain.batch_id}/parcels`,{
+    revision:batchBeforePack.revision,
+    quote_id:qMain.quote_id,
+    item_ids:[itemA,itemB],
+    weight_g:950,
+    packed_media_ids:[await receiving.photo("dispatch")],
+  },"POST",409);
+  assert.equal(packBlockedErr.error.code,"SHIPMENT_BLOCKED");
+
+  // Stripe sends charge.dispute.closed (won), but per T35 it must remain frozen until staff explicitly reviews and resolves
+  const dispClosedRes=await sendStripeWebhook({
+    id:"evt_dp_close_"+randomUUID(),
+    object:"event",
+    livemode:false,
+    type:"charge.dispute.closed",
+    data:{object:{
+      id:disputeId,
+      payment_intent:payRow.provider_payment_intent_id,
+      amount:qMain.amount_cents,
+      currency:"usd",
+      status:"won",
+      reason:"fraudulent",
+    }},
+  });
+  assert.equal(dispClosedRes.status,200);
+  const stillBlockedErr=await receiving.fetch(`/staff/dispatch-batches/${batchMain.batch_id}/parcels`,{
+    revision:batchBeforePack.revision,
+    quote_id:qMain.quote_id,
+    item_ids:[itemA,itemB],
+    weight_g:950,
+    packed_media_ids:[await receiving.photo("dispatch")],
+  },"POST",409);
+  assert.equal(stillBlockedErr.error.code,"SHIPMENT_BLOCKED","Closed dispute must remain frozen until staff review (T35)");
+
+  // Staff explicitly resolves the payment dispute and releases freeze
+  const resolvedDisp=await admin.fetch(`/staff/disputes/${disputeId}/resolve`,{
+    decision:"release_freeze",
+    reason:"Dispute won in Stripe; releasing shipment and order freeze",
+  });
+  assert.equal(resolvedDisp.state,"resolved_by_staff");
+
+  // Now pack and hand over [itemA, itemB] -> both items become outbound
+  const packedMain=await receiving.fetch(`/staff/dispatch-batches/${batchMain.batch_id}/parcels`,{
+    revision:batchBeforePack.revision,
+    quote_id:qMain.quote_id,
+    item_ids:[itemA,itemB],
+    weight_g:950,
+    packed_media_ids:[await receiving.photo("dispatch")],
+  },"POST",201);
+  const shipMainTrk="SF"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const handedMain=await receiving.fetch(`/staff/shipments/${packedMain.shipment_id}/handover`,{
+    revision:packedMain.revision,
+    item_ids:[itemA,itemB],
+    carrier_code:"sf",
+    tracking_no:shipMainTrk,
+    evidence_ids:[await receiving.photo("dispatch")],
+    handed_at:new Date().toISOString(),
+  });
+  assert.equal(handedMain.state,"shipped");
+
+  // 7. TASK-105 (T53): Now that all items of oMain are outbound, closing the order succeeds
+  const closedMain=await admin.fetch(`/staff/orders/${oMain.id}/close`,{});
+  assert.equal(closedMain.state,"closed");
+});
+
 test("all core operations have a validated success response",assertCoreCoverage);

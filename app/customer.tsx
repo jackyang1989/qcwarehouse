@@ -338,6 +338,7 @@ export function OrderView({number,section}:{number:string;section?:OrderSection}
         </Form>
         {openedCase&&<p role="status">Case <strong className="code">{openedCase}</strong> is open.</p>}
       </details>
+      {id&&<OrderAfterSalesAndRefundPanel orderId={id} orderState={o.state} onSaved={detail.reload}/>}
     </Panel>}
     {!section&&!["closed","cancelled","report_ready","action_pending"].includes(o.state)&&<Panel title="Order changes"><Action run={async()=>{
       if(!window.confirm("Cancel this inspection? Warehouse items remain available for disposition."))return;
@@ -345,6 +346,32 @@ export function OrderView({number,section}:{number:string;section?:OrderSection}
     }}>Cancel inspection</Action></Panel>}
     </>}
   </>;
+}
+function OrderAfterSalesAndRefundPanel({orderId,orderState,onSaved}:{orderId:string;orderState:string;onSaved:()=>void}) {
+  const preview=useLoad(!["draft","awaiting_payment"].includes(orderState)?`/orders/${orderId}/refund-preview`:null);
+  const [ticketNo,setTicketNo]=useState<string>();
+  const stage=preview.data?.stage;
+  return <details className="card"><summary>After-sales, re-inspection &amp; stage refund policy (§10.3)</summary>
+    {stage&&<p className="muted small">
+      Current stage: <strong>{label(stage.stage)}</strong> · Standard refund rate: <strong>{stage.refund_rate_pct}%</strong> · Paid: {usd(stage.paid_cents)} · Refunded: {usd(stage.already_refunded_cents)} · Standard refundable: <strong>{usd(stage.recommended_refund_cents)}</strong> ({stage.policy_summary})
+    </p>}
+    <Form key={ticketNo} label="Submit after-sales request" run={async f=>{
+      const res=await request(`/orders/${orderId}/after-sales`,"POST",{
+        resolution_type:text(f,"resolution_type"),
+        reason:text(f,"reason"),
+      });
+      setTicketNo(res.ticket_no);
+      preview.reload();
+      onSaved();
+    }}>
+      <Select name="resolution_type" label="Requested resolution" choices={[
+        {id:"re_inspect",label:"Request re-inspection of physical samples"},
+        {id:"service_refund",label:"Request inspection service fee refund"},
+      ]}/>
+      <Field name="reason" label="Reason and details"/>
+    </Form>
+    {ticketNo&&<p className="notice" role="status">After-sales case <strong className="code">{ticketNo}</strong> submitted.</p>}
+  </details>;
 }
 async function goCheckout(id:string,revision:number) {
   const c=await request("/charges/"+id+"/checkout","POST",{quote_revision:revision});

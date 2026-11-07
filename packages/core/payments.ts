@@ -4,7 +4,7 @@ import { appOrigin, requireCustomerActive, requireStaffMfa } from "./auth";
 import { audit, code, event, guard, hash, isDemo, lock, one, organization, role, uuid, type Actor } from "./common";
 import { stripeSettings } from "./integrations";
 import { activatePaidOrder, readyOrder } from "./orders";
-import { applyScopePositionsAndAdditions, type ScopeAddition } from "./operations";
+import { applyScopePositionsAndAdditions, computeOrderRefundStage, type ScopeAddition } from "./operations";
 const refundApprovalMfaMinutes=15;
 
 export async function orderPayment(db:DB,actor:Actor,id:string) {
@@ -156,7 +156,7 @@ export async function demoPay(db:DB,actor:Actor,id:string) {
   const org=organization(actor);
   const p=await one(db,"select p.* from payments p join charge_items c on c.id=p.charge_item_id where p.id=$1 and c.org_id=$2",[id,org]);
   guard(["requires_payment","succeeded"].includes(p.state),"PAYMENT_UNAVAILABLE","This checkout has ended.");
-  await applyPayment(db,id,"demo_"+id,{demo:true});
+  await applyPayment(db,id,"demo_"+id,{demo:true,payment_intent:"pi_demo_"+id});
   return {state:"paid"};
 }
 export function verifyStripe(raw:string,signature:string) {
@@ -201,31 +201,149 @@ export async function stripeEvent(db:DB,e:Stripe.Event) {
     }
   } else if(e.type==="charge.dispute.created" || e.type==="charge.dispute.closed" || e.type==="charge.dispute.updated") {
     const dispute=e.data.object;
-    const p=(await db.query(`select p.id,c.org_id from payments p join charge_items c on c.id=p.charge_item_id
-      where p.provider_data->>'payment_intent'=$1`,[typeof dispute.payment_intent==="string"?dispute.payment_intent:dispute.payment_intent?.id])).rows[0];
+    const p=(await db.query<{id:string;charge_item_id:string;org_id:string;inspection_quote_id:string|null;dispatch_quote_id:string|null}>(
+      `select p.id,p.charge_item_id,c.org_id,c.inspection_quote_id,c.dispatch_quote_id
+       from payments p join charge_items c on c.id=p.charge_item_id
+       where p.provider_data->>'payment_intent'=$1`,
+      [typeof dispute.payment_intent==="string"?dispute.payment_intent:dispute.payment_intent?.id]
+    )).rows[0];
     if(p) {
       await lock(db,"org:"+p.org_id);
       await db.query(`insert into payment_disputes(provider_id,payment_id,state,evidence_due_at,updated_at) values($1,$2,$3,$4,now())
         on conflict(provider_id) do update set state=excluded.state,evidence_due_at=excluded.evidence_due_at,updated_at=now()`,
-        [dispute.id,p.id,dispute.status,dispute.evidence_details.due_by?new Date(dispute.evidence_details.due_by*1000):null]);
+        [dispute.id,p.id,dispute.status,dispute.evidence_details?.due_by?new Date(dispute.evidence_details.due_by*1000):null]);
+      if(e.type==="charge.dispute.created") {
+        const linkedOrders=(await db.query<{order_id:string}>(
+          `select order_id from inspection_quotes where id=$1
+           union
+           select order_id from charge_allocations where charge_id=$2
+           union
+           select distinct l.order_id from dispatch_quote_versions dq
+           join dispatch_batch_items bi on bi.batch_id=dq.batch_id
+           join order_line_item_links a on a.item_id=bi.item_id and a.unlinked_at is null
+           join order_lines l on l.id=a.order_line_id
+           where dq.id=$3`,
+          [p.inspection_quote_id,p.charge_item_id,p.dispatch_quote_id]
+        )).rows.map(r=>r.order_id);
+        for(const ordId of linkedOrders) {
+          const ord=await one(db,"select id,state from orders where id=$1 for update",[ordId]);
+          if(["awaiting_payment","awaiting_samples","queued","inspecting","qa_review","report_ready","action_pending"].includes(ord.state)) {
+            await db.query(
+              "update orders set state='on_hold',held_at=now(),held_from_state=state,hold_reason='payment_dispute',revision=revision+1 where id=$1",
+              [ordId]
+            );
+          }
+          await db.query(
+            `insert into order_blocks(id,order_id,reason,object_key,opened_at)
+             values($1,$2,'payment_dispute',$3,now())
+             on conflict(order_id,reason,object_key) where resolved_at is null do nothing`,
+            [uuid(),ordId,dispute.id]
+          );
+        }
+        const existingTicket=(await db.query(
+          "select 1 from tickets where org_id=$1 and category='payment_refund' and details->>'dispute_id'=$2",
+          [p.org_id,dispute.id]
+        )).rowCount;
+        if(!existingTicket) {
+          await db.query(
+            `insert into tickets(id,public_no,org_id,order_id,category,subject,details)
+             values($1,$2,$3,$4,'payment_refund','Payment dispute opened',$5)`,
+            [
+              uuid(),
+              code("DSP-"),
+              p.org_id,
+              linkedOrders[0]??null,
+              {dispute_id:dispute.id,payment_id:p.id,charge_item_id:p.charge_item_id,linked_order_ids:linkedOrders,priority:"urgent"},
+            ]
+          );
+        }
+      }
     }
   } else if(e.type==="refund.created" || e.type==="refund.updated") {
     const r=e.data.object;
     const intent=typeof r.payment_intent==="string"?r.payment_intent:r.payment_intent?.id;
-    const p=(await db.query(`select p.id,c.org_id from payments p join charge_items c on c.id=p.charge_item_id
-      where p.provider_data->>'payment_intent'=$1`,[intent])).rows[0];
+    const p=(await db.query<{id:string;org_id:string;inspection_quote_id:string|null}>(
+      `select p.id,c.org_id,c.inspection_quote_id from payments p join charge_items c on c.id=p.charge_item_id
+       where p.provider_data->>'payment_intent'=$1`,
+      [intent]
+    )).rows[0];
     if(p) {
       await lock(db,"org:"+p.org_id);
       const state=r.status==="succeeded"?"succeeded":["failed","canceled"].includes(r.status??"")?"failed":"approved";
       const updated=await db.query(`update refunds set provider_ref=$2,state=$3 where payment_id=$4 and amount_cents=$5
         and (id::text=$1 or provider_ref=$2) and state in ('approved','succeeded','failed') and (state!='succeeded' or $3='succeeded')`,
         [r.metadata?.refund_id??"",r.id,state,p.id,r.amount]);
-      if(!updated.rowCount) await db.query(`insert into refunds(id,payment_id,source,amount_cents,reason,state,provider_ref)
-        values($1,$2,'provider_dashboard',$3,'Stripe dashboard',$4,$5) on conflict do nothing`,[uuid(),p.id,r.amount,state,r.id]);
+      if(!updated.rowCount) {
+        await db.query(`insert into refunds(id,payment_id,source,amount_cents,reason,state,provider_ref)
+          values($1,$2,'provider_dashboard',$3,'Stripe dashboard',$4,$5) on conflict do nothing`,[uuid(),p.id,r.amount,state,r.id]);
+        const orderId=p.inspection_quote_id
+          ?(await db.query<{order_id:string}>("select order_id from inspection_quotes where id=$1",[p.inspection_quote_id])).rows[0]?.order_id??null
+          :null;
+        const existingTicket=(await db.query(
+          "select 1 from tickets where org_id=$1 and category='payment_refund' and details->>'provider_ref'=$2",
+          [p.org_id,r.id]
+        )).rowCount;
+        if(!existingTicket) {
+          await db.query(
+            `insert into tickets(id,public_no,org_id,order_id,category,subject,details)
+             values($1,$2,$3,$4,'payment_refund','Reconcile Stripe dashboard refund',$5)`,
+            [uuid(),code("PAY-"),p.org_id,orderId,{payment_id:p.id,provider_ref:r.id,amount_cents:r.amount,source:"provider_dashboard"}]
+          );
+        }
+      }
     }
   }
   await db.query("update payment_events set processed_at=now() where provider='stripe' and event_id=$1",[e.id]);
   return {received:true};
+}
+export async function resolvePaymentDispute(
+  db:DB,
+  actor:Actor,
+  providerId:string,
+  input:{decision:"release_freeze"|"maintain_hold";reason:string}
+) {
+  role(actor,"finance","super_admin");
+  const d=await one<{provider_id:string;payment_id:string;state:string;org_id:string}>(
+    db,
+    `select d.provider_id,d.payment_id,d.state,c.org_id
+     from payment_disputes d join payments p on p.id=d.payment_id join charge_items c on c.id=p.charge_item_id
+     where d.provider_id=$1 for update of d`,
+    [providerId]
+  );
+  await lock(db,"org:"+d.org_id);
+  guard(
+    !["needs_response","under_review","warning_needs_response"].includes(d.state),
+    "DISPUTE_STILL_OPEN",
+    "Wait for the provider dispute to close before resolving the freeze."
+  );
+  if(input.decision==="release_freeze") {
+    await db.query("update payment_disputes set state='resolved_by_staff',updated_at=now() where provider_id=$1",[providerId]);
+    const blocks=(await db.query<{order_id:string}>(
+      "update order_blocks set resolved_at=now() where reason='payment_dispute' and object_key=$1 and resolved_at is null returning order_id",
+      [providerId]
+    )).rows;
+    for(const b of blocks) {
+      const rem=(await db.query("select 1 from order_blocks where order_id=$1 and resolved_at is null",[b.order_id])).rowCount;
+      if(!rem) {
+        const ord=await one(db,"select * from orders where id=$1 for update",[b.order_id]);
+        if(ord.state==="on_hold" && ord.hold_reason==="payment_dispute" && ord.held_from_state) {
+          await db.query(
+            `update orders set state=$2,
+               sla_due_at=case when sla_due_at is not null and held_at is not null then sla_due_at+greatest(now()-held_at,interval '0 seconds') else sla_due_at end,
+               held_at=null,held_from_state=null,hold_reason=null,revision=revision+1
+             where id=$1`,
+            [b.order_id,ord.held_from_state]
+          );
+        }
+      }
+    }
+  }
+  await audit(db,actor,"resolve_payment_dispute","payments",d.payment_id,{
+    provider_id:providerId,
+    decision:input.decision,
+    reason:input.reason.trim(),
+  });
+  return {provider_id:providerId,state:input.decision==="release_freeze"?"resolved_by_staff":d.state};
 }
 const refundableStates=["succeeded","partially_refunded"];
 const committedRefunds=`select coalesce(sum(r.amount_cents),0)::int from refunds r
@@ -236,7 +354,8 @@ export async function orderRefundPayments(db:DB,actor:Actor,number:string) {
   const rows=(await db.query(`select p.id,p.amount_cents,p.state,p.created_at,p.amount_cents-(${committedRefunds}) refundable_cents
     from inspection_quotes q join charge_items c on c.inspection_quote_id=q.id join payments p on p.charge_item_id=c.id
     where q.order_id=$1 and p.state=any($2::text[]) order by p.created_at desc`,[order.id,refundableStates])).rows;
-  return {order,rows};
+  const stage_preview=await computeOrderRefundStage(db,order.id);
+  return {order,rows,stage_preview};
 }
 export async function refundRequest(db:DB,actor:Actor,pid:string,cents:number,reason:string,orderId?:string) {
   role(actor,"support","super_admin");

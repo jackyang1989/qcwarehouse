@@ -110,99 +110,888 @@ export function HowItWorks() {
     <ol className="process-detail">{customerSteps.map(([title,body],index)=><li className="panel" key={title}><span className="symbol">{String(index+1).padStart(2,"0")}</span><div><h2>{title}</h2><p className="muted">{body}</p></div></li>)}</ol>
     <div className="actions"><Link className="button primary" href="/catalog">Find an inspection service</Link><Link href="/faq">Read frequently asked questions</Link></div></>;
 }
+const wizardCategoryCatalog=[
+  {key:"apparel",name:"Apparel",icon:"♧",fallbackState:"ACTIVE"},
+  {key:"footwear",name:"Footwear",icon:"◈",fallbackState:"PLANNED"},
+  {key:"bags",name:"Bags & Accessories",icon:"▢",fallbackState:"PLANNED"},
+  {key:"home",name:"Home & Lifestyle",icon:"⌂",fallbackState:"PLANNED"},
+  {key:"electronics",name:"Electronics",icon:"▤",fallbackState:"RESTRICTED"},
+] as const;
+
+const wizardServiceCards=[
+  {service:"compare",title:"Sample Comparison",desc:"Compare supplier samples under the same criteria.",icon:"≍",badge:"Recommended for supplier selection"},
+  {service:"inspection",title:"Product Inspection",desc:"Check individual physical items, measurements and visible defects.",icon:"⌕",badge:"For one or many items"},
+  {service:"reference_match",title:"Golden Sample Matching",desc:"Compare new items against a customer-approved reference.",icon:"▧",badge:"Consistency against reference"},
+] as const;
+
+const wizardCheckDefs=[
+  ["visual","Visual appearance & packaging","Document visible condition of sample and packaging"],
+  ["measure","Dimensions & size measurements","Tape-measure photos with units and method"],
+  ["seams","Seams & visible workmanship","Stitching, loose thread and observable finishing"],
+  ["labels","Tags & accessories","Check attached labels and included parts"],
+  ["closeups","Additional detail photographs","Optional evidence capture, subject to scope"],
+] as const;
+
 export function NewOrder() {
-  const {data,error}=useLoad("/catalog"),refs=useLoad("/me/reference-samples");
-  const [lines,setLines]=useState<Row[]>([]);
-  const [selected,setSelected]=useState("");
-  const [category,setCategory]=useState("");
+  const {data,error}=useLoad("/catalog");
+  const refs=useLoad("/me/reference-samples");
+  const receiving=useLoad("/me/receiving-address");
+  const terms=useLoad("/public/terms");
+  const providers=useLoad("/auth/providers");
+
+  const [step,setStep]=useState(0);
+  const [categoryKey,setCategoryKey]=useState<string>("apparel");
+  const [serviceKind,setServiceKind]=useState<"inspection"|"compare"|"reference_match">("inspection");
+  const [selectedOfferId,setSelectedOfferId]=useState("");
+  const [templateVariant,setTemplateVariant]=useState("basic");
+  const [qty,setQty]=useState(3);
+  const [itemName,setItemName]=useState("Heavyweight Cotton Hoodie");
+  const [supplierRef,setSupplierRef]=useState("SUP-CN-08");
+  const [baseSku,setBaseSku]=useState("SKU-101");
+  const [baseColor,setBaseColor]=useState("Black");
+  const [baseSize,setBaseSize]=useState("M");
+  const [productLink,setProductLink]=useState("");
+  const [toleranceMm,setToleranceMm]=useState("15");
+  const [referenceId,setReferenceId]=useState("");
+  const [sizeMismatchConfirmed,setSizeMismatchConfirmed]=useState(false);
+  const [itemRows,setItemRows]=useState<{sku:string;size:string;color:string}[]>([]);
+  const [showAllItems,setShowAllItems]=useState(false);
+  const [selectedChecks,setSelectedChecks]=useState<string[]>(["visual","measure","seams","labels"]);
   const [notes,setNotes]=useState("");
-  useEffect(()=>setSelected(new URLSearchParams(location.search).get("offer")??""),[]);
+  const [attachmentId,setAttachmentId]=useState<string>();
+  const [attachmentName,setAttachmentName]=useState<string>();
+  const [extraLines,setExtraLines]=useState<Row[]>([]);
+  const [consents,setConsents]=useState<Record<string,boolean>>({
+    scope_notice:true,samples_not_batch:true,seller_refund_is_mine:true,no_certification:true,restricted_items:true,
+  });
+  const [draftOrder,setDraftOrder]=useState<Row>();
+  const [serverQuote,setServerQuote]=useState<Row>();
+  const [submittedCharge,setSubmittedCharge]=useState<Row>();
+  const [busyMessage,setBusyMessage]=useState("");
+  const [wizardError,setWizardError]=useState("");
+
   const offers:Row[]=data?.offers??[];
-  const offer=offers.find(x=>x.offer_id===selected);
-  const currentCategory=category||offer?.category_id||"";
-  const categories=[...new Map<string,string>(offers.map(entry=>[entry.category_id,entry.category.en]))];
-  const eligibleOffers=offers.filter(entry=>entry.category_id===currentCategory);
-  const total=lines.reduce((quantity,line)=>quantity+line.quantity,0);
-  return <><div className="page-head"><p className="eyebrow">CLIENT WORKSPACE / NEW ORDER</p><h1>New inspection</h1>
-    <p className="muted">Define the items and checks. Review the quote before submitting the order for payment.</p></div>
-    {error&&<ErrorBlock error={error}/>}
-    <ol className="order-progress" aria-label="Inspection setup">
-      <li aria-current="step"><span>01</span>Category &amp; scope</li>
-      <li><span>02</span>Review quote</li>
-      <li><span>03</span>Payment</li>
-    </ol>
-    <div className="ops-columns">
-    <Panel title="Define the inspection">
-      <Form label="Add service" run={async f=>{
-        if(!offer)throw new Error("Choose a service.");
-        const quantity=Number(f.get("quantity"));
-        if(!Number.isInteger(quantity)||quantity<offer.rules.minimum||quantity>(offer.service==="inspection"?300:offer.rules.maximum))throw new Error("Choose a quantity within the offer range.");
-        const sizeLabel=text(f,"size_label");
-        const colorDeclared=text(f,"color_declared");
-        const toleranceMm=text(f,"tolerance_mm");
-        const compareSizesRaw=text(f,"compare_sizes");
-        const sizeMismatchConfirmed=checked(f,"size_mismatch_confirmed");
-        const photoFile=f.get("photo");
-        let attachmentId:string|undefined;
-        if(photoFile instanceof File&&photoFile.size>0) {
-          const uploadForm=new FormData();
-          uploadForm.set("photo",photoFile);
-          attachmentId=(await request("/me/media","POST",uploadForm)).id;
+
+  useEffect(()=>{
+    const requestedOffer=new URLSearchParams(location.search).get("offer")??"";
+    if(requestedOffer && offers.length>0) {
+      const matched=offers.find(x=>x.offer_id===requestedOffer);
+      if(matched) {
+        setSelectedOfferId(matched.offer_id);
+        setServiceKind(matched.service);
+        setQty(matched.service==="compare"?matched.rules.minimum:Math.max(1,matched.rules.minimum));
+      }
+    }
+  },[offers.length]);
+
+  useEffect(()=>{
+    window.dispatchEvent(new CustomEvent("qcw:wizard-step",{detail:step}));
+  },[step]);
+
+  useEffect(()=>{
+    function onGo(e:Event) {
+      const target=(e as CustomEvent<number>).detail;
+      if(typeof target==="number" && target>=0 && target<=5) setStep(target);
+    }
+    window.addEventListener("qcw:wizard-go",onGo);
+    return ()=>window.removeEventListener("qcw:wizard-go",onGo);
+  },[]);
+
+  // Match prototype category key to real backend category_id
+  function resolveCategoryId(key:string):string|undefined {
+    const match=offers.find(o=>{
+      const en=String(o.category?.en??"").toLowerCase();
+      return key==="apparel"?en.includes("apparel"):
+        key==="footwear"?en.includes("footwear"):
+        key==="bags"?en.includes("bag"):
+        key==="home"?en.includes("home"):
+        key==="electronics"?en.includes("electronic"):false;
+    });
+    return match?.category_id;
+  }
+
+  const activeCategoryId=resolveCategoryId(categoryKey)??offers[0]?.category_id??"";
+  const categoryOffers=offers.filter(o=>o.category_id===activeCategoryId);
+  const serviceOffers=categoryOffers.filter(o=>o.service===serviceKind);
+
+  // Pick the active offer for the chosen service & quantity
+  const activeOffer=serviceOffers.find(o=>o.offer_id===selectedOfferId)
+    ?? (serviceKind==="compare"?(serviceOffers.find(o=>qty>=o.rules.minimum&&qty<=o.rules.maximum)??serviceOffers[0]):serviceOffers[0])
+    ?? categoryOffers[0];
+
+  const minQty=activeOffer?.rules.minimum??(serviceKind==="compare"?2:1);
+  const maxQty=activeOffer?(activeOffer.service==="inspection"?300:activeOffer.rules.maximum):(serviceKind==="compare"?3:60);
+  const clampedQty=Math.max(minQty,Math.min(maxQty,Number(qty)||minQty));
+
+  function updateItemRow(index:number,field:"sku"|"size"|"color",value:string) {
+    setItemRows(prev=>{
+      const next=[...prev];
+      while(next.length<clampedQty) {
+        const idx=next.length;
+        next.push({sku:`${baseSku||"SKU"}-${String(idx+1).padStart(2,"0")}`,size:baseSize||"M",color:baseColor||"Black"});
+      }
+      next[index]={...(next[index]??{sku:baseSku,size:baseSize,color:baseColor}),[field]:value};
+      return next;
+    });
+  }
+
+  function buildCurrentLine():Row|null {
+    if(!activeOffer) return null;
+    const items=Array.from({length:clampedQty},(_,idx)=>{
+      const custom=itemRows[idx];
+      const rowSku=custom?.sku?.trim()||`${baseSku||"SKU"}-${String(idx+1).padStart(2,"0")}`;
+      const rowSize=custom?.size?.trim()||baseSize.trim();
+      const rowColor=custom?.color?.trim()||baseColor.trim();
+      return {
+        position:idx+1,
+        sample_code:rowSku.slice(0,40),
+        name:(itemName.trim()||activeOffer.title.en).slice(0,120),
+        ...(rowSize?{size_label:rowSize}:{}),
+        ...(rowColor?{color_declared:rowColor}:{}),
+        ...(toleranceMm&&Number(toleranceMm)>0?{tolerances:{dimension_mm:Number(toleranceMm)}}:{}),
+        ...(attachmentId?{attachment_ids:[attachmentId]}:{}),
+      };
+    });
+    const distinctSizes=new Set(items.map(i=>i.size_label).filter(Boolean));
+    return {
+      category_id:activeOffer.category_id,
+      offer_id:activeOffer.offer_id,
+      quantity:clampedQty,
+      title:activeOffer.title.en,
+      options:{
+        ...(activeOffer.service==="reference_match"&&referenceId?{reference_id:referenceId}:{}),
+        ...(sizeMismatchConfirmed||distinctSizes.size>1?{size_mismatch_confirmed:true}:{}),
+      },
+      attributes:{
+        name:(itemName.trim()||activeOffer.title.en).slice(0,120),
+        ...(supplierRef.trim()?{supplier_ref:supplierRef.trim()}:{}),
+        ...(productLink.trim()?{product_url:productLink.trim()}:{}),
+        ...(baseSize.trim()?{size_label:baseSize.trim()}:{}),
+        ...(baseColor.trim()?{color_declared:baseColor.trim()}:{}),
+        ...(toleranceMm&&Number(toleranceMm)>0?{tolerances:{dimension_mm:Number(toleranceMm)}}:{}),
+        ...(attachmentId?{attachment_ids:[attachmentId]}:{}),
+      },
+      items,
+    };
+  }
+
+  const currentLine=buildCurrentLine();
+  const allLines=extraLines.length>0?(currentLine?[...extraLines,currentLine]:extraLines):(currentLine?[currentLine]:[]);
+  const totalItems=allLines.reduce((sum,l)=>sum+(Number(l.quantity)||0),0);
+
+  // Live estimated fee from real catalog offer rules (overridden by serverQuote once calculated)
+  const estimatedCents=allLines.reduce((sum,line)=>{
+    const off=offers.find(o=>o.offer_id===line.offer_id);
+    if(!off) return sum;
+    if(off.rules.unit_cents!=null) return sum + off.rules.unit_cents * line.quantity;
+    return sum + (off.rules.package_cents??0);
+  },0);
+  const displayCents=serverQuote?.amount_cents??estimatedCents;
+
+  async function syncDraftAndQuote() {
+    if(!allLines.length) throw new Error("Configure at least one inspection service.");
+    setWizardError("");
+    setBusyMessage("Saving draft & calculating official server quote…");
+    try {
+      const payloadLines=allLines.map(({title,...rest})=>rest);
+      const combinedNotes=[
+        notes.trim(),
+        supplierRef.trim()?`Supplier: ${supplierRef.trim()}`:"",
+        templateVariant!=="basic"?`Template: ${templateVariant}`:"",
+      ].filter(Boolean).join(" | ").slice(0,500);
+      let orderRecord:Row=draftOrder!;
+      if(!draftOrder) {
+        const created=await request("/orders","POST",{
+          lines:payloadLines,
+          ...(combinedNotes?{customer_notes:combinedNotes}:{}),
+        });
+        orderRecord=await request("/orders/"+created.order_id);
+      } else if(draftOrder.state==="draft") {
+        await request("/orders/"+draftOrder.id,"PATCH",{
+          revision:draftOrder.revision,
+          lines:payloadLines,
+          ...(combinedNotes?{customer_notes:combinedNotes}:{}),
+        });
+        orderRecord=await request("/orders/"+draftOrder.id);
+      }
+      setDraftOrder(orderRecord);
+      if(orderRecord.state==="draft") {
+        const q=await request("/orders/"+orderRecord.id+"/quotes","POST",{revision:orderRecord.revision});
+        setServerQuote(q);
+      }
+      return orderRecord;
+    } catch(e) {
+      const msg=e instanceof Error?e.message:"Could not calculate server quote.";
+      setWizardError(msg);
+      throw e;
+    } finally {
+      setBusyMessage("");
+    }
+  }
+
+  async function goToNextStep() {
+    setWizardError("");
+    if(step===0) {
+      if(!resolveCategoryId(categoryKey)) {
+        setWizardError("Please choose an available product category (Apparel).");
+        return;
+      }
+      setStep(1);
+    } else if(step===1) {
+      if(serviceKind==="reference_match" && !referenceId) {
+        const firstActive=(refs.data?.items??[]).find((r:Row)=>r.state==="active"&&new Date(r.expires_at)>new Date());
+        if(firstActive) setReferenceId(firstActive.reference_id);
+      }
+      setStep(2);
+    } else if(step===2) {
+      if(!itemName.trim()) {
+        setWizardError("Please enter a product name or style.");
+        return;
+      }
+      setStep(3);
+    } else if(step===3) {
+      setStep(4);
+      if(!serverQuote) {
+        try { await syncDraftAndQuote(); } catch { /* error shown in wizardError */ }
+      }
+    } else if(step===4) {
+      const allChecked=Object.keys(acknowledged).every(k=>consents[k]);
+      if(!allChecked) {
+        setWizardError("Please confirm the inspection scope and terms disclosures before continuing to payment.");
+        return;
+      }
+      if(!serverQuote || !draftOrder) {
+        try { await syncDraftAndQuote(); } catch { return; }
+      }
+      setStep(5);
+    }
+  }
+
+  async function submitAndSimulatePayment() {
+    setWizardError("");
+    setBusyMessage("Submitting order & confirming payment…");
+    try {
+      let ord:Row=draftOrder!;
+      let quote:Row=serverQuote!;
+      if(!draftOrder || !serverQuote) {
+        ord=await syncDraftAndQuote();
+        quote=await request("/orders/"+ord.id+"/quotes","POST",{revision:ord.revision});
+        setServerQuote(quote);
+      }
+      const quoteRev=quote.revision;
+      let chargeId=submittedCharge?.charge_item_id;
+      if(ord.state==="draft") {
+        const termIds=(terms.data?.terms??[]).map((t:Row)=>t.id);
+        const accepted=await request("/orders/"+ord.id+"/submit","POST",{
+          revision:ord.revision,
+          quote_id:quote.id,
+          terms_version_ids:termIds,
+          acknowledgements:consents,
+        });
+        chargeId=accepted.charge.charge_item_id;
+        setSubmittedCharge(accepted.charge);
+        ord=await request("/orders/"+ord.id);
+        setDraftOrder(ord);
+      }
+      if(chargeId) {
+        const checkout=await request("/charges/"+chargeId+"/checkout","POST",{quote_revision:quoteRev});
+        if(checkout.checkout_url) {
+          const demoMatch=String(checkout.checkout_url).match(/\/checkout\/demo\/([a-f0-9-]{36})/i);
+          if(demoMatch && providers.data?.demo) {
+            await request("/checkout/demo/"+demoMatch[1],"POST",{});
+            location.assign("/orders/"+ord.public_no);
+            return;
+          }
+          location.assign(checkout.checkout_url);
+          return;
         }
-        const compareSizes=compareSizesRaw?compareSizesRaw.split(",").map(s=>s.trim()).filter(Boolean):[];
-        const items=Array.from({length:quantity},(_,idx)=>({
-          position:idx+1,
-          sample_code:`S-${lines.length+1}-${idx+1}`,
-          name:text(f,"item_name"),
-          ...(compareSizes[idx]?{size_label:compareSizes[idx]}:sizeLabel?{size_label:sizeLabel}:{}),
-          ...(colorDeclared?{color_declared:colorDeclared}:{}),
-          ...(toleranceMm?{tolerances:{dimension_mm:Number(toleranceMm)}}:{}),
-          ...(attachmentId?{attachment_ids:[attachmentId]}:{}),
-        }));
-        setLines(x=>[...x,{category_id:offer.category_id,offer_id:offer.offer_id,quantity,title:offer.title.en,
-          options:{
-            ...(offer.service==="reference_match"?{reference_id:text(f,"reference_id")}:{}),
-            ...(sizeMismatchConfirmed?{size_mismatch_confirmed:true}:{}),
-          },
-          attributes:{
-            name:text(f,"item_name"),
-            ...(sizeLabel?{size_label:sizeLabel}:{}),
-            ...(colorDeclared?{color_declared:colorDeclared}:{}),
-            ...(toleranceMm?{tolerances:{dimension_mm:Number(toleranceMm)}}:{}),
-            ...(attachmentId?{attachment_ids:[attachmentId]}:{}),
-          },
-          items,
-        }]);
-      }}>
-        <label>Product category<select value={currentCategory} onChange={event=>{setCategory(event.target.value);setSelected("");}} required>
-          <option value="">Choose a category</option>{categories.map(([id,name])=><option key={id} value={id}>{name}</option>)}
-        </select></label>
-        <label>Service<select value={offer?.offer_id??""} onChange={event=>setSelected(event.target.value)} required>
-          <option value="">{currentCategory?"Choose a service":"Select a category first"}</option>
-          {eligibleOffers.map(o=><option key={o.offer_id} value={o.offer_id}>{o.title.en}</option>)}</select></label>
-        {offer&&<Field key={offer.offer_id} label="Actual number of items" name="quantity" type="number" min={offer.rules.minimum} max={offer.service==="inspection"?300:offer.rules.maximum} value={offer.rules.minimum}/>}
-        <Field label="Product name or style" name="item_name"/>
-        <Field label="Declared size (optional)" name="size_label" required={false}/>
-        <Field label="Declared color (optional)" name="color_declared" required={false}/>
-        <Field label="Measurement tolerance in mm (optional)" name="tolerance_mm" type="number" required={false}/>
-        {offer?.service==="compare"&&<>
-          <Field label="Per-item sizes if comparing different sizes (comma-separated, e.g. S, M)" name="compare_sizes" required={false}/>
-          <label className="check"><input type="checkbox" name="size_mismatch_confirmed"/>I understand comparing items of different sizes affects measurement difference interpretation.</label>
+      }
+      location.assign("/orders/"+ord.public_no);
+    } catch(e) {
+      setWizardError(e instanceof Error?e.message:"Payment submission failed.");
+    } finally {
+      setBusyMessage("");
+    }
+  }
+
+  const stepLabels=["Select Inspection","Configure","Sample Details","Scope","Review","Payment"];
+  const serviceLabel=serviceKind==="inspection"?"Product Inspection":serviceKind==="compare"?"Sample Comparison":"Reference Matching";
+  const visibleRowLimit=Math.min(clampedQty,showAllItems?60:5);
+  const activeRefs=(refs.data?.items??[]).filter((r:Row)=>r.state==="active"&&new Date(r.expires_at)>new Date());
+  const allConsentsChecked=Object.keys(acknowledged).every(k=>consents[k]);
+
+  return <>
+    <div className="page-head">
+      <div>
+        <div className="eyebrow">CUSTOMER PORTAL</div>
+        <h1>Create an Inspection</h1>
+        <p>Choose a category, service, item list and evidence scope. Review before paying.</p>
+      </div>
+      <div className="head-actions">
+        {draftOrder&&<Link className="button sm" href={"/orders/"+draftOrder.public_no}>Open Draft ({draftOrder.public_no})</Link>}
+        <Link className="button sm" href="/orders">View My Orders</Link>
+      </div>
+    </div>
+
+    {error&&<ErrorBlock error={error}/>}
+    {wizardError&&<ErrorBlock error={wizardError}/>}
+    {busyMessage&&<div className="notice" role="status">{busyMessage}</div>}
+
+    <div className="wizard-shell">
+      <div className="wizard-content">
+        <div className="steps" role="navigation" aria-label="Inspection setup">
+          {stepLabels.map((name,idx)=><button
+            key={name}
+            type="button"
+            className={`step ${idx===step?"on":idx<step?"done":""}`}
+            onClick={()=>{setWizardError("");setStep(idx);}}
+          >
+            <span className="n">{idx<step?"✓":idx+1}</span>
+            <span>{name}</span>
+          </button>)}
+        </div>
+
+        {step===0&&<>
+          <Panel
+            title="01   Product Category"
+            subtitle="Category-specific checks and services are loaded automatically."
+            badge={<Tag tone="green">Apparel · Active</Tag>}
+          >
+            <div className="wizard-categories" role="radiogroup" aria-label="Product Category">
+              {wizardCategoryCatalog.map(cat=>{
+                const catId=resolveCategoryId(cat.key);
+                const isAvailable=Boolean(catId);
+                const isSelected=categoryKey===cat.key;
+                return <button
+                  key={cat.key}
+                  type="button"
+                  role="radio"
+                  aria-checked={isSelected}
+                  disabled={!isAvailable}
+                  className={`option-card ${isSelected?"selected":""} ${!isAvailable?"disabled":""}`}
+                  onClick={()=>{
+                    if(!isAvailable) return;
+                    setCategoryKey(cat.key);
+                    setServerQuote(undefined);
+                  }}
+                >
+                  <span className="icon" aria-hidden="true">{cat.icon}</span>
+                  <strong>{cat.name}</strong>
+                  <p>{isAvailable?"Available now":cat.fallbackState==="PLANNED"?"Planned / not yet available":"Restricted"}</p>
+                </button>;
+              })}
+            </div>
+            <div className="wizard-note">
+              Apparel is currently available. Other categories cannot be purchased until operational approval and documented checks are in place.
+            </div>
+          </Panel>
+
+          <Panel
+            title="02   Inspection Service"
+            subtitle="Select one. Its checklist will follow your approved product category."
+          >
+            <div className="wizard-services" role="radiogroup" aria-label="Inspection Service">
+              {wizardServiceCards.map(card=>{
+                const matchingOffers=categoryOffers.filter(o=>o.service===card.service);
+                const firstOffer=matchingOffers[0];
+                const priceText=firstOffer
+                  ?(firstOffer.rules.unit_cents!=null?`${usd(firstOffer.rules.unit_cents)} / item`:`${usd(firstOffer.rules.package_cents)} / set`)
+                  :"Available";
+                const isSelected=serviceKind===card.service;
+                return <button
+                  key={card.service}
+                  type="button"
+                  role="radio"
+                  aria-checked={isSelected}
+                  className={`option-card ${isSelected?"selected":""}`}
+                  onClick={()=>{
+                    setServiceKind(card.service);
+                    if(firstOffer) {
+                      setSelectedOfferId(firstOffer.offer_id);
+                      setQty(card.service==="compare"?Math.max(2,firstOffer.rules.minimum):card.service==="reference_match"?1:Math.max(1,qty));
+                    }
+                    setServerQuote(undefined);
+                  }}
+                >
+                  <span className="icon" aria-hidden="true">{card.icon}</span>
+                  <strong>{card.title}</strong>
+                  <p>{card.desc}</p>
+                  <span className="price-pill">{card.badge} · {priceText}</span>
+                </button>;
+              })}
+            </div>
+            <div className="wizard-note">
+              Visual observations and measurements only where approved; laboratory certification and batch quality guarantees are not included.
+            </div>
+          </Panel>
         </>}
-        {offer?.service==="reference_match"&&<Select name="reference_id" label="Active reference sample" choices={(refs.data?.items??[]).filter((r:Row)=>r.state==="active"&&new Date(r.expires_at)>new Date()).map((r:Row)=>({id:r.reference_id,label:(r.code??r.item_id)+" · "+stamp(r.expires_at)}))}/>}
-        <label>Size chart or reference photo (optional)<input name="photo" type="file" accept="image/*"/></label>
-      </Form>
-    </Panel>
-    <Panel title="Inspection summary">
-      {lines.length?<><p className="muted">{lines.length} {lines.length===1?"service":"services"} · {total} {total===1?"item":"items"}</p>
-        <ul className="draft-lines">{lines.map((line,index)=><li key={index}><div><strong>{line.title}</strong><small>{line.attributes.name} · {line.quantity} {line.quantity===1?"item":"items"}{line.attributes.size_label?` · Size ${line.attributes.size_label}`:""}{line.attributes.tolerances?.dimension_mm?` · ±${line.attributes.tolerances.dimension_mm} mm`:""}</small></div>
-          <button type="button" aria-label={"Remove "+line.title} onClick={()=>setLines(items=>items.filter((_,position)=>position!==index))}>Remove</button>
-        </li>)}</ul>
-        <label>Order notes (optional)<input value={notes} maxLength={500} onChange={e=>setNotes(e.target.value)} placeholder="Special instructions or seller context…"/></label>
-        <Action primary run={async()=>{const r=await request("/orders","POST",{lines:lines.map(({title,...line})=>line),...(notes.trim()?{customer_notes:notes.trim()}:{})});location.assign("/orders/"+r.public_no);}}>Save draft and continue</Action>
-      </>:<Empty>Add a service to start the draft. The next step shows the server-calculated quote.</Empty>}
-    </Panel>
-    </div></>;
+
+        {step===1&&<>
+          <Panel
+            title="03   Configure Your Service"
+            subtitle="Choose the applicable approved inspection template and item count."
+            badge={<Tag tone="green">Apparel · Available</Tag>}
+          >
+            <div className="fields">
+              <div className="field">
+                <label>Inspection template
+                  <select value={templateVariant} onChange={e=>setTemplateVariant(e.target.value)}>
+                    <option value="basic">Apparel Basic Visual v1 ({activeOffer?.title.en??"Standard"})</option>
+                    <option value="tops">Tops &amp; Outerwear v1</option>
+                    <option value="leggings">Trousers &amp; Leggings v1</option>
+                    <option value="sports">Activewear &amp; Knitwear v1</option>
+                  </select>
+                </label>
+              </div>
+              <div className="field">
+                <label>Items / samples
+                  <input
+                    type="number"
+                    min={minQty}
+                    max={maxQty}
+                    value={clampedQty}
+                    onChange={e=>{
+                      const val=Math.max(minQty,Math.min(maxQty,Number(e.target.value)||minQty));
+                      setQty(val);
+                      if(serviceKind==="compare") {
+                        const match=serviceOffers.find(o=>val>=o.rules.minimum&&val<=o.rules.maximum);
+                        if(match) setSelectedOfferId(match.offer_id);
+                      }
+                      setServerQuote(undefined);
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+
+            {serviceOffers.length>1&&<div className="field" style={{marginTop:12}}>
+              <label>Service package tier
+                <select value={activeOffer?.offer_id??""} onChange={e=>{
+                  const off=serviceOffers.find(o=>o.offer_id===e.target.value);
+                  setSelectedOfferId(e.target.value);
+                  if(off) setQty(Math.max(off.rules.minimum,Math.min(off.rules.maximum,clampedQty)));
+                  setServerQuote(undefined);
+                }}>
+                  {serviceOffers.map(o=><option key={o.offer_id} value={o.offer_id}>
+                    {o.title.en} ({o.sku_code} · {usd(o.rules.unit_cents??o.rules.package_cents)})
+                  </option>)}
+                </select>
+              </label>
+            </div>}
+
+            {serviceKind==="reference_match"&&<div className="field" style={{marginTop:12}}>
+              <label>Active reference sample
+                <select value={referenceId} onChange={e=>setReferenceId(e.target.value)}>
+                  <option value="">— Select an active reference sample —</option>
+                  {activeRefs.map((r:Row)=><option key={r.reference_id} value={r.reference_id}>
+                    {(r.code??r.item_id)} · Valid until {stamp(r.expires_at)}
+                  </option>)}
+                </select>
+              </label>
+              {activeRefs.length===0&&<p className="small muted" style={{marginTop:6}}>No active reference samples reserved yet. Reserve a stored item in Warehouse Items first, or switch to Product Inspection / Sample Comparison.</p>}
+            </div>}
+
+            <div className="actions" style={{marginTop:14}}>
+              <span className="small muted">Quick quantity presets:</span>
+              {(serviceKind==="compare"?[2,3]:serviceKind==="reference_match"?[1]:[1,5,30]).map(n=><button
+                key={n}
+                type="button"
+                className={`button sm ${clampedQty===n?"primary":""}`}
+                onClick={()=>{
+                  setQty(n);
+                  if(serviceKind==="compare") {
+                    const match=serviceOffers.find(o=>n>=o.rules.minimum&&n<=o.rules.maximum);
+                    if(match) setSelectedOfferId(match.offer_id);
+                  }
+                  setServerQuote(undefined);
+                }}
+              >{n} {n===1?"item":serviceKind==="compare"?"samples":"items"}</button>)}
+            </div>
+
+            <div className="sep"/>
+            <div className="row between flexwrap">
+              <div>
+                <div className="label">SELECTED SERVICE</div>
+                <strong>{serviceLabel} · {activeOffer?.sku_code??"APPAREL"}</strong>
+                <p className="small muted" style={{margin:"6px 0 0"}}>
+                  The service, template and price are recorded separately in each order snapshot. Turnaround: {activeOffer?.rules.business_days??2} business days after all items are received and identified.
+                </p>
+              </div>
+              <Tag tone="green">Apparel · Available</Tag>
+            </div>
+          </Panel>
+          <div className="line-note warning">
+            Final payable pricing comes from the approved server-side price version snapshot calculated in Step 05.
+          </div>
+        </>}
+
+        {step===2&&<Panel
+          title="03   Product & Sample Details"
+          subtitle="Dynamic attributes come from the approved category schema."
+        >
+          <div className="fields">
+            <div className="field">
+              <label>Product name
+                <input value={itemName} onChange={e=>{setItemName(e.target.value);setServerQuote(undefined);}} placeholder="Product title" required/>
+              </label>
+            </div>
+            <div className="field">
+              <label>Supplier reference
+                <input value={supplierRef} onChange={e=>setSupplierRef(e.target.value)} placeholder="Supplier code (optional)"/>
+              </label>
+            </div>
+            <div className="field">
+              <label>Item code / SKU
+                <input value={baseSku} onChange={e=>setBaseSku(e.target.value)} placeholder="SKU-101"/>
+              </label>
+            </div>
+            <div className="field">
+              <label>Color / Variant
+                <input value={baseColor} onChange={e=>setBaseColor(e.target.value)} placeholder="Black"/>
+              </label>
+            </div>
+            <div className="field">
+              <label>Size (apparel template)
+                <input value={baseSize} onChange={e=>setBaseSize(e.target.value)} placeholder="M"/>
+              </label>
+            </div>
+            <div className="field">
+              <label>Number of items / samples
+                <input
+                  type="number"
+                  min={minQty}
+                  max={maxQty}
+                  value={clampedQty}
+                  onChange={e=>{setQty(Math.max(minQty,Math.min(maxQty,Number(e.target.value)||minQty)));setServerQuote(undefined);}}
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="fields" style={{marginTop:14}}>
+            <div className="field">
+              <label>Product reference link (optional)
+                <input type="url" value={productLink} onChange={e=>setProductLink(e.target.value)} placeholder="https://supplier.example/item"/>
+              </label>
+            </div>
+            <div className="field">
+              <label>Size chart or reference photo (optional)
+                <input type="file" accept="image/*" onChange={async e=>{
+                  const file=e.target.files?.[0];
+                  if(!file) return;
+                  try {
+                    setBusyMessage("Uploading reference image…");
+                    const uploadForm=new FormData();
+                    uploadForm.set("photo",file);
+                    const uploaded=await request("/me/media","POST",uploadForm);
+                    setAttachmentId(uploaded.id);
+                    setAttachmentName(file.name);
+                  } catch(err) {
+                    setWizardError(err instanceof Error?err.message:"Photo upload failed.");
+                  } finally {
+                    setBusyMessage("");
+                  }
+                }}/>
+              </label>
+              {attachmentName&&<small className="ok">Attached: {attachmentName}</small>}
+            </div>
+          </div>
+
+          <div className="sep"/>
+
+          <div className="row between flexwrap">
+            <h3 style={{margin:0}}>Item-level mapping ({clampedQty} {clampedQty===1?"item":"items"})</h3>
+            <div className="actions" style={{margin:0}}>
+              {(serviceKind==="compare"?[2,3]:[1,5,30]).map(n=><button
+                key={n}
+                type="button"
+                className={`button sm ${clampedQty===n?"primary":""}`}
+                onClick={()=>{setQty(n);setServerQuote(undefined);}}
+              >{n} {n===1?"item":"items"}</button>)}
+            </div>
+          </div>
+          <p className="small muted" style={{marginTop:4}}>
+            {serviceKind==="inspection"
+              ?"Each item is checked independently; no automatic side-by-side comparison is created."
+              :"Samples may arrive in separate parcels. Comparison starts only when all required compatible samples have been identified."}
+          </p>
+
+          <div className="table-wrap">
+            <table className="tbl">
+              <thead>
+                <tr><th>#</th><th>Item SKU</th><th>Size</th><th>Color</th></tr>
+              </thead>
+              <tbody>
+                {Array.from({length:visibleRowLimit},(_,idx)=>{
+                  const row=itemRows[idx];
+                  const defaultRowSku=`${baseSku||"SKU"}-${String(idx+1).padStart(2,"0")}`;
+                  return <tr key={idx}>
+                    <td className="mono">{String(idx+1).padStart(2,"0")}</td>
+                    <td>
+                      <input
+                        className="input"
+                        style={{minWidth:110}}
+                        aria-label={`Item ${idx+1} SKU`}
+                        value={row?.sku??defaultRowSku}
+                        onChange={e=>updateItemRow(idx,"sku",e.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="input"
+                        style={{minWidth:80}}
+                        aria-label={`Item ${idx+1} size`}
+                        value={row?.size??baseSize}
+                        onChange={e=>updateItemRow(idx,"size",e.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="input"
+                        style={{minWidth:90}}
+                        aria-label={`Item ${idx+1} color`}
+                        value={row?.color??baseColor}
+                        onChange={e=>updateItemRow(idx,"color",e.target.value)}
+                      />
+                    </td>
+                  </tr>;
+                })}
+              </tbody>
+            </table>
+          </div>
+          {clampedQty>5&&<button type="button" className="button sm" onClick={()=>setShowAllItems(v=>!v)}>
+            {showAllItems?"Show first five":`Edit all ${clampedQty} items`}
+          </button>}
+
+          {serviceKind==="compare"&&<label className="checkrow" style={{marginTop:12}}>
+            <input type="checkbox" checked={sizeMismatchConfirmed} onChange={e=>setSizeMismatchConfirmed(e.target.checked)}/>
+            <span>I understand comparing items of different sizes affects measurement difference interpretation.</span>
+          </label>}
+
+          <div className="sep"/>
+          <div className="row between flexwrap">
+            <span className="small muted">Need multiple services in a single order? Add this service line to queue another.</span>
+            <button type="button" className="button sm" onClick={()=>{
+              const built=buildCurrentLine();
+              if(!built) return;
+              setExtraLines(prev=>[...prev,built]);
+              setServerQuote(undefined);
+            }}>+ Add service line to order ({allLines.length} configured)</button>
+          </div>
+          {extraLines.length>0&&<ul className="draft-lines">
+            {extraLines.map((line,idx)=><li key={idx}>
+              <div>
+                <strong>{line.title}</strong>
+                <small>{line.attributes.name} · {line.quantity} {line.quantity===1?"item":"items"}{line.attributes.size_label?` · Size ${line.attributes.size_label}`:""}</small>
+              </div>
+              <button type="button" className="button sm" onClick={()=>{setExtraLines(xs=>xs.filter((_,i)=>i!==idx));setServerQuote(undefined);}}>Remove</button>
+            </li>)}
+          </ul>}
+        </Panel>}
+
+        {step===3&&<Panel
+          title="04   Inspection Scope"
+          subtitle="The selected template controls supported and required checks."
+        >
+          <div className="checklist">
+            {wizardCheckDefs.map(([code,title,desc])=><label key={code} className="checkrow">
+              <input
+                type="checkbox"
+                checked={selectedChecks.includes(code)}
+                onChange={e=>setSelectedChecks(prev=>e.target.checked?[...prev,code]:prev.filter(x=>x!==code))}
+              />
+              <span>
+                <strong>{title}</strong>
+                <div className="small muted">{desc}</div>
+              </span>
+            </label>)}
+          </div>
+
+          <div className="fields" style={{marginTop:16}}>
+            <div className="field">
+              <label>Measurement tolerance in mm (optional)
+                <input type="number" min={1} max={100} value={toleranceMm} onChange={e=>setToleranceMm(e.target.value)} placeholder="15"/>
+              </label>
+            </div>
+            <div className="field">
+              <label>Template version
+                <input value={`Apparel Basic Visual v1 (${activeOffer?.sku_code??"APPAREL"})`} readOnly/>
+              </label>
+            </div>
+          </div>
+
+          <div className="field" style={{marginTop:14}}>
+            <label>Special instructions
+              <textarea value={notes} maxLength={500} onChange={e=>setNotes(e.target.value)} placeholder="Any product-specific concerns, key seams or collar labels to photograph…"/>
+            </label>
+          </div>
+
+          <div className="sep"/>
+          <div className="line-note">
+            Laboratory fiber analysis, dye color ΔE, electrical safety, regulatory certification and untested batch conformity are excluded. Measurements require approved methods and recorded tools.
+          </div>
+        </Panel>}
+
+        {step===4&&<Panel
+          title="05   Review Your Quote"
+          subtitle="Server price rules are authoritative; verify your official server quote and terms before payment."
+          badge={serverQuote?<Tag tone="green">Quote rev {serverQuote.revision}</Tag>:<Tag tone="yellow">Calculating</Tag>}
+        >
+          <div className="grid cols2">
+            <dl className="def"><dt>Product category</dt><dd>Apparel</dd></dl>
+            <dl className="def"><dt>Service</dt><dd>{serviceLabel}</dd></dl>
+            <dl className="def"><dt>Items / samples</dt><dd>{totalItems}</dd></dl>
+            <dl className="def"><dt>Template</dt><dd>Apparel Basic Visual v1 ({activeOffer?.sku_code})</dd></dl>
+          </div>
+
+          <div className="sep"/>
+          <div className="row between">
+            <div>
+              <strong>Inspection service fee · {serverQuote?"official server quote":"catalog estimate"}</strong>
+              {serverQuote?.expires_at&&<div className="small muted">Quote valid through {stamp(serverQuote.expires_at)}</div>}
+            </div>
+            <h2 style={{margin:0,fontFamily:"var(--mono)"}}>{usd(displayCents)}</h2>
+          </div>
+          <div className="row between muted small" style={{marginTop:8}}>
+            <span>Domestic forwarding / future storage charges</span>
+            <span>Quoted separately</span>
+          </div>
+
+          <div className="actions" style={{marginTop:12}}>
+            <button type="button" className="button sm" onClick={()=>{syncDraftAndQuote().catch(()=>{});}}>
+              {serverQuote?"Recalculate Server Quote":"Calculate Official Server Quote"}
+            </button>
+          </div>
+
+          <div className="sep"/>
+          {terms.data?.terms&&<div style={{marginBottom:12}}>
+            <div className="label" style={{marginBottom:6}}>APPLICABLE PLATFORM POLICIES</div>
+            <PolicyLinks policies={terms.data.terms}/>
+          </div>}
+
+          <div className="checklist">
+            <label className="checkrow" style={{background:"#f3f7fe"}}>
+              <input
+                type="checkbox"
+                checked={allConsentsChecked}
+                onChange={e=>{
+                  const checkedVal=e.target.checked;
+                  setConsents(Object.fromEntries(Object.keys(acknowledged).map(k=>[k,checkedVal])));
+                }}
+              />
+              <span>
+                <strong>I understand this is a sample-level observational service, not a laboratory certificate or full-batch guarantee, and accept all required disclosures below.</strong>
+              </span>
+            </label>
+            {Object.entries(acknowledged).map(([k,textLabel])=><label key={k} className="checkrow">
+              <input
+                type="checkbox"
+                checked={Boolean(consents[k])}
+                onChange={e=>setConsents(prev=>({...prev,[k]:e.target.checked}))}
+              />
+              <span>{textLabel}</span>
+            </label>)}
+          </div>
+
+          <div className="line-note warning" style={{marginTop:14}}>
+            Quote expires and service eligibility can change before a production order is submitted. Historical confirmed quotes retain their own immutable price snapshot.
+          </div>
+        </Panel>}
+
+        {step===5&&<Panel
+          title="06   Pay & Send Your Samples"
+          subtitle="Submit your order and confirm payment to unlock sample receiving instructions."
+          badge={<Tag tone="blue">{draftOrder?.public_no??"Ready"}</Tag>}
+        >
+          <div className="grid cols2">
+            <dl className="def"><dt>Order item</dt><dd>Apparel / {serviceLabel}</dd></dl>
+            <dl className="def"><dt>Service fee</dt><dd className="mono">{usd(displayCents)}</dd></dl>
+            <dl className="def"><dt>Receiving code</dt><dd><span className="mono">{receiving.data?.receiving_code??"QCW-PERMANENT"}</span></dd></dl>
+            <dl className="def"><dt>Order status</dt><dd>{draftOrder?label(draftOrder.state):"Draft ready for submission"}</dd></dl>
+          </div>
+
+          <div className="sep"/>
+          <div className="line-note warning">
+            <strong>Server-verified payment confirmation:</strong> The production system confirms a provider-signed Stripe webhook callback; in local development mode, clicking the button below executes the server-side demo payment confirmation and transitions your order directly to <span className="mono">awaiting_samples</span>.
+          </div>
+
+          <div className="actions" style={{marginTop:16}}>
+            <button type="button" className="button primary" onClick={submitAndSimulatePayment}>
+              Simulate payment confirmation &amp; create order →
+            </button>
+            {draftOrder&&<Link className="button sm" href={"/orders/"+draftOrder.public_no}>Open Order {draftOrder.public_no}</Link>}
+            <Link className="button sm" href="/account">View receiving address</Link>
+          </div>
+        </Panel>}
+
+        <div className="wizard-controls">
+          <button
+            type="button"
+            className="button"
+            disabled={step===0}
+            onClick={()=>{setWizardError("");setStep(s=>Math.max(0,s-1));}}
+          >← Previous</button>
+          {step<5?(
+            <button
+              type="button"
+              className="button primary"
+              disabled={!resolveCategoryId(categoryKey)||(step===4&&!allConsentsChecked)}
+              onClick={goToNextStep}
+            >{step===4?"Continue to Payment →":"Continue →"}</button>
+          ):(
+            <Link className="button sm" href={draftOrder?"/orders/"+draftOrder.public_no:"/orders"}>Save Draft &amp; Exit</Link>
+          )}
+        </div>
+      </div>
+
+      <aside className="wizard-side">
+        <section className="card">
+          <div className="card-head">
+            <div>
+              <h3>Order Summary</h3>
+              <p>Synchronized with your current selections.</p>
+            </div>
+            <Tag tone={serverQuote?"green":"yellow"}>{draftOrder?draftOrder.public_no:"DRAFT"}</Tag>
+          </div>
+          <div className="sep"/>
+          <div className="mini-kv">
+            <div><div className="k">Category</div><div className="v">{wizardCategoryCatalog.find(c=>c.key===categoryKey)?.name??"Apparel"}</div></div>
+            <div><div className="k">Service</div><div className="v">{serviceKind==="inspection"?"Individual":serviceKind==="compare"?"Comparison":"Reference"}</div></div>
+            <div><div className="k">Items</div><div className="v">{totalItems}</div></div>
+            <div><div className="k">Location</div><div className="v">China</div></div>
+          </div>
+          <div className="sep"/>
+          <div className="display-quote">
+            <div className="label">{serverQuote?"SERVER QUOTE":"ESTIMATED SERVICE FEE"}</div>
+            <div className="big">{displayCents!=null?usd(displayCents):"Unavailable"}</div>
+            <div className="small muted">Excludes shipping, storage, taxes and other unapproved fees.</div>
+          </div>
+          <div className="sep"/>
+          <div className="row between">
+            <button type="button" className="button sm" onClick={()=>{
+              setStep(0);
+              setExtraLines([]);
+              setItemRows([]);
+              setServerQuote(undefined);
+              setDraftOrder(undefined);
+              setWizardError("");
+            }}>Reset draft</button>
+            <button type="button" className="button sm" onClick={async()=>{
+              const ord=await syncDraftAndQuote();
+              if(ord?.public_no) location.assign("/orders/"+ord.public_no);
+            }}>Save &amp; Open Order</button>
+          </div>
+        </section>
+
+        <section className="card">
+          <strong>Evidence-based inspections</strong>
+          <p className="small" style={{margin:"8px 0 0"}}>
+            All checks attach results to the exact physical sample, template version and measurement method.
+          </p>
+        </section>
+      </aside>
+    </div>
+  </>;
 }
 export function OrderView({number,section}:{number:string;section?:OrderSection}) {
   const lookup=useLoad("/orders/by-number/"+number);
@@ -580,14 +1369,37 @@ export function CustomerDesk({path}:{path:string}) {
     order.public_no.toLowerCase().includes(orderQuery.trim().toLowerCase())&&(!orderState||order.state===orderState));
   return <>
     {data.email_delivery?.banner_message&&<div className="notice" role="alert"><strong>{data.email_delivery.banner_message}</strong>{data.email_delivery.masked_email?` (${data.email_delivery.masked_email})`:""}. Important updates remain available in your account notifications and action centre. <Link href="/account/security">Update email in account security →</Link></div>}
-    {isHome&&<><div className="page-head row"><div><p className="eyebrow">CLIENT WORKSPACE</p><h1>Your inspections</h1><p className="muted">Manage your warehouse deliveries, inspection reports and item instructions.</p></div>
-      <div className="actions"><Link className="button" href="/account/security">Sign-in &amp; security</Link><Link className="button primary" href="/orders/new">New inspection <span aria-hidden="true">→</span></Link></div></div>
-      <div className="ops-columns"><Panel title="Warehouse receiving address">
-      <div className="receiving-code"><span className="eyebrow">PERSONAL RECEIVING CODE</span><strong className="code">{data.profile.receiving_code}</strong></div>
-      {addr?<><p>{addr.recipient} · {addr.phone}<br/>{addr.address_zh}<br/>{addr.address_en}</p>
-        <Action run={()=>navigator.clipboard.writeText([addr.recipient,addr.phone,addr.address_zh].join("\n"))}>Copy Chinese shipping address</Action></>:<Empty>The warehouse address is awaiting configuration.</Empty>}
-      {next&&<Link className="button primary" href={next}>Continue to your selected page</Link>}
-    </Panel><RecentUpdates notices={data.notices} onRead={reload}/></div></>}
+    {isHome&&<>
+      <div className="page-head row">
+        <div><p className="eyebrow">CUSTOMER PORTAL</p><h1>My Account &amp; Receiving Address</h1><p className="muted">Manage your permanent China warehouse receiving code, incoming deliveries, inspection reports and item instructions.</p></div>
+        <div className="head-actions"><Link className="button sm" href="/account/security">Sign-in &amp; security</Link><Link className="button primary sm" href="/orders/new">+ Create Inspection</Link></div>
+      </div>
+      <div className="metric-strip" aria-label="Account summary">
+        <Link className="metric" href="/orders"><span>Inspection Orders</span><strong>{orders.length}</strong><small>{orders.filter(o=>o.state==="draft").length} drafts · {orders.filter(o=>["report_ready","action_pending"].includes(o.state)).length} ready</small></Link>
+        <Link className="metric" href="/parcels"><span>Inbound Parcels</span><strong>{data.advices.length}</strong><small>Registered seller waybills</small></Link>
+        <Link className="metric" href="/items"><span>Warehouse Items</span><strong>{data.items.length}</strong><small>{(data.references??[]).filter((r:Row)=>r.state==="active"&&!r.expired).length} active reference samples</small></Link>
+        <Link className="metric" href="/account/billing"><span>Open Quotes &amp; Bills</span><strong>{data.quotes.length+data.bills.filter((b:Row)=>b.state==="open").length}</strong><small>Shipping, storage &amp; inspection</small></Link>
+      </div>
+      <div className="ops-columns">
+        <Panel title="China Warehouse Receiving Address" subtitle="Include your permanent receiving code on every seller shipping label." badge={<Tag tone="green">Active</Tag>}>
+          <div className="receiving-code"><span className="eyebrow">PERMANENT PERSONAL RECEIVING CODE</span><strong className="code">{data.profile.receiving_code}</strong></div>
+          {addr?<>
+            <div className="grid cols2" style={{marginBottom:12}}>
+              <dl className="def"><dt>Recipient &amp; Phone</dt><dd>{addr.recipient} ({data.profile.receiving_code}) · {addr.phone}</dd></dl>
+              <dl className="def"><dt>Warehouse Code</dt><dd className="mono">{addr.code??"CN-GD-01"}</dd></dl>
+              <dl className="def"><dt>Chinese Shipping Address (For Domestic Sellers)</dt><dd>{addr.address_zh}（收件码：{data.profile.receiving_code}）</dd></dl>
+              <dl className="def"><dt>English Reference Address</dt><dd>{addr.address_en}</dd></dl>
+            </div>
+            <div className="actions">
+              <Action primary run={()=>navigator.clipboard.writeText([`${addr.recipient} (${data.profile.receiving_code})`,addr.phone,`${addr.address_zh}（收件码：${data.profile.receiving_code}）`].join("\n"))}>Copy Chinese shipping address</Action>
+              <Link className="button sm" href="/parcels">Register seller tracking →</Link>
+            </div>
+          </>:<Empty>The warehouse address is awaiting configuration.</Empty>}
+          {next&&<Link className="button primary" href={next}>Continue to your selected page</Link>}
+        </Panel>
+        <RecentUpdates notices={data.notices} onRead={reload}/>
+      </div>
+    </>}
     {isSecurity&&<AccountSecurity receivingCode={data.profile.receiving_code}/>}
     {isOrders&&<div className="page-head row"><div><p className="eyebrow">CLIENT WORKSPACE</p><h1>Inspection orders</h1><p className="muted">Review your orders or continue an existing draft.</p></div>
       <Link className="button primary" href="/orders/new">New inspection <span aria-hidden="true">→</span></Link></div>}

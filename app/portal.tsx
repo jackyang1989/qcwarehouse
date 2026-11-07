@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { Catalog, CustomerActions, CustomerDesk, DemoCheckout, HowItWorks, Legal, NewOrder, OrderFulfillment, OrderView, ReportView, TrackView } from "./customer";
 import { AdminDesk, LogisticsConfiguration, LogisticsDesk, StaffOrder, TaskView, WarehouseDesk, WarehouseDispatchBatch, WarehouseItemView, WarehousePackageView, WarehouseScan } from "./staff";
-import { Action, request } from "./ui";
-import { Brand, PublicHeader, SiteFooter, WorkspaceNavigation } from "./chrome";
+import { Action, request, Tag } from "./ui";
+import { Brand, PublicHeader, QuickSwitch, SiteFooter, WorkspaceNavigation } from "./chrome";
 import { FAQ } from "./faq";
 import { PublicInquiry } from "./public-inquiry";
 import { ReportGuide } from "./report-guide";
@@ -79,31 +79,42 @@ export function Portal({path,target,route,actor:a}:{path:string;target:string;ro
     <SiteFooter/>
   </>;
 
-  const section=route.area==="admin"?"运营后台":route.area==="warehouse"?"仓库工作台":"Client workspace";
+  const section=route.area==="admin"?"运营后台":route.area==="warehouse"?"仓库工作台":"Workspace";
   const currentLink=links.find(([href])=>href===path);
   const parentLink=links.filter(([href])=>href!=="/wh"&&href!=="/admin"&&path.startsWith(href+"/")).sort(([left],[right])=>right.length-left.length)[0];
+  const topLinks:[string,string][]=route.area==="warehouse"?[
+    ["/wh/scan","扫码中心"],["/wh/intake","到件签收"],["/wh/storage","库位管理"],["/wh/inspection","质检队列"],["/wh/dispatch","交接出库"],
+  ]:route.area==="admin"?[
+    ["/admin","运营总览"],["/admin/orders","订单中心"],["/admin/storage/locations","库位主数据"],["/admin/finance","财务退款"],["/admin/settings","系统配置"],
+  ]:[
+    ["/catalog","Services"],["/categories","Product Categories"],["/how-it-works","How It Works"],["/report-guide","Reports"],["/pricing","Pricing"],
+  ];
+
   return <div className={`workspace workspace-${route.area}`} lang={locale}>
     <a className="skip-link" href="#main-content">{isStaff?"跳至主要内容":"Skip to main content"}</a>
     <header className="workspace-top">
-      <div className="workspace-brand"><Brand/><span className="workspace-context">{section}</span></div>
-      <nav aria-label={isStaff?"员工导航":"Account navigation"}>
-        {a.kind==="staff"?<>
-          {route.area!=="warehouse"&&warehouseLinks[0]&&<Link href={warehouseLinks[0][0]}>仓库工作台</Link>}
-          {route.area!=="admin"&&adminLinks[0]&&<Link href={adminLinks[0][0]}>运营后台</Link>}
-        </>:<Link href="/catalog">Services</Link>}
-        {signOut}
+      <div className="workspace-brand"><Brand/><span className="workspace-context">INSPECTION PLATFORM</span></div>
+      <nav className="topnav" aria-label={isStaff?"快捷导航":"Platform navigation"}>
+        {topLinks.map(([href,label])=><Link key={href} href={href} aria-current={path===href?"page":undefined}>{label}</Link>)}
       </nav>
+      <div className="header-right">
+        <QuickSwitch active={route.area as "customer"|"warehouse"|"admin"}/>
+        <Tag tone="blue">{route.area==="admin"?"Role: Admin":route.area==="warehouse"?"Role: Warehouse":"Customer Workspace"}</Tag>
+        {route.area==="customer"&&path!=="/orders/new"&&<Link className="button primary sm" href="/orders/new">Start Inspection</Link>}
+        {signOut}
+      </div>
     </header>
-    <div className="workspace-layout">
+    <div className={`workspace-layout ${path==="/orders/new"?"wizard-layout":""}`}>
       <WorkspaceNavigation area={route.area as "admin"|"warehouse"|"customer"} title={section} links={links} path={path}/>
       <main className={`workspace-main view-${route.view}`} id="main-content" tabIndex={-1}>
         <nav className="breadcrumb" aria-label={isStaff?"当前位置":"Breadcrumb"}>
-          <Link href="/">{isStaff?"官网":"QCWarehouse"}</Link><span aria-hidden="true">›</span>
+          <Link href="/">{isStaff?"QCWarehouse":"QCWarehouse"}</Link><span aria-hidden="true">›</span>
           {links[0][0]===path?<strong>{section}</strong>:<><Link href={links[0][0]}>{section}</Link>
             {(currentLink||parentLink)&&<><span aria-hidden="true">›</span>{currentLink?<strong>{currentLink[1]}</strong>:<Link href={parentLink[0]}>{parentLink[1]}</Link>}</>}
           </>}
         </nav>
         {content}
+        <SiteFooter/>
       </main>
     </div>
   </div>;

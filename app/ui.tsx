@@ -133,9 +133,21 @@ export function Select({name,label,choices,required=true,value}:{name:string;lab
 export function Photo({name="photo",label="照片 / Photo"}:{name?:string;label?:string}) {
   return <label>{label}<input type="file" accept="image/jpeg,image/png,image/webp,image/heic" capture="environment" name={name} required/></label>;
 }
-export function Panel({title,children,id}:{title:string;children:ReactNode;id?:string}) {return <section id={id} className="panel"><h2>{title}</h2>{children}</section>;}
+export function Panel({title,subtitle,badge,children,id}:{title:ReactNode;subtitle?:ReactNode;badge?:ReactNode;children:ReactNode;id?:string}) {
+  return <section id={id} className="panel">
+    {(title||subtitle||badge)&&<div className="card-head"><div><h2>{title}</h2>{subtitle&&<p>{subtitle}</p>}</div>{badge}</div>}
+    {children}
+  </section>;
+}
 export function Empty({children}:{children:ReactNode}) {return <p className="muted">{children}</p>;}
-export function Tag({children}:{children:ReactNode}) {return <span className="tag">{children}</span>;}
+export function Tag({children,tone}:{children:ReactNode;tone?:"green"|"yellow"|"blue"|"red"|"gray"}) {
+  const raw=typeof children==="string"?children.toLowerCase():"";
+  const auto=tone??(/active|available|confirmed|ready|published|completed|approved|paid|delivered|已启用|已完成|已发布|已通过|正常/.test(raw)?"green":
+    /draft|awaiting|pending|processing|open|review|quoting|待|草稿|处理中/.test(raw)?"yellow":
+    /inspecting|queued|stored|received|in progress|comparison|质检中|在库|已收货/.test(raw)?"blue":
+    /quarantine|cancelled|cancel|hold|restricted|expired|error|failed|dispute|隔离|已取消|冻结|异常|驳回/.test(raw)?"red":undefined);
+  return <span className={`tag${auto?" "+auto:""}`}>{children}</span>;
+}
 export function ErrorBlock({error}:{error:string}) {return <div className="notice error" role="alert">{error}</div>;}
 export function Tabs({links,path}:{links:[string,string][];path:string}) {return <nav className="tabs">{links.map(([to,label])=><Link aria-current={to===path?"page":undefined} href={to} key={to}>{label}</Link>)}</nav>;}
 export function Table({headers,rows,empty}:{headers:string[];rows:ReactNode[][];empty?:string}) {

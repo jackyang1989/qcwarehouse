@@ -48,6 +48,17 @@ export function Login({staff,methods,next,verify,oauth}:{
     setEmail(address);
   }
 
+  async function quickDemoSignIn(address:string) {
+    const c:Challenge=await request("/auth/otp/request","POST",{email:address});
+    if(c.demo_code) {
+      const res:SignInResult=await request("/auth/otp/verify","POST",{challenge_id:c.challenge_id,code:c.demo_code});
+      await after(res);
+    } else {
+      setChallenge(c);
+      setEmail(address);
+    }
+  }
+
   return <section className="panel access-card" aria-labelledby="access-title">
     <p className="eyebrow">{staff?"QCWarehouse 员工工作区":"QCWarehouse customer account"}</p>
     <h1 id="access-title">{staff?"员工登录":"Sign in or create an account"}</h1>
@@ -63,7 +74,23 @@ export function Login({staff,methods,next,verify,oauth}:{
       })}
       {!showEmail&&emailAvailable&&<button type="button" onClick={()=>setShowEmail(true)}>Continue with email</button>}
     </div>}
-    {methods.demo&&<p className="notice">{staff?"本地测试环境。可使用员工密码+TOTP验证器登录，或使用下方 @qcw.test 测试验证码快捷登录。":"Local test environment. Use an @qcw.test address to get a test code on this page."}</p>}
+    {methods.demo&&<div className="notice">
+      <strong>{staff?"本地测试环境 · 一键切换岗位账号":"Local Demo Environment · One-Click Test Sign-In"}</strong>
+      <div className="actions" style={{marginTop:8,marginBottom:4}}>
+        {staff?(
+          [
+            ["admin@qcw.test","超级管理员 / 财务 / 客服 (admin)"],
+            ["receiving@qcw.test","收货与仓管 (receiving)"],
+            ["inspector@qcw.test","质检员 / 模板管理 (inspector)"],
+            ["reviewer@qcw.test","报告复核员 (reviewer)"],
+          ].map(([addr,label])=><button key={addr} type="button" className="button sm primary" onClick={()=>quickDemoSignIn(addr)}>{label}</button>)
+        ):(
+          <button type="button" className="button sm primary" onClick={()=>quickDemoSignIn("customer@qcw.test")}>
+            One-click sign in: Demo Customer (customer@qcw.test) →
+          </button>
+        )}
+      </div>
+    </div>}
     {staff&&<Form label="密码与验证器登录" run={async f=>after(await request("/staff/auth/login","POST",{
       email:text(f,"email"),password:String(f.get("password")??""),otp:text(f,"otp"),
     }))}>

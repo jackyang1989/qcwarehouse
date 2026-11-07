@@ -1,18 +1,35 @@
+"use client";
+
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 export function Brand() {
   return <Link className="wordmark" href="/" aria-label="QCWarehouse home">
-    <span className="mark" aria-hidden="true"><PlatformIcon name="packages"/></span>
+    <span className="mark" aria-hidden="true">
+      <svg viewBox="0 0 38 38" fill="none">
+        <path d="M19 3 33 11v16L19 35 5 27V11L19 3Z" fill="#e9effd" stroke="#2e50a2" strokeWidth="2.3"/>
+        <path d="M5 11l14 8 14-8M19 19v16" stroke="#2e50a2" strokeWidth="2.2"/>
+        <path d="m13 15 6-3.5 6 3.5v7L19 25.5 13 22v-7Z" fill="#2b63d9"/>
+      </svg>
+    </span>
     <span>QCWarehouse</span>
   </Link>;
+}
+
+export function QuickSwitch({active}:{active:"public"|"customer"|"warehouse"|"admin"}) {
+  return <div className="quick-switch" role="navigation" aria-label="Portal switcher">
+    <Link href="/" className={active==="public"?"on":""}>Website</Link>
+    <Link href="/orders" className={active==="customer"?"on":""}>Customer</Link>
+    <Link href="/wh" className={active==="warehouse"?"on":""}>Warehouse</Link>
+    <Link href="/admin" className={active==="admin"?"on":""}>Admin</Link>
+  </div>;
 }
 
 export function PublicHeader({accountHref,accountAction,staff,path="/"}:{
   accountHref?:string;accountAction?:ReactNode;staff?:boolean;path?:string;
 }) {
   return <header className="top">
-    <div className="workspace-brand"><Brand/><span className="workspace-context">Inspection Platform</span></div>
+    <div className="workspace-brand"><Brand/><span className="workspace-context">INSPECTION PLATFORM</span></div>
     <nav className="public-nav" aria-label="Primary">
       {[
         ["/catalog","Services"],["/categories","Product Categories"],["/how-it-works","How It Works"],
@@ -20,16 +37,24 @@ export function PublicHeader({accountHref,accountAction,staff,path="/"}:{
       ].map(([href,label])=><Link key={href} href={href} aria-current={path===href||href==="/catalog"&&path.startsWith("/services/")?"page":undefined}>{label}</Link>)}
     </nav>
     <div className="public-header-actions">
-      <Link className="button" href={accountHref??"/login"}>{staff?"员工工作区":accountHref?"My account":"Sign in"}</Link>
+      <QuickSwitch active="public"/>
+      <Link className="button sm" href={accountHref??"/login"}>{staff?"员工工作区":accountHref?"My Workspace":"Sign In"}</Link>
       {accountAction}
-      {!staff&&<Link className="button primary" href="/orders/new">Start inspection</Link>}
+      {!staff&&<Link className="button primary sm" href="/orders/new">Start Inspection</Link>}
     </div>
   </header>;
 }
 
 export function SiteFooter() {
-  return <footer className="site-footer"><Brand/><p>Independent Product Inspection &amp; Sample Comparison in China</p>
-    <nav aria-label="Footer"><Link href="/faq">FAQ</Link><Link href="/contact">Contact</Link><Link href="/legal/terms">Terms</Link><Link href="/legal/privacy">Privacy</Link><Link href="/staff/login" prefetch={false}>Staff sign-in</Link></nav>
+  return <footer className="site-footer">
+    <div><strong>QCWarehouse</strong> · Independent Product Inspection &amp; Sample Comparison in China</div>
+    <nav aria-label="Footer">
+      <Link href="/faq">FAQ</Link>
+      <Link href="/contact">Contact</Link>
+      <Link href="/legal/terms">Terms</Link>
+      <Link href="/legal/privacy">Privacy</Link>
+      <Link href="/staff/login" prefetch={false}>Staff sign-in</Link>
+    </nav>
   </footer>;
 }
 
@@ -49,10 +74,10 @@ const iconPaths:Record<string,string>={
 };
 const navIcons:Record<string,string>={
   "/account":"overview","/orders":"orders","/orders/new":"add","/parcels":"packages","/items":"packages","/reports":"reports",
-  "/account/billing":"finance","/support":"support","/actions":"orders","/wh":"overview","/wh/intake":"packages","/wh/inspection":"inspection",
+  "/account/billing":"finance","/support":"support","/actions":"orders","/wh":"overview","/wh/scan":"scan","/wh/intake":"packages","/wh/inspection":"inspection",
   "/wh/dispatch":"dispatch","/wh/logistics":"dispatch","/admin":"overview","/admin/orders":"orders","/admin/finance":"finance",
   "/admin/settings":"settings","/admin/logistics":"dispatch","/admin/integrations/logistics":"settings",
-  "/wh/storage":"packages","/wh/scan":"inspection","/admin/storage/locations":"packages",
+  "/wh/storage":"packages","/admin/storage/locations":"packages",
   "/admin/tickets":"support","/admin/audit":"reports","/admin/operations":"settings","/wh/review":"reports","/account/notifications":"support",
 };
 
@@ -62,32 +87,80 @@ export function PlatformIcon({name}:{name:string}) {
 
 const navigationSections = {
   customer: [
-    ["Workspace",["/account","/orders","/orders/new","/actions"]],
-    ["Warehouse & reports",["/parcels","/items","/reports"]],
-    ["Account services",["/account/billing","/account/notifications","/support"]],
+    ["Orders & Inspections",["/orders/new","/orders","/actions","/reports"]],
+    ["Samples & Logistics",["/parcels","/items"]],
+    ["Account",["/account","/account/billing","/account/notifications","/support"]],
   ],
   warehouse: [
-    ["日常作业",["/wh","/wh/scan","/wh/intake","/wh/storage"]],
-    ["质检与履约",["/wh/inspection","/wh/review","/wh/dispatch","/wh/logistics"]],
+    ["收货与库内",["/wh","/wh/scan","/wh/intake","/wh/storage"]],
+    ["质检与出库",["/wh/inspection","/wh/review","/wh/dispatch","/wh/logistics"]],
   ],
   admin: [
-    ["运营与财务",["/admin","/admin/orders","/admin/tickets","/admin/finance"]],
-    ["履约与配置",["/admin/settings","/admin/storage/locations","/admin/logistics","/admin/integrations/logistics"]],
-    ["平台治理",["/admin/operations","/admin/audit"]],
+    ["总览与订单",["/admin","/admin/orders","/admin/tickets","/admin/finance"]],
+    ["目录与仓配",["/admin/settings","/admin/storage/locations","/admin/logistics","/admin/integrations/logistics"]],
+    ["风控与系统",["/admin/operations","/admin/audit"]],
   ],
 } satisfies Record<string,[string,string[]][]>;
 
+const wizardSidebarSteps:[string,string][]=[
+  ["Select Inspection","Product category & service"],
+  ["Configure Service","Template & sample count"],
+  ["Sample Details","Items & supplier info"],
+  ["Inspection Scope","Checks & requirements"],
+  ["Review & Terms","Verify details & quote"],
+  ["Payment Preview","Confirm & send samples"],
+];
+
 export function WorkspaceNavigation({area,title,links,path}:{area:keyof typeof navigationSections;title:string;links:[string,string][];path:string}) {
+  const [wizardStep,setWizardStep]=useState(0);
+  useEffect(()=>{
+    function onStep(e:Event) {
+      const detail=(e as CustomEvent<number>).detail;
+      if(typeof detail==="number") setWizardStep(detail);
+    }
+    window.addEventListener("qcw:wizard-step",onStep);
+    return ()=>window.removeEventListener("qcw:wizard-step",onStep);
+  },[]);
+
+  if(area==="customer" && path==="/orders/new") {
+    return <aside className="workspace-sidebar">
+      <div className="wizard-left-head">
+        <div className="eyebrow">INSPECTION WORKFLOW</div>
+        <h2>Create an<br/>Inspection</h2>
+        <p>A structured, traceable process from product arrival to inspection report.</p>
+      </div>
+      <div className="wizard-steps" role="list" aria-label="Inspection workflow steps">
+        {wizardSidebarSteps.map(([name,sub],idx)=><button
+          key={name}
+          type="button"
+          className={`wizard-step ${idx===wizardStep?"active":idx<wizardStep?"done":""}`}
+          onClick={()=>window.dispatchEvent(new CustomEvent("qcw:wizard-go",{detail:idx}))}
+        >
+          <span className="stepno">{idx<wizardStep?"✓":String(idx+1).padStart(2,"0")}</span>
+          <div><strong>{name}</strong><small>{sub}</small></div>
+        </button>)}
+      </div>
+      <div className="sidebar-note">
+        <b>Need assistance?</b>
+        Not sure which inspection is right for your item? Review the scope or contact our team before committing.
+      </div>
+      <div style={{margin:"16px 10px 0"}}>
+        <Link className="button sm" style={{width:"100%",background:"#1b314e",borderColor:"#335073",color:"#e8f1fc"}} href="/orders">← Back to My Orders</Link>
+      </div>
+    </aside>;
+  }
+
   const current=links.find(([href])=>href===path)?.[0]
     ?? links.filter(([href])=>href!=="/wh"&&href!=="/admin"&&path.startsWith(href+"/")).sort(([left],[right])=>right.length-left.length)[0]?.[0]
     ?? (path.startsWith("/wh/task/")?"/wh/inspection":path.startsWith("/shipments/")?"/parcels":undefined);
   const grouped = navigationSections[area].map(([name,paths])=>[name,paths.flatMap(href=>links.filter(([url])=>url===href))] as const);
   const otherLinks = links.filter(([href])=>!grouped.some(([,group])=>group.some(([url])=>url===href)));
+  const isStaff = area==="warehouse" || area==="admin";
   return <aside className="workspace-sidebar">
     <div className="workspace-sidebar-title">
-      <p className="eyebrow">QCWarehouse</p>
-      <strong>{title}</strong>
-      <p>{area==="customer"?"Your inspections, receiving address, items and reports.":area==="warehouse"?"收货、实物库位、质检证据与包裹交接。":"订单履约、运营配置与审计记录。"}</p>
+      <p className="eyebrow">{isStaff?"OPERATIONS / INTERNAL":"CUSTOMER WORKSPACE"}</p>
+      <strong>{area==="customer"?"My Workspace":area==="warehouse"?"仓库作业中心":"运营管理中心"}</strong>
+      <p>{area==="customer"?"Your inspections, receiving address, samples and reports — organized in one place.":"统一实物、库位、检查证据和订单履约信息"}</p>
     </div>
     <nav className="workspace-nav" aria-label={title}>
       {[...grouped,[area==="customer"?"More":"其他",otherLinks] as const].filter(([,group])=>group.length>0).map(([name,group])=><div className="workspace-nav-group" key={name}>
@@ -97,5 +170,9 @@ export function WorkspaceNavigation({area,title,links,path}:{area:keyof typeof n
         </Link>)}
       </div>)}
     </nav>
+    <div className="sidebar-note">
+      <b>{isStaff?"作业与审计留痕":"Documented inspections"}</b>
+      {isStaff?"所有收货、库位、质检证据与资金操作均实时记录服务端审计台账。":"Item IDs, photo evidence and published report versions stay traceable throughout the process."}
+    </div>
   </aside>;
 }

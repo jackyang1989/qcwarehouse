@@ -21,9 +21,24 @@ async function seed() {
       for(const role of roles) await db.query("insert into staff_roles(user_id,role) values($1,$2)",[id,role]);
     }
     const admin=actors.get("admin")!, reviewer=actors.get("reviewer")!, inspector=actors.get("inspector")!;
+    const addrId=uuid();
     await db.query(`insert into warehouse_addresses(id,address_zh,address_en,contact_name,contact_phone,is_default)
-      values($1,'开发演示仓址 · 请勿寄件','Demo warehouse address · do not ship','QCW DEMO','00000000000',true)`,[uuid()]);
-    await db.query("insert into storage_locations(id,code,zone) values($1,'R-01','receiving'),($2,'S-01','post_inspection'),($3,'Q-01','quarantine')",[uuid(),uuid(),uuid()]);
+      values($1,'广东省佛山市南海区桂城街道质检演示仓 3 号库','Unit 3, QC Inspection Center, Nanhai District, Foshan, Guangdong, China','QCW 收货组','13800138000',true)`,[addrId]);
+    await db.query(`insert into storage_locations(id,code,zone,capacity,notes) values
+      ($1,'R-01','receiving',50,'到件暂存区'),
+      ($2,'S-01','post_inspection',50,'检后存放区'),
+      ($3,'Q-01','quarantine',20,'异常与隔离区'),
+      ($4,'A-04-02-01','post_inspection',10,'A区 04架 02层 01格'),
+      ($5,'A-04-02-02','post_inspection',10,'A区 04架 02层 02格'),
+      ($6,'A-04-02-03','reference',10,'确认样专区')`,[uuid(),uuid(),uuid(),uuid(),uuid(),uuid()]);
+    const custId=uuid(), custOrgId=uuid();
+    await db.query("insert into users(id,display_name,locale) values($1,'Demo Customer','en')",[custId]);
+    await db.query("insert into organizations(id,name) values($1,'Personal workspace')",[custOrgId]);
+    await db.query("insert into memberships(user_id,org_id) values($1,$2)",[custId,custOrgId]);
+    await db.query("insert into customer_receiving_profiles(user_id,org_id,receiving_code) values($1,$2,'QCW-8F2K5')",[custId,custOrgId]);
+    const custEmail=await one<{id:string}>(db,`insert into user_emails(user_id,original_email,normalized_email,verified_at,is_primary,login_enabled)
+      values($1,$2::text,($2::text)::citext,now(),true,true) returning id`,[custId,"customer@qcw.test"]);
+    await addEmailOtpIdentity(db,custId,custEmail.id);
     for(const kind of ["terms","privacy","restricted_items","report_notice"]) {
       const content="Development fixture. Use test parcels and simulated payments only. No physical shipment is requested.";
       await db.query("insert into terms_versions(id,kind,version,effective_at,content_md,content_hash) values($1,$2,'demo-v1',now(),$3,$4)",[uuid(),kind,content,hash(content)]);

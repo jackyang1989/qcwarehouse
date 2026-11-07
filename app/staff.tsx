@@ -16,12 +16,12 @@ const label=(s:string)=>({
   delayed:"同步延迟",needs_carrier:"待补承运商",needs_verification:"待验证",not_supported:"不支持自动跟踪",picked_up:"已揽件",
   out_for_delivery:"派送中",returning:"退回途中",forwarded:"已转寄",
   approved:"已审批，待渠道确认",succeeded:"渠道已确认",failed:"渠道失败",processing:"处理中",partially_refunded:"部分退款",
-  draft:"草稿",awaiting_payment:"待支付",awaiting_samples:"待收货",queued:"待质检",inspecting:"质检中",
+  draft:"草稿",awaiting_payment:"待支付",awaiting_samples:"待收货",samples_ready:"样品已齐备",queued:"待质检",inspecting:"质检中",
   qa_review:"复核中",report_ready:"报告已发布",action_pending:"待处置",cancelled:"已取消",closed:"已关闭",on_hold:"暂停",
   return_to_seller:"退商家",to_forwarder:"寄集运仓",identified:"已识别",
 } as Record<string,string>)[s]??s;
 const options=(rows:Row[],name="code")=>rows.map(r=>({id:r.id,label:String(r[name])}));
-export function WarehouseDesk({path,actor}:{path:string;actor:Row}) {
+export function WarehouseDesk({path,actor,demo=false}:{path:string;actor:Row;demo?:boolean}) {
   const {data,error,reload}=useLoad("/staff/desk"),carriers=useLoad("/carriers");
   const [lookup,setLookup]=useState<{tracking:string;carrier:string;result:Row}>();
   const [receiving,setReceiving]=useState(false);
@@ -87,7 +87,7 @@ export function WarehouseDesk({path,actor}:{path:string;actor:Row}) {
   return <><div className="page-head row"><div><p className="eyebrow">WAREHOUSE OPERATIONS</p><h1>{heading[0]}</h1><p className="muted">{heading[1]}</p></div>
     {current==="overview"&&<div className="head-actions"><Link className="button primary" href="/wh/scan">扫码查件</Link><Link className="button" href="/wh/intake">待收登记</Link></div>}
   </div>
-    <div className="row flexwrap" role="region" aria-label="演示员工角色切换" style={{marginBottom:16,justifyContent:"flex-start",gap:10}}>
+    {demo&&<div className="row flexwrap" role="region" aria-label="演示员工角色切换" style={{marginBottom:16,justifyContent:"flex-start",gap:10}}>
       <span className="label-inline">演示员工角色</span>
       <select
         className="input"
@@ -112,8 +112,8 @@ export function WarehouseDesk({path,actor}:{path:string;actor:Row}) {
         <option value="warehouse">仓管</option>
         <option value="admin">超级管理员</option>
       </select>
-      <Tag tone="yellow">角色只控制前端演示</Tag>
-    </div>
+      <Tag tone="yellow">本地演示切换服务端员工会话</Tag>
+    </div>}
     {current==="overview"&&<>
       <div className="stats" aria-label="仓库作业摘要">{overviewMetrics.map(([href,title,value,detail])=>
         <Link className="stat" href={href} key={title}><span className="label">{title}</span><strong className="value">{value}</strong><small className="detail">{detail}</small></Link>)}</div>
@@ -643,7 +643,7 @@ export function TaskView({id,actor}:{id:string;actor:Row}) {
               {id:"attention",label:"Attention（需留意）"},{id:"material_issue",label:"Material issue（明显缺陷）"},{id:"uncertain",label:"Uncertain（不确定）"}
             ]}/>
             {c.parts?.length>0&&<Select name="part_code" label="缺陷部位" required={false} choices={c.parts.map((p:string)=>({id:p,label:p}))}/>}
-            <Field name="reason" label="英文说明或缺测原因" required={false}/>
+            <Field name="reason" label="观察说明或缺测原因（支持中文录入，复核时译为英文）" required={false}/>
             <label>证据照片{c.evidence?"（提交前必填）":""}<FileInput name="photo" accept="image/*"/></label>
             <label className="check"><input type="checkbox" name="save_offline"/>暂存到本机离线队列（稍后批量同步）</label>
           </Form>}
@@ -687,13 +687,18 @@ export function TaskView({id,actor}:{id:string;actor:Row}) {
     </Panel>
   </>;
 }
-export function LogisticsDesk() {
+export function LogisticsDesk({actor}:{actor?:Row}) {
   const {data,error,reload}=useLoad("/staff/tracking");
   const monitor=useLoad("/staff/tracking/monitor");
+  const carriers=useLoad("/carriers");
   const [selectedId,setSelectedId]=useState<string>("");
   const rows:Row[]=data?.rows??[];
   const selectedTrack=rows.find(r=>r.id===selectedId);
-  return <><div className="page-head row"><div><p className="eyebrow">TRACKING / OPERATIONS</p><h1>物流监控</h1><p className="muted">入仓、集运及退商家均显示中文原始轨迹与客户英文事件。</p></div><div className="head-actions"><button type="button" className="button sm" onClick={()=>{reload();monitor.reload();}}>刷新监控</button><Link className="button sm" href="/admin/integrations/logistics">物流接口配置</Link></div></div>
+  const canTranslate=Boolean(actor?.roles?.some((r:string)=>["receiver","support","reviewer","warehouse_admin","super_admin"].includes(r)));
+  const canCorrectWaybill=Boolean(actor?.roles?.some((r:string)=>["warehouse_admin","super_admin"].includes(r)));
+  const isSuperAdmin=Boolean(actor?.roles?.includes("super_admin"));
+  const carrierChoices=(carriers.data?.carriers??[]).map((c:Row)=>({id:c.code,label:c.labels["zh-CN"]??c.labels.en}));
+  return <><div className="page-head row"><div><p className="eyebrow">TRACKING / OPERATIONS</p><h1>物流监控</h1><p className="muted">入仓、集运及退商家均显示中文原始轨迹与客户英文事件。</p></div><div className="head-actions"><button type="button" className="button sm" onClick={()=>{reload();monitor.reload();}}>刷新监控</button>{isSuperAdmin&&<Link className="button sm" href="/admin/integrations/logistics">物流接口配置</Link>}</div></div>
     {error&&<ErrorBlock error={error}/>}
     {monitor.error&&<ErrorBlock error={monitor.error}/>}
     {monitor.data&&<>
@@ -774,6 +779,63 @@ export function LogisticsDesk() {
         {selectedTrack.events?.length
           ?<ol className="timeline">{selectedTrack.events.map((e:Row)=><li key={e.id}><small className="muted">{stamp(e.occurred_at)}</small><div>{e.text}</div></li>)}</ol>
           :<Empty>暂无承运商中文轨迹（本地未开启外部快递商实时回调时保持待查询状态）。</Empty>}
+        {(selectedTrack.zh_events?.length??0)>0&&<div style={{marginTop:14}}>
+          <h3 style={{marginBottom:8}}>客户英文轨迹翻译与双人复核</h3>
+          <Table headers={["发生时间","中文原文","当前英文译文","状态","人工翻译 / 复核"]} rows={selectedTrack.zh_events.map((ev:Row)=>[
+            stamp(ev.occurred_at??ev.source_time),
+            ev.text_zh??"—",
+            ev.text_en??<span className="muted">尚未录入</span>,
+            <Tag tone={ev.reviewed_at?"green":ev.translation_id?"yellow":"gray"}>{ev.reviewed_at?"已独立复核":ev.translation_id?"草稿待复核":"待翻译"}</Tag>,
+            canTranslate?<div className="stack" style={{gap:6}}>
+              <Form inline key={`tr-${ev.id}-${ev.translation_id??"new"}`} label="提交英文译稿" run={async f=>{
+                await request(`/staff/tracking/${selectedTrack.id}/translations`,"POST",{
+                  tracking_event_id:ev.id,
+                  source_hash:ev.source_hash,
+                  text_en:text(f,"text_en"),
+                });
+                reload();
+              }}>
+                <Field name="text_en" label="英文轨迹译文" value={ev.text_en??""}/>
+              </Form>
+              {ev.translation_id&&!ev.reviewed_at&&(
+                ev.translation_source==="draft:"+actor?.id
+                  ?<small className="muted">本人起草，须由另一名员工独立复核</small>
+                  :<Action sm primary run={async()=>{
+                    await request(`/staff/tracking-translations/${ev.translation_id}/approve`,"POST",{});
+                    reload();
+                  }}>独立复核通过</Action>
+              )}
+            </div>:"—",
+          ])}/>
+        </div>}
+        {canCorrectWaybill&&carrierChoices.length>0&&<details className="card" style={{marginTop:14}}>
+          <summary>修正运单号或承运商（需 15 分钟内员工验证登录会话）</summary>
+          <p className="small muted">原运单记录将归档为 superseded 并保留历史快照；已交接出库运单修正必须上传面单照片凭证。</p>
+          <Form key={`corr-${selectedTrack.id}-${selectedTrack.revision}`} label="确认修正运单" run={async f=>{
+            const file=f.get("photo");
+            const evidenceIds:string[]=[];
+            if(file instanceof File && file.size>0) {
+              evidenceIds.push(await upload(file,"label_photo"));
+            } else if(selectedTrack.shipment_id) {
+              throw new Error("已出库运单修正必须上传面单照片凭证。");
+            }
+            await request(`/staff/tracking/${selectedTrack.id}/correct`,"POST",{
+              revision:selectedTrack.revision??1,
+              carrier_code:text(f,"carrier_code"),
+              tracking_no:text(f,"tracking_no"),
+              reason:text(f,"reason"),
+              ...(evidenceIds.length?{evidence_ids:evidenceIds}:{}),
+            });
+            setSelectedId("");
+            reload();
+            monitor.reload();
+          }}>
+            <Select name="carrier_code" label="更正后承运商" value={selectedTrack.carrier_code??carrierChoices[0]?.id} choices={carrierChoices}/>
+            <Field name="tracking_no" label="更正后运单号" value={selectedTrack.tracking_norm}/>
+            <Field name="reason" label="更正原因（审计必填）"/>
+            <label>面单照片凭证{selectedTrack.shipment_id?"（出库运单必填）":"（可选）"}<FileInput name="photo" accept="image/*" required={Boolean(selectedTrack.shipment_id)}/></label>
+          </Form>
+        </details>}
       </div>}
     </Panel></>;
 }
@@ -881,9 +943,17 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
         </Link>
       </div>
       <div className="grid cols2">
-        <Panel title="流程健康度" subtitle="生产汇总与明细筛选采用同一口径。">
+        <Panel title="流程健康度" subtitle="生产汇总与明细筛选采用同一口径（近 9 日 UTC 正式单趋势）。">
           <div className="bars" aria-label="近 9 日作业趋势">
-            {[44,68,85,53,94,72,81,62,92].map((n,i)=><span key={i} style={{height:`${n}%`}} data-v={`${n}% 准时率`}/>)}
+            {(()=>{
+              const trend:Row[]=data.dailyTrend??[];
+              const maxTotal=Math.max(1,...trend.map((t:Row)=>Number(t.total??0)));
+              return trend.map((t:Row)=><span
+                key={t.day}
+                style={{height:`${Math.max(8,Math.round((Number(t.total??0)/maxTotal)*100))}%`}}
+                data-v={`${t.day} · 新建 ${t.total} / 已出报告 ${t.completed}`}
+              />);
+            })()}
           </div>
           <div className="row between small muted">
             <span>正式订单 {m.production_orders??0} · 测试订单 {m.test_orders??0}</span>
@@ -917,7 +987,7 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
         </Panel>
         <Panel title="生产发布提醒">
           <p className="small">开发、模拟测试、真实支付联调、实仓验收和正式开放是不同的里程碑。未完成上线门禁签署前默认保持预发布保护。</p>
-          <Tag tone="yellow">Production gate: staging_only</Tag>
+          <Tag tone={data.effectiveLaunchMode==="production"?"green":"yellow"}>Production gate: {data.effectiveLaunchMode??"staging_only"}</Tag>
         </Panel>
       </div>
       {canHandleOrders&&queue.length>0&&<Panel title="客服待处理队列">
@@ -986,7 +1056,8 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
           <Tag>{d.status}</Tag>,
           d.reason??"—",
           d.staff_decision?`${d.staff_decision} (${d.staff_note??""})`:"—",
-          d.status==="open"?<Form inline label="裁决争议" run={async f=>{
+          ["needs_response","under_review","warning_needs_response"].includes(d.status)?<small className="muted">等待渠道结案后裁决</small>:
+          d.status!=="resolved_by_staff"?<Form inline label="裁决争议" run={async f=>{
             await request("/staff/disputes/"+encodeURIComponent(d.provider_dispute_id)+"/resolve","POST",{
               decision:text(f,"decision"),
               reason:text(f,"reason"),
@@ -998,7 +1069,7 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
               {id:"maintain_hold",label:"维持冻结"},
             ]}/>
             <Field name="reason" label="裁决原因"/>
-          </Form>:null,
+          </Form>:"已结案裁决",
         ])} empty="当前无支付拒付或争议记录。"/>
       </Panel>
     </>}
@@ -1163,6 +1234,50 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
           <Field name="price" label="新价格（USD）" type="number" min={.01} step=".01"/>
           <Field name="days" label="承诺工作日" type="number" min={1} max={180} value={3}/>
         </Form>}
+        {(data.templates??[]).some((t:Row)=>t.state==="PUBLISHED")&&<details className="card" style={{marginTop:12}}>
+          <summary>新建或绑定可售套餐 SKU（关联已发布模板）</summary>
+          <p className="small muted">新准入品类（如箱包、家居用品）完成能力审批与模板发布后，可在此直接创建可售套餐并生效上架，无需改动通用业务代码。</p>
+          <Form label="创建并发布套餐 SKU" run={async f=>{
+            const tplId=text(f,"template_version_id");
+            const tpl=(data.templates??[]).find((t:Row)=>t.id===tplId);
+            if(!tpl) throw new Error("请选择已发布的检验模板版本。");
+            const cents=Math.round(Number(text(f,"price"))*100);
+            const isPkg=text(f,"pricing_mode")==="package";
+            await request("/staff/admin/offers","POST",{
+              sku_code:text(f,"sku_code").toLowerCase(),
+              category_id:tpl.category_id,
+              service_type_id:tpl.service_type_id,
+              template_version_id:tpl.id,
+              title:{en:text(f,"title_en"),"zh-CN":text(f,"title_zh")},
+              enabled:true,
+              rules:{
+                minimum:Number(text(f,"minimum")),
+                maximum:Number(text(f,"maximum")),
+                ...(isPkg?{package_cents:cents}:{unit_cents:cents}),
+                business_days:Number(text(f,"days")),
+              },
+            });
+            reload();
+          }}>
+            <Select name="template_version_id" label="绑定已发布检验模板" choices={(data.templates??[]).filter((t:Row)=>t.state==="PUBLISHED").map((t:Row)=>{
+              const cat=(data.categories??[]).find((c:Row)=>c.id===t.category_id);
+              const svc=(data.services??[]).find((s:Row)=>s.id===t.service_type_id);
+              return {id:t.id,label:`${cat?.labels?.["zh-CN"]??cat?.slug??"类目"} · ${svc?.labels?.["zh-CN"]??svc?.code??"服务"} · ${t.template_key} v${t.version}`};
+            })}/>
+            <div className="inline-form">
+              <Field name="sku_code" label="SKU 编码（小写字母/数字/连字符）"/>
+              <Field name="title_zh" label="套餐中文名称"/>
+              <Field name="title_en" label="套餐英文名称"/>
+            </div>
+            <div className="inline-form">
+              <Select name="pricing_mode" label="计价方式" choices={[{id:"unit",label:"按件计价 (unit_cents)"},{id:"package",label:"整包一口价 (package_cents)"}]}/>
+              <Field name="minimum" label="最少件数" type="number" min={1} max={100} value={1}/>
+              <Field name="maximum" label="最多件数" type="number" min={1} max={100} value={50}/>
+              <Field name="price" label="单价 / 包价（USD）" type="number" min={.01} step=".01" value={15}/>
+              <Field name="days" label="承诺工作日" type="number" min={1} max={180} value={3}/>
+            </div>
+          </Form>
+        </details>}
       </Panel>}
     </>}
     {(page==="templates"||page==="settings")&&<>
@@ -1342,7 +1457,7 @@ function StaffOrderList() {
       <div className="inline-form">
         <label>订单号、卖家运单、实物码或客户邮箱<input name="query" defaultValue={params.get("query")??""} maxLength={254}/></label>
         <label>状态<select name="state" defaultValue={params.get("state")??""}>
-          <option value="">全部</option>{["draft","awaiting_payment","awaiting_samples","queued","inspecting","qa_review","report_ready","action_pending","on_hold","closed","cancelled"]
+          <option value="">全部</option>{["draft","awaiting_payment","awaiting_samples","samples_ready","queued","inspecting","qa_review","report_ready","action_pending","on_hold","closed","cancelled"]
             .map(value=><option key={value} value={value}>{label(value)}</option>)}
         </select></label>
         <label>订单类型<select name="test" defaultValue={params.get("test")??"all"}>
@@ -1436,7 +1551,7 @@ export function StaffOrder({number}:{number:string}) {
             await request("/staff/orders/"+data.order.id+"/resume","POST",{reason:text(f,"reason")});
             reload();
           }}><Field name="reason" label="恢复说明"/></Form>}
-          {["report_published","disposition_in_progress"].includes(data.order.state)&&<Action run={async()=>{
+          {["report_ready","action_pending"].includes(data.order.state)&&<Action run={async()=>{
             await request("/staff/orders/"+data.order.id+"/close","POST",{revision:data.order.revision});
             reload();
           }}>全部实物终态后关闭订单</Action>}

@@ -14,7 +14,8 @@ export default async function Page({params,searchParams}:{params:Promise<{page:s
   if(page.some(segment=>segment.includes("/"))) notFound();
   const path="/"+page.join("/");
   const route=resolvePortalRoute(path);
-  if(!route || route.view==="demo" && !isDemo()) notFound();
+  const demo=isDemo();
+  if(!route || route.view==="demo" && !demo) notFound();
 
   const jar=await cookies();
   const actor=await actorForSession(jar.get("session")?.value);
@@ -49,5 +50,5 @@ export default async function Page({params,searchParams}:{params:Promise<{page:s
         verify={search.verify==="1"} oauth={typeof search.oauth==="string"?search.oauth:undefined}/>}</AccessShell>;
   }
 
-  return <Portal path={path} target={target} route={route} actor={actor}/>;
+  return <Portal path={path} target={target} route={route} actor={actor} demo={demo}/>;
 }

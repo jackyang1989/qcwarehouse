@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { actorForSession } from "../packages/core/auth";
+import { isDemo } from "../packages/core/common";
 import { staffHome } from "../packages/core/portal-routes";
 import { PlatformIcon, PublicHeader, SiteFooter } from "./chrome";
 import { CategoryCoverage } from "./category-coverage";
@@ -29,7 +30,7 @@ export default async function Home() {
   const actor=await actorForSession((await cookies()).get("session")?.value);
   const accountHref=actor?.kind==="customer"?"/account":actor?staffHome(actor.roles):undefined;
   return <>
-    <PublicHeader accountHref={accountHref} staff={actor?.kind==="staff"} actor={actor}/>
+    <PublicHeader accountHref={accountHref} staff={actor?.kind==="staff"} actor={actor} demo={isDemo()}/>
     <main className="marketing" id="main-content">
       <section className="marketing-hero" aria-labelledby="home-title">
         <div className="hero-inner">

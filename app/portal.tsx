@@ -20,7 +20,7 @@ import { canOpenStaffPage, customerDestination, customerTabs, staffHome, staffTa
 
 import type { Actor } from "../packages/core/common";
 
-export function Portal({path,target,route,actor:a}:{path:string;target:string;route:PortalRoute;actor:Actor|null}) {
+export function Portal({path,target,route,actor:a,demo=false}:{path:string;target:string;route:PortalRoute;actor:Actor|null;demo?:boolean}) {
   const isStaff=route.area==="warehouse"||route.area==="admin";
   const publicPage=route.area==="public";
   const warehouseLinks=a?.kind==="staff"?staffTabs("warehouse",a.roles):[];
@@ -34,22 +34,23 @@ export function Portal({path,target,route,actor:a}:{path:string;target:string;ro
   else if(route.view==="report-guide") content=<ReportGuide/>;
   else if(route.view==="legal") content=<Legal path={path}/>;
   else if(!a) content=null;
-  else if(isStaff && a.kind!=="staff") content=<section className="panel narrow"><h1>需要员工权限</h1><p>请使用已分配权限的员工账号登录，或在本地演示环境下直接切换角色。</p>
+  else if(isStaff && a.kind!=="staff") content=<section className="panel narrow"><h1>需要员工权限</h1>
+    <p>{demo?"请使用已分配权限的员工账号登录，或在本地演示环境下直接切换角色。":"请使用已分配权限的员工账号登录。"}</p>
     <div className="actions">
-      <button type="button" className="button primary" onClick={()=>void switchDemoPortal(target,"admin@qcw.test")}>
+      {demo&&<button type="button" className="button primary" onClick={()=>void switchDemoPortal(target,"admin@qcw.test")}>
         一键切换为{route.area==="warehouse"?"仓库":"管理后台"}演示账号
-      </button>
-      <Link className="button" href={withDestination("/staff/login",target)}>前往员工登录</Link>
+      </button>}
+      <Link className={demo?"button":"button primary"} href={withDestination("/staff/login",target)}>前往员工登录</Link>
     </div></section>;
   else if(isStaff&&!canOpenStaffPage(path,route,a.roles)) content=<section className="panel"><h1>当前账号无权访问</h1>
-    <p>请联系管理员确认当前岗位的权限，或切换至对应岗位演示账号。</p>
+    <p>{demo?"请联系管理员确认当前岗位的权限，或切换至对应岗位演示账号。":"请联系管理员确认当前岗位的权限。"}</p>
     <div className="actions">
-      <button type="button" className="button primary" onClick={()=>void switchDemoPortal(target,"admin@qcw.test")}>
+      {demo&&<button type="button" className="button primary" onClick={()=>void switchDemoPortal(target,"admin@qcw.test")}>
         切换为全权限演示员工账号
-      </button>
+      </button>}
       {staffHome(a.roles)&&<Link className="button" href={staffHome(a.roles)!}>返回工作区</Link>}
     </div></section>;
-  else if(route.view==="logistics") content=<LogisticsDesk/>;
+  else if(route.view==="logistics") content=<LogisticsDesk actor={a}/>;
   else if(route.view==="logistics-configuration") content=<LogisticsConfiguration/>;
   else if(route.view==="warehouse-scan") content=<WarehouseScan/>;
   else if(route.view==="warehouse-item") content=<WarehouseItemView code={route.id}/>;
@@ -66,14 +67,14 @@ export function Portal({path,target,route,actor:a}:{path:string;target:string;ro
   else if(route.view==="staff-ticket") content=<StaffTicket key={route.id} id={route.id} actor={a}/>;
   else if(route.view==="staff-order") content=<StaffOrder key={route.id} number={route.id}/>;
   else if(route.view==="task") content=<TaskView id={route.id} actor={a}/>;
-  else if(route.view==="warehouse") content=<WarehouseDesk path={path} actor={a}/>;
+  else if(route.view==="warehouse") content=<WarehouseDesk path={path} actor={a} demo={demo}/>;
   else if(a.kind!=="customer") content=<section className="panel narrow"><h1>Customer account required</h1>
     <p>Use your customer account to open the customer workspace.</p>
     <div className="actions">
-      <button type="button" className="button primary" onClick={()=>void switchDemoPortal(customerDestination(target)??"/orders","customer@qcw.test")}>
+      {demo&&<button type="button" className="button primary" onClick={()=>void switchDemoPortal(customerDestination(target)??"/orders","customer@qcw.test")}>
         One-click switch to Demo Customer
-      </button>
-      <Link className="button" href={withDestination("/login",customerDestination(target))}>Sign in as a customer</Link>
+      </button>}
+      <Link className={demo?"button":"button primary"} href={withDestination("/login",customerDestination(target))}>Sign in as a customer</Link>
     </div></section>;
   else if(route.view==="new-order") content=<NewOrder/>;
   else if(route.view==="customer-actions") content=<CustomerActions/>;
@@ -90,7 +91,7 @@ export function Portal({path,target,route,actor:a}:{path:string;target:string;ro
   const signOut=a?<Action run={async()=>{await request("/auth/logout","POST",{});location.assign(a.kind==="staff"?"/staff/login":"/login");}}>{a.kind==="staff"?"退出登录":"Sign out"}</Action>:undefined;
   const homeLink=a?.kind==="customer"?"/account":a?staffHome(a.roles):undefined;
   if(publicPage||!a||links.length===0) return <>
-    <PublicHeader path={path} accountHref={homeLink} staff={a?.kind==="staff"} accountAction={signOut} actor={a}/>
+    <PublicHeader path={path} accountHref={homeLink} staff={a?.kind==="staff"} accountAction={signOut} actor={a} demo={demo}/>
     <main className={`public-shell view-${route.view}`} id="main-content" lang={locale}>{content}</main>
     <SiteFooter/>
   </>;
@@ -98,13 +99,14 @@ export function Portal({path,target,route,actor:a}:{path:string;target:string;ro
   const section=route.area==="admin"?"运营总览":route.area==="warehouse"?"仓库总览":"Workspace";
   const currentLink=links.find(([href])=>href===path);
   const parentLink=links.filter(([href])=>href!=="/wh"&&href!=="/admin"&&path.startsWith(href+"/")).sort(([left],[right])=>right.length-left.length)[0];
-  const topLinks:[string,string][]=route.area==="warehouse"?[
+  const rawTopLinks:[string,string][]=route.area==="warehouse"?[
     ["/wh/scan","扫码查询"],["/wh/inspection","检查队列"],["/wh/review","报告复核"],["/wh/dispatch","出库管理"],
   ]:route.area==="admin"?[
     ["/admin/orders","订单管理"],["/admin/finance","财务"],["/admin/logistics","物流监控"],["/admin/templates","模板配置"],["/admin/storage/locations","库位管理"],
   ]:[
     ["/catalog","Services"],["/categories","Product Categories"],["/how-it-works","How It Works"],["/report-guide","Reports"],["/pricing","Pricing"],
   ];
+  const topLinks=isStaff?rawTopLinks.filter(([href])=>links.some(([l])=>l===href)):rawTopLinks;
 
   return <div className={`workspace workspace-${route.area}`} lang={locale}>
     <a className="skip-link" href="#main-content">{isStaff?"跳至主要内容":"Skip to main content"}</a>
@@ -115,13 +117,13 @@ export function Portal({path,target,route,actor:a}:{path:string;target:string;ro
         {topLinks.map(([href,label])=><Link key={href} href={href} aria-current={path===href?"page":undefined}>{label}</Link>)}
       </nav>
       <div className="header-right">
-        <QuickSwitch active={route.area as "customer"|"warehouse"|"admin"} actor={a}/>
-        <Tag tone="outline">{isStaff?"内部演示":"Customer preview"}</Tag>
+        {demo&&<QuickSwitch active={route.area as "customer"|"warehouse"|"admin"} actor={a}/>}
+        {demo&&<Tag tone="outline">{isStaff?"内部演示":"Customer preview"}</Tag>}
         {signOut}
       </div>
     </header>
     <div className={`workspace-layout ${path==="/orders/new"?"wizard-layout":""}`}>
-      <WorkspaceNavigation area={route.area as "admin"|"warehouse"|"customer"} title={section} links={links} path={path}/>
+      <WorkspaceNavigation area={route.area as "admin"|"warehouse"|"customer"} title={section} links={links} path={path} demo={demo}/>
       <main className={`workspace-main view-${route.view}`} id="main-content" tabIndex={-1}>
         <nav className="breadcrumb" aria-label={isStaff?"当前位置":"Breadcrumb"}>
           <Link href="/">{isStaff?"QCWarehouse":"QCWarehouse"}</Link><span aria-hidden="true">›</span>

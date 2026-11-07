@@ -52,8 +52,8 @@ export function QuickSwitch({active,actor}:{active:"public"|"customer"|"warehous
   </div>;
 }
 
-export function PublicHeader({accountHref,accountAction,staff,path="/",actor}:{
-  accountHref?:string;accountAction?:ReactNode;staff?:boolean;path?:string;actor?:Actor|null;
+export function PublicHeader({accountHref,accountAction,staff,path="/",actor,demo=false}:{
+  accountHref?:string;accountAction?:ReactNode;staff?:boolean;path?:string;actor?:Actor|null;demo?:boolean;
 }) {
   return <header className="top">
     <div className="workspace-brand"><Brand/><span className="workspace-context">INSPECTION PLATFORM</span></div>
@@ -65,7 +65,7 @@ export function PublicHeader({accountHref,accountAction,staff,path="/",actor}:{
       ].map(([href,label])=><Link key={href} href={href} aria-current={path===href||href==="/catalog"&&path.startsWith("/services/")?"page":undefined}>{label}</Link>)}
     </nav>
     <div className="public-header-actions">
-      <QuickSwitch active="public" actor={actor}/>
+      {demo&&<QuickSwitch active="public" actor={actor}/>}
       <Link className="button sm" href={accountHref??"/login"}>{staff?"员工工作区":accountHref?"My Workspace":"Sign In"}</Link>
       {accountAction}
       {!staff&&<Link className="button primary sm" href="/orders/new">Start Inspection</Link>}
@@ -123,7 +123,7 @@ const navigationSections = {
     ["Account",["/account","/account/billing","/account/notifications","/support"]],
   ],
   warehouse: [
-    ["运营作业",["/wh","/wh/scan","/wh/intake","/wh/packages","/wh/samples","/wh/storage","/wh/inspection","/wh/execute","/wh/sync","/wh/review","/wh/dispatch","/wh/stocktakes"]],
+    ["运营作业",["/wh","/wh/scan","/wh/intake","/wh/packages","/wh/samples","/wh/storage","/wh/inspection","/wh/execute","/wh/sync","/wh/review","/wh/dispatch","/wh/logistics","/wh/stocktakes"]],
   ],
   admin: [
     ["运营管理",["/admin","/admin/orders","/admin/tickets","/admin/dispositions","/admin/refunds","/admin/payments","/admin/finance","/admin/logistics","/admin/incidents"]],
@@ -140,7 +140,7 @@ const wizardSidebarSteps:[string,string][]=[
   ["Payment Preview","Confirm & send samples"],
 ];
 
-export function WorkspaceNavigation({area,title,links,path}:{area:keyof typeof navigationSections;title:string;links:[string,string][];path:string}) {
+export function WorkspaceNavigation({area,title,links,path,demo=false}:{area:keyof typeof navigationSections;title:string;links:[string,string][];path:string;demo?:boolean}) {
   const [wizardStep,setWizardStep]=useState(0);
   useEffect(()=>{
     function onStep(e:Event) {
@@ -203,8 +203,10 @@ export function WorkspaceNavigation({area,title,links,path}:{area:keyof typeof n
       </div>)}
     </nav>
     <div className="sidebar-note">
-      <b>{isStaff?"演示环境提醒":"Documented inspections"}</b>
-      {isStaff?"所有操作均为本机模拟。实际资金、物流、客户资产和报告发布需要服务端授权。":"Item IDs, photo evidence and published report versions stay traceable throughout the process."}
+      <b>{isStaff?(demo?"演示环境提醒":"作业与审计留痕"):"Documented inspections"}</b>
+      {isStaff
+        ?(demo?"所有操作均为本机模拟。实际资金、物流、客户资产和报告发布需要服务端授权。":"所有收货、库位、质检证据与资金操作均实时记录服务端审计台账。")
+        :"Item IDs, photo evidence and published report versions stay traceable throughout the process."}
     </div>
   </aside>;
 }

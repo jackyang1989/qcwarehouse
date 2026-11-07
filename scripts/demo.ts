@@ -25,9 +25,9 @@ async function seed() {
     await db.query(`insert into warehouse_addresses(id,address_zh,address_en,contact_name,contact_phone,is_default)
       values($1,'广东省佛山市南海区桂城街道质检演示仓 3 号库','Unit 3, QC Inspection Center, Nanhai District, Foshan, Guangdong, China','QCW 收货组','13800138000',true)`,[addrId]);
     await db.query(`insert into storage_locations(id,code,zone,capacity,notes) values
-      ($1,'R-01','receiving',50,'到件暂存区'),
-      ($2,'S-01','post_inspection',50,'检后存放区'),
-      ($3,'Q-01','quarantine',20,'异常与隔离区'),
+      ($1,'R-01','receiving',null,'到件暂存区'),
+      ($2,'S-01','post_inspection',null,'检后存放区'),
+      ($3,'Q-01','quarantine',null,'异常与隔离区'),
       ($4,'A-04-02-01','post_inspection',10,'A区 04架 02层 01格'),
       ($5,'A-04-02-02','post_inspection',10,'A区 04架 02层 02格'),
       ($6,'A-04-02-03','reference',10,'确认样专区')`,[uuid(),uuid(),uuid(),uuid(),uuid(),uuid()]);

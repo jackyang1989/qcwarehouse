@@ -1463,7 +1463,7 @@ export async function evaluateLaunchReadiness(db:DB,actor:Actor) {
        (select count(*)::int from orders where state not in ('draft','closed','cancelled')) in_flight_orders,
        (select count(*)::int from dispatch_batches where state not in ('draft','closed','cancelled')) in_flight_batches,
        (select count(*)::int from warehouse_items where custody_state in ('received','stored','packed')) stored_items,
-       (select count(*)::int from payment_disputes where state='open') open_disputes,
+       (select count(*)::int from payment_disputes where state<>'resolved_by_staff') open_disputes,
        (select count(*)::int from outbox_events where processed_at is null and attempts>=5) exhausted_jobs`
   );
   const cfgRows=(await db.query<{key:string;value:unknown}>(

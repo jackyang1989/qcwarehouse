@@ -329,8 +329,26 @@ export async function adminDesk(db:DB,actor:Actor) {
     (select count(*)::int from payment_disputes where state<>'resolved_by_staff') open_disputes,
     (select count(*)::int from packages where state='unmatched' or org_id is null) unmatched_packages
     from orders`)).rows[0]:null;
+  const dailyTrend=ops?(await db.query<{day:string;total:number;completed:number}>(`
+    select to_char(d.ts,'MM-DD') as day,
+      count(o.id)::int as total,
+      count(o.id) filter (where o.state in ('report_ready','action_pending','closed'))::int as completed
+    from generate_series(
+      date_trunc('day',now() at time zone 'UTC') - interval '8 days',
+      date_trunc('day',now() at time zone 'UTC'),
+      interval '1 day'
+    ) as d(ts)
+    left join orders o on coalesce(o.is_test,false)=false
+      and o.created_at >= (d.ts at time zone 'UTC')
+      and o.created_at < ((d.ts + interval '1 day') at time zone 'UTC')
+    group by d.ts
+    order by d.ts asc`)).rows:[];
+  const launchModeRow=(await db.query<{mode:string|null}>("select value->>'effective_mode' mode from app_config where key='launch.signoff'")).rows[0];
+  const effectiveLaunchMode=launchModeRow?.mode==="production"?"production":"staging_only";
   return {
     overviewMetrics,
+    dailyTrend,
+    effectiveLaunchMode,
     orders:ops?(await db.query("select id,public_no,state,coalesce(is_test,false) is_test,sla_due_at,created_at from orders order by created_at desc limit 150")).rows:[],
     tickets:ops?(await db.query("select id,public_no,subject,category,state,next_action_at from tickets order by created_at desc limit 150")).rows:[],
     claims:ops?(await db.query(`select k.id,k.public_no,k.state,k.details->>'tracking_no' tracking_no,
@@ -358,13 +376,20 @@ export async function adminDesk(db:DB,actor:Actor) {
       order by p.created_at desc limit 150`)).rows:[],
     disputes:finance?(await db.query(`select d.provider_id provider_dispute_id,d.payment_id,p.charge_item_id,
       q.order_id,dq.batch_id,d.state status,p.amount_cents,c.currency,
-      d.evidence_due_at,d.updated_at,p.provider_ref payment_provider_ref,o.public_no
+      d.evidence_due_at,d.updated_at,p.provider_ref payment_provider_ref,o.public_no,
+      ae.after->>'decision' staff_decision,ae.after->>'reason' staff_note
       from payment_disputes d
       join payments p on p.id=d.payment_id
       join charge_items c on c.id=p.charge_item_id
       left join inspection_quotes q on q.id=c.inspection_quote_id
       left join orders o on o.id=q.order_id
       left join dispatch_quote_versions dq on dq.id=c.dispatch_quote_id
+      left join lateral (
+        select after from audit_events
+        where action='resolve_payment_dispute' and entity_type='payments'
+          and entity_id=d.payment_id and after->>'provider_id'=d.provider_id
+        order by id desc limit 1
+      ) ae on true
       order by d.updated_at desc limit 100`)).rows:[],
     shippingRates:(finance||actor.roles.includes("super_admin"))?(await db.query("select id,version,rules,effective_at from shipping_rate_versions order by version desc limit 50")).rows:[],
     warehouseAddressAlert:actor.roles.includes("super_admin")?(await db.query(`select 1 from notifications

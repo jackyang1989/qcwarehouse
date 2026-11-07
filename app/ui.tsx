@@ -99,11 +99,11 @@ function useIsStaffLocale() {
   return isStaffPath(pathname);
 }
 export const usd=(c:number)=>new Intl.NumberFormat("en-US",{style:"currency",currency:"USD"}).format(c/100);
-export const stamp=(t?:string)=>{
+export const stamp=(t?:string,zhOverride?:boolean)=>{
   if(!t)return "—";
   const d=new Date(t);
   if(Number.isNaN(d.getTime()))return "—";
-  const zh=typeof location!=="undefined"&&isStaffPath(location.pathname);
+  const zh=zhOverride??(typeof location!=="undefined"&&isStaffPath(location.pathname));
   return new Intl.DateTimeFormat(zh?"zh-CN":"en-US",{
     year:"numeric",month:zh?"2-digit":"short",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false,
   }).format(d);

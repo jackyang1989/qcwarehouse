@@ -17,6 +17,14 @@ export function ScopeReview({orderId,staff=false,onSave}:{orderId:string;staff?:
   const mismatchedPositions=positions.filter(p=>p.in_scope&&(p.identity_state==="mismatch"||p.declared_fields?.mismatch_note));
   const comparePositions=positions.filter(p=>p.in_scope&&p.service==="compare");
   const unreceivedCompare=comparePositions.filter(p=>!p.item_code);
+  const inspectionLineMap=new Map<string,string>();
+  for(const p of positions) {
+    if(p.service==="inspection"&&!inspectionLineMap.has(p.line_id)) {
+      inspectionLineMap.set(p.line_id,staff?(p.title["zh-CN"]??p.title.en):p.title.en);
+    }
+  }
+  const inspectionLines=[...inspectionLineMap.entries()].map(([id,label])=>({id,label}));
+  const lineNameOf=(lineId:string)=>inspectionLineMap.get(lineId)??lineId;
   const nameOf=(id:string)=>{
     const item=positions.find(p=>p.id===id);
     return item?(staff?item.title["zh-CN"]??item.title.en:item.title.en)+" · "+item.position+(item.item_code?" · "+item.item_code:""):id;
@@ -62,6 +70,12 @@ export function ScopeReview({orderId,staff=false,onSave}:{orderId:string;staff?:
         <p>{staff?"保留检查位":"Retained inspection positions"}</p><ul>{p.proposed_positions.map((id:string)=><li key={id}>{nameOf(id)}</li>)}</ul>
         <p>{staff?"取消检查位":"Removed inspection positions"}</p><ul>{p.previous_positions.filter((id:string)=>!p.proposed_positions.includes(id))
           .map((id:string)=><li key={id}>{nameOf(id)}</li>)}</ul>
+        {Array.isArray(p.proposed_additions)&&p.proposed_additions.length>0&&<>
+          <p>{staff?"新增检查位":"Added inspection positions"}</p>
+          <ul>{p.proposed_additions.map((a:Row,idx:number)=><li key={a.order_line_id??idx}>
+            {lineNameOf(a.order_line_id)} · +{a.count} {staff?"件":"positions"}
+          </li>)}</ul>
+        </>}
         {p.adjustment_cents<=0
           ?<p>{staff?"拟审核退费金额":"Proposed refund for review"} · <strong>{usd(-p.adjustment_cents)}</strong></p>
           :<p>{staff?"需补付服务费差额":"Supplemental inspection charge"} · <strong>{usd(p.adjustment_cents)}</strong></p>}
@@ -110,6 +124,34 @@ export function ScopeReview({orderId,staff=false,onSave}:{orderId:string;staff?:
             <input type="checkbox" name="positions" value={p.id} defaultChecked/>{nameOf(p.id)}
           </label>:<p key={p.id}>{nameOf(p.id)} · {staff?"保留原服务":"Original service retained"}</p>)}
           <label>{staff?"客户可见英文变更原因":"Reason for the change"}<textarea name="reason" required maxLength={1000}/></label>
+        </Form>
+      </details>}
+      {data.order.state==="awaiting_samples"&&inspectionLines.length>0&&<details className="card">
+        <summary>{staff?"增加标准质检样品件数":"Add inspection sample positions"}</summary>
+        <p className="muted">
+          {staff?"开检前为现有标准质检服务行增补件数，客户确认并补付差额后自动生成新样品检查位。":
+            "Add extra sample positions to your standard inspection line before inspection starts. Supplemental charges apply per added unit."}
+        </p>
+        <Form key={"add-"+data.order.revision} label={staff?"生成增补变更方案":"Propose additional sample positions"} run={async fields=>{
+          const keep=positions.filter(p=>p.in_scope).map(p=>p.id);
+          const count=Number(text(fields,"count"));
+          const sizeLabel=text(fields,"size_label");
+          await request("/orders/"+orderId+"/scope-additions","POST",{
+            revision:data.order.revision,
+            reason:text(fields,"reason"),
+            positions:keep,
+            additions:[{
+              order_line_id:text(fields,"order_line_id"),
+              count,
+              ...(sizeLabel?{declared_fields:Array.from({length:count},()=>({size_label:sizeLabel}))}:{}),
+            }],
+          });
+          updated();
+        }}>
+          <Select name="order_line_id" label={staff?"目标质检服务行":"Inspection service line"} choices={inspectionLines}/>
+          <Field name="count" label={staff?"新增样品件数":"Additional sample count"} type="number" min={1} max={50} value={1}/>
+          <Field name="size_label" label={staff?"尺码 / 规格备注（可选）":"Size / specification note (optional)"} required={false}/>
+          <Field name="reason" label={staff?"客户可见英文增补说明":"Reason for adding samples"}/>
         </Form>
       </details>}
       {!staff&&data.order.state==="awaiting_samples"&&<details className="card">

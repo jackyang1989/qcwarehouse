@@ -404,10 +404,26 @@ export async function subscribeTrackingOnce() {
 }
 export async function trackingAdmin(db:DB,actor:Actor) {
   role(actor,...staffAccess.tracking);
-  return (await db.query(`select t.id,t.direction,t.tracking_norm,t.transport_state,t.sync_state,t.package_id,t.shipment_id,
+  const rows=(await db.query(`select t.id,t.direction,t.carrier_code,t.tracking_norm,t.revision,t.transport_state,t.sync_state,t.package_id,t.shipment_id,
     t.last_success_at,(select s.events_json from tracking_snapshots s where s.tracker_id=t.id and s.locale='zh-CN'
-    order by s.latest_event_at desc nulls last,s.fetched_at desc limit 1) events from tracking_records t where t.closed_at is null
+    order by s.latest_event_at desc nulls last,s.fetched_at desc limit 1) events,
+    coalesce((select jsonb_agg(jsonb_build_object(
+      'id',e.id,'occurred_at',e.occurred_at,'source_time',e.source_time,'text_zh',e.text_zh,
+      'translation_id',tr.id,'text_en',tr.body,'translation_source',tr.source,'reviewed_at',tr.reviewed_at
+    ) order by e.occurred_at desc nulls last,e.id desc)
+    from tracking_events e
+    left join tracking_translations tr on tr.event_id=e.id and tr.locale='en'
+    where e.tracker_id=t.id),'[]'::jsonb) raw_events
+    from tracking_records t where t.closed_at is null
     order by t.next_query_at desc nulls last limit 100`)).rows;
+  return rows.map((r:any)=>{
+    const zh_events=(Array.isArray(r.raw_events)?r.raw_events:[]).map((ev:any)=>{
+      const source_hash=hash(ev.text_zh??"");
+      return {...ev,source_hash};
+    });
+    const {raw_events:_unused,...rest}=r;
+    return {...rest,zh_events};
+  });
 }
 
 export async function trackingMonitor(db:DB,actor:Actor) {

@@ -33,7 +33,10 @@ function valueOf(result:Row) {
 export function StaffReport({id,actor}:{id:string;actor:Row}) {
   const {data,error,reload}=useLoad("/staff/reports/"+id);
   const editing=data?.state==="draft"&&data.snapshot.amends_version&&data.created_by===actor.id;
-  const canReview=data?.state==="submitted"&&actor.roles.some((r:string)=>r==="reviewer"||r==="super_admin");
+  const hasReviewRole=actor.roles.some((r:string)=>r==="reviewer"||r==="super_admin");
+  const isSelfReview=Boolean(data&&(data.created_by===actor.id||data.snapshot.sections.some((s:Row)=>s.inspector_id===actor.id)));
+  const canReview=data?.state==="submitted"&&hasReviewRole&&!isSelfReview;
+  const hasChinese=(val:unknown)=>/\p{Script=Han}/u.test(String(val??""));
   return <>
     <div className="page-head"><Link href="/wh/review">← 报告队列</Link><p className="eyebrow report-eyebrow">WAREHOUSE / REPORT VERSION</p>
       <h1>{data?.public_no??"报告版本"}</h1>{data&&<p>版本 {data.version} · <Tag>{states[data.state]}</Tag></p>}</div>
@@ -42,13 +45,41 @@ export function StaffReport({id,actor}:{id:string;actor:Row}) {
     {data&&!error&&<>
       {data.amend_reason&&<Panel title="本次修订原因"><p>{data.amend_reason}</p>
         {data.review_feedback&&<p className="notice">复核意见 · {data.review_feedback}</p>}</Panel>}
+      {data.state==="submitted"&&hasReviewRole&&isSelfReview&&<Panel title="独立复核限制">
+        <p className="notice">当前账号为该报告版本的提交人或执行检查员。按职责分离规则，须由另一名独立复核员（reviewer）执行英文校对与批准。</p>
+      </Panel>}
       {data.snapshot.sections.map((section:Row,s:number)=><Panel key={section.task_id} title={section.title}>
-        <Table headers={["实物","检查项","原发布值","当前值","状态","证据"]} rows={section.results.map((result:Row,r:number)=>{
+        <Table headers={["实物","检查项","原发布值","当前值 / 英文说明","中文原记","状态","证据"]} rows={section.results.map((result:Row,r:number)=>{
           const original=data.base_snapshot?.sections[s]?.results[r];
-          return [result.item,result.label,original?valueOf(original):"—",valueOf(result),result.status,
+          const needsEn=hasChinese(result.reason)||(typeof result.typed_value==="string"&&hasChinese(result.typed_value));
+          return [
+            result.item,
+            result.label,
+            original?valueOf(original):"—",
+            <div>{valueOf(result)}{result.reason&&result.typed_value!==null&&result.typed_value!==undefined&&<div className="small muted">{result.reason}</div>}{needsEn&&<div><Tag tone="yellow">待译英文</Tag></div>}</div>,
+            result.reason_zh??(hasChinese(result.reason)?result.reason:"—"),
+            result.status,
             result.evidence_ids.map((media:string)=><a className="button" key={media}
-              href={"/api/v1/media/"+media} target="_blank" rel="noreferrer">照片</a>)];
+              href={"/api/v1/media/"+media} target="_blank" rel="noreferrer">照片</a>),
+          ];
         })}/>
+        {canReview&&section.results.map((result:Row,r:number)=>{
+          const needsEn=hasChinese(result.reason);
+          if(!needsEn&&!result.reason&&!result.reason_zh) return null;
+          return <details className="card" key={"tr-"+r} open={needsEn}>
+            <summary>英文复核校对 · {result.item} · {result.label}{needsEn?"（含中文待译）":""}</summary>
+            {(result.reason_zh||hasChinese(result.reason))&&<p className="small muted">检查员中文记录：{result.reason_zh??result.reason}</p>}
+            <Form key={data.revision+"-tr-"+s+"-"+r} label="保存英文译文" run={async fields=>{
+              await request("/staff/reports/"+id+"/candidate","PATCH",{
+                revision:data.revision,
+                translations:[{section:s,result:r,reason_en:text(fields,"reason_en")}],
+              });
+              reload();
+            }}>
+              <label>客户可见英文说明（禁止保留中文或主观合格性结论）<textarea name="reason_en" defaultValue={needsEn?"":(result.reason??"")} required minLength={2} maxLength={2000}/></label>
+            </Form>
+          </details>;
+        })}
         {editing&&section.results.map((result:Row,r:number)=><details className="card" key={r}>
           <summary>修订 {result.item} · {result.label}</summary>
           <Form key={data.revision+"-"+s+"-"+r} label="保存该项修订" run={async fields=>{

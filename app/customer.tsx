@@ -63,16 +63,62 @@ export function Catalog({path}:{path:string}) {
   const requestedCategory=useSearchParams().get("category")??"";
   const service=servicePages[path as keyof typeof servicePages];
   const info=service?serviceDetails[service]:null;
-  const offers:Row[]=(data?.offers??[]).filter((offer:Row)=>!service||offer.service===service);
+  const allOffers:Row[]=data?.offers??[];
+  const offers:Row[]=allOffers.filter((offer:Row)=>!service||offer.service===service);
   const categories=new Map<string,string>(offers.map(o=>[o.category_id,o.category.en]));
   const firstCatId=categories.keys().next().value??"";
   const activeCategory=category??(requestedCategory||firstCatId);
   const selected=categories.has(activeCategory)?activeCategory:"";
   const isCategories=path==="/categories",isPricing=path==="/pricing";
 
-  const estCents = estService==="inspection" ? 2900 * Math.max(1,estQty)
-    : estService==="compare" ? (estQty<=2 ? 5900 : 7900 + Math.max(0,estQty-3)*3000)
-    : 3900 * Math.max(1,estQty);
+  const matchProtoOffer=(id:string)=>allOffers.find((o:Row)=>{
+    const en=String(o.category?.en??"").toLowerCase();
+    return id==="apparel"?en.includes("apparel"):
+      id==="footwear"?en.includes("footwear"):
+      id==="bags"?en.includes("bag"):
+      id==="home"?en.includes("home"):
+      id==="electronics"?en.includes("electronic"):
+      id==="toys"?en.includes("toy"):false;
+  });
+  const matchedCatIds=new Set<string>();
+  const baseCategoryCards=prototypeCategories.map(c=>{
+    const liveOffer=matchProtoOffer(c.id);
+    if(liveOffer?.category_id) matchedCatIds.add(liveOffer.category_id);
+    return {...c,state:liveOffer?"ACTIVE":c.state,liveOffer};
+  });
+  const extraCategoryCards:[string,Row][]=[];
+  for(const o of allOffers) {
+    if(o.category_id&&!matchedCatIds.has(o.category_id)&&!extraCategoryCards.some(([cid])=>cid===o.category_id)) {
+      extraCategoryCards.push([o.category_id,o]);
+    }
+  }
+  const categoryCards=[
+    ...baseCategoryCards,
+    ...extraCategoryCards.map(([cid,o])=>({
+      id:cid,
+      name:o.category?.en??"Approved Category",
+      state:"ACTIVE" as const,
+      desc:"Approved inspection templates, capabilities and versioned pricing active.",
+      icon:"◈",
+      liveOffer:o,
+    })),
+  ];
+
+  const inspOffers=allOffers.filter(o=>o.service==="inspection");
+  const compOffers=allOffers.filter(o=>o.service==="compare");
+  const refOffers=allOffers.filter(o=>o.service==="reference_match");
+  const formatRange=(pool:Row[],prefix="")=>{
+    if(!pool.length) return data?"Quote on request":"Loading…";
+    const vals=pool.map(o=>Number(o.rules.unit_cents??o.rules.package_cents??0)).filter(n=>n>0);
+    if(!vals.length) return "Quote on request";
+    const lo=Math.min(...vals),hi=Math.max(...vals);
+    return lo===hi?`${prefix}${usd(lo)}`:`${usd(lo)}–${usd(hi)}`;
+  };
+  const estPool=allOffers.filter(o=>o.service===estService);
+  const estOffer=estPool.find(o=>estQty>=o.rules.minimum&&estQty<=o.rules.maximum)??estPool[0];
+  const estCents:number|null=estOffer
+    ?(estOffer.rules.unit_cents!=null?estOffer.rules.unit_cents*Math.max(1,estQty):(estOffer.rules.package_cents??null))
+    :null;
 
   const pageTitle = info?.title ?? (isCategories ? "Product Categories" : isPricing ? "Service Pricing" : "Inspection Services");
   const pageSub = info?.description ?? (
@@ -141,8 +187,8 @@ export function Catalog({path}:{path:string}) {
 
     {isCategories&&<>
       <div className="grid cols3" style={{marginBottom:18}}>
-        {prototypeCategories.map(c=>{
-          const liveOffer=offers.find((o:Row)=>String(o.category?.en??"").toLowerCase().includes(c.id));
+        {categoryCards.map(c=>{
+          const liveOffer=c.liveOffer;
           return <div className="card flat" key={c.id}>
             <div className="category-card">
               <div className="glyph">{c.icon}</div>
@@ -188,9 +234,9 @@ export function Catalog({path}:{path:string}) {
       </div>
       <div className="grid cols3" style={{marginBottom:18}}>
         {([
-          ["Individual Inspection","From $29","per apparel item","Single or multiple physical samples, each checked separately.","/services/inspection"],
-          ["Sample Comparison","$59–$79","2–3 sample apparel set","2-sample set $59; 3-sample comparison set $79 under approved templates.","/services/compare"],
-          ["Reference Matching","$39","per new comparison","Compare a new sample against an eligible reference sample stored in your account.","/services/reference"],
+          ["Individual Inspection",formatRange(inspOffers,"From "),"per physical item","Single or multiple physical samples, each checked separately.","/services/inspection"],
+          ["Sample Comparison",formatRange(compOffers),"2–3 sample comparison set","Side-by-side comparison of compatible samples under approved templates.","/services/compare"],
+          ["Reference Matching",formatRange(refOffers),"per new comparison","Compare a new sample against an eligible reference sample stored in your account.","/services/reference"],
         ] as const).map(([label,price,unit,desc,href])=><div className="card" key={label}>
           <div className="label">{label}</div>
           <h2 style={{margin:"14px 0 2px"}}>{price}</h2>
@@ -203,7 +249,7 @@ export function Catalog({path}:{path:string}) {
         </div>)}
       </div>
       <section className="card">
-        <div className="card-head"><div><h3>Estimate the inspection fee</h3><p>Select a service and sample quantity to preview the standard Apparel rate.</p></div></div>
+        <div className="card-head"><div><h3>Estimate the inspection fee</h3><p>Select a service and sample quantity to preview the active server catalog rate.</p></div></div>
         <div className="fields">
           <div className="field">
             <label htmlFor="pricing-service">Service</label>
@@ -216,13 +262,13 @@ export function Catalog({path}:{path:string}) {
           <div className="field">
             <label htmlFor="pricing-qty">Quantity</label>
             <select id="pricing-qty" value={estQty} onChange={e=>setEstQty(Number(e.target.value))}>
-              {[1,2,3,4,5,10,30].map(n=><option key={n} value={n}>{n} {n===1?"item":"items"}</option>)}
+              {(estService==="compare"?[2,3]:estService==="reference_match"?[1,2,3,5]:[1,2,3,4,5,10,30]).map(n=><option key={n} value={n}>{n} {n===1?"item":"items"}</option>)}
             </select>
           </div>
         </div>
         <div className="display-quote" style={{marginTop:16}}>
           <div className="label">Estimate, excl. shipping</div>
-          <div className="big">{usd(estCents)}</div>
+          <div className="big">{estCents!=null?usd(estCents):(data?"Manual quote required":"Loading…")}</div>
           <div className="small muted">Exact eligibility, scope, capacity and item count are checked before order payment.</div>
         </div>
       </section>
@@ -421,11 +467,37 @@ export function NewOrder() {
 
   const offers:Row[]=data?.offers??[];
 
+  // Match prototype category key or dynamic category_id to real backend category_id
+  function resolveCategoryId(key:string):string|undefined {
+    const direct=offers.find(o=>o.category_id===key);
+    if(direct) return direct.category_id;
+    const match=offers.find(o=>{
+      const en=String(o.category?.en??"").toLowerCase();
+      return key==="apparel"?en.includes("apparel"):
+        key==="footwear"?en.includes("footwear"):
+        key==="bags"?en.includes("bag"):
+        key==="home"?en.includes("home"):
+        key==="electronics"?en.includes("electronic"):false;
+    });
+    return match?.category_id;
+  }
+
+  const knownCatIds=new Set(wizardCategoryCatalog.map(c=>resolveCategoryId(c.key)).filter(Boolean));
+  const extraWizardCats:{key:string;name:string;icon:string;fallbackState:"ACTIVE"}[]=[];
+  for(const o of offers) {
+    if(o.category_id&&!knownCatIds.has(o.category_id)&&!extraWizardCats.some(x=>x.key===o.category_id)) {
+      extraWizardCats.push({key:o.category_id,name:o.category?.en??"Approved Category",icon:"◈",fallbackState:"ACTIVE"});
+    }
+  }
+  const wizardCategories=[...wizardCategoryCatalog,...extraWizardCats];
+
   useEffect(()=>{
     const requestedOffer=new URLSearchParams(location.search).get("offer")??"";
     if(requestedOffer && offers.length>0) {
       const matched=offers.find(x=>x.offer_id===requestedOffer);
       if(matched) {
+        const matchedCat=wizardCategories.find(c=>resolveCategoryId(c.key)===matched.category_id);
+        if(matchedCat) setCategoryKey(matchedCat.key);
         setSelectedOfferId(matched.offer_id);
         setServiceKind(matched.service);
         setQty(matched.service==="compare"?matched.rules.minimum:Math.max(1,matched.rules.minimum));
@@ -446,19 +518,6 @@ export function NewOrder() {
     return ()=>window.removeEventListener("qcw:wizard-go",onGo);
   },[]);
 
-  // Match prototype category key to real backend category_id
-  function resolveCategoryId(key:string):string|undefined {
-    const match=offers.find(o=>{
-      const en=String(o.category?.en??"").toLowerCase();
-      return key==="apparel"?en.includes("apparel"):
-        key==="footwear"?en.includes("footwear"):
-        key==="bags"?en.includes("bag"):
-        key==="home"?en.includes("home"):
-        key==="electronics"?en.includes("electronic"):false;
-    });
-    return match?.category_id;
-  }
-
   const activeCategoryId=resolveCategoryId(categoryKey)??offers[0]?.category_id??"";
   const categoryOffers=offers.filter(o=>o.category_id===activeCategoryId);
   const serviceOffers=categoryOffers.filter(o=>o.service===serviceKind);
@@ -467,6 +526,8 @@ export function NewOrder() {
   const activeOffer=serviceOffers.find(o=>o.offer_id===selectedOfferId)
     ?? (serviceKind==="compare"?(serviceOffers.find(o=>qty>=o.rules.minimum&&qty<=o.rules.maximum)??serviceOffers[0]):serviceOffers[0])
     ?? categoryOffers[0];
+  const selectedCategoryName=activeOffer?.category?.en??wizardCategories.find(c=>c.key===categoryKey)?.name??"Apparel";
+  const isApparelCategory=categoryKey==="apparel"||selectedCategoryName.toLowerCase().includes("apparel");
 
   const minQty=activeOffer?.rules.minimum??(serviceKind==="compare"?2:1);
   const maxQty=activeOffer?(activeOffer.service==="inspection"?300:activeOffer.rules.maximum):(serviceKind==="compare"?3:60);
@@ -582,14 +643,19 @@ export function NewOrder() {
     setWizardError("");
     if(step===0) {
       if(!resolveCategoryId(categoryKey)) {
-        setWizardError("Please choose an available product category (Apparel).");
+        setWizardError("Please choose an available product category.");
         return;
       }
       setStep(1);
     } else if(step===1) {
-      if(serviceKind==="reference_match" && !referenceId) {
+      if(serviceKind==="reference_match") {
         const firstActive=(refs.data?.items??[]).find((r:Row)=>r.state==="active"&&new Date(r.expires_at)>new Date());
-        if(firstActive) setReferenceId(firstActive.reference_id);
+        const chosen=referenceId||firstActive?.reference_id||"";
+        if(!chosen) {
+          setWizardError("Select an active reference sample in your account before continuing, or switch to Product Inspection / Sample Comparison.");
+          return;
+        }
+        if(!referenceId) setReferenceId(chosen);
       }
       setStep(2);
     } else if(step===2) {
@@ -704,10 +770,10 @@ export function NewOrder() {
           <Panel
             title="01   Product Category"
             subtitle="Category-specific checks and services are loaded automatically."
-            badge={<Tag tone="green">Apparel · Active</Tag>}
+            badge={<Tag tone="green">{selectedCategoryName} · Active</Tag>}
           >
             <div className="wizard-categories" role="radiogroup" aria-label="Product Category">
-              {wizardCategoryCatalog.map(cat=>{
+              {wizardCategories.map(cat=>{
                 const catId=resolveCategoryId(cat.key);
                 const isAvailable=Boolean(catId);
                 const isSelected=categoryKey===cat.key;
@@ -721,6 +787,13 @@ export function NewOrder() {
                   onClick={()=>{
                     if(!isAvailable) return;
                     setCategoryKey(cat.key);
+                    const nextCatOffers=offers.filter(o=>o.category_id===catId);
+                    const matchingSvcOffer=nextCatOffers.find(o=>o.service===serviceKind)??nextCatOffers[0];
+                    if(matchingSvcOffer) {
+                      setServiceKind(matchingSvcOffer.service);
+                      setSelectedOfferId(matchingSvcOffer.offer_id);
+                      setQty(Math.max(matchingSvcOffer.rules.minimum,Math.min(matchingSvcOffer.rules.maximum,qty)));
+                    }
                     setServerQuote(undefined);
                   }}
                 >
@@ -731,7 +804,7 @@ export function NewOrder() {
               })}
             </div>
             <div className="wizard-note">
-              Apparel is currently available. Other categories cannot be purchased until operational approval and documented checks are in place.
+              Only categories with approved capabilities, published templates, and active server offers can be selected for checkout.
             </div>
           </Panel>
 
@@ -779,16 +852,18 @@ export function NewOrder() {
           <Panel
             title="03   Configure Your Service"
             subtitle="Choose the applicable approved inspection template and item count."
-            badge={<Tag tone="green">Apparel · Available</Tag>}
+            badge={<Tag tone="green">{selectedCategoryName} · Available</Tag>}
           >
             <div className="fields">
               <div className="field">
                 <label>Inspection template
                   <select value={templateVariant} onChange={e=>setTemplateVariant(e.target.value)}>
-                    <option value="basic">Apparel Basic Visual v1 ({activeOffer?.title.en??"Standard"})</option>
-                    <option value="tops">Tops &amp; Outerwear v1</option>
-                    <option value="leggings">Trousers &amp; Leggings v1</option>
-                    <option value="sports">Activewear &amp; Knitwear v1</option>
+                    {isApparelCategory?<>
+                      <option value="basic">Apparel Basic Visual v1 ({activeOffer?.title.en??"Standard"})</option>
+                      <option value="tops">Tops &amp; Outerwear v1</option>
+                      <option value="leggings">Trousers &amp; Leggings v1</option>
+                      <option value="sports">Activewear &amp; Knitwear v1</option>
+                    </>:<option value="basic">{activeOffer?.title.en??selectedCategoryName} Approved Template</option>}
                   </select>
                 </label>
               </div>
@@ -861,12 +936,12 @@ export function NewOrder() {
             <div className="row between flexwrap">
               <div>
                 <div className="label">SELECTED SERVICE</div>
-                <strong>{serviceLabel} · {activeOffer?.sku_code??"APPAREL"}</strong>
+                <strong>{serviceLabel} · {activeOffer?.sku_code??selectedCategoryName.toUpperCase()}</strong>
                 <p className="small muted" style={{margin:"6px 0 0"}}>
                   The service, template and price are recorded separately in each order snapshot. Turnaround: {activeOffer?.rules.business_days??2} business days after all items are received and identified.
                 </p>
               </div>
-              <Tag tone="green">Apparel · Available</Tag>
+              <Tag tone="green">{selectedCategoryName} · Available</Tag>
             </div>
           </Panel>
           <div className="line-note warning">
@@ -900,8 +975,8 @@ export function NewOrder() {
               </label>
             </div>
             <div className="field">
-              <label>Size (apparel template)
-                <input value={baseSize} onChange={e=>setBaseSize(e.target.value)} placeholder="M"/>
+              <label>{isApparelCategory?"Size (apparel template)":"Size / specification"}
+                <input value={baseSize} onChange={e=>setBaseSize(e.target.value)} placeholder={isApparelCategory?"M":"Standard"}/>
               </label>
             </div>
             <div className="field">
@@ -972,7 +1047,7 @@ export function NewOrder() {
           <div className="table-wrap">
             <table className="tbl">
               <thead>
-                <tr><th>#</th><th>Item SKU</th><th>Size</th><th>Color</th></tr>
+                <tr><th>#</th><th>Item SKU</th><th>{isApparelCategory?"Size":"Size / Spec"}</th><th>Color</th></tr>
               </thead>
               <tbody>
                 {Array.from({length:visibleRowLimit},(_,idx)=>{
@@ -1068,7 +1143,7 @@ export function NewOrder() {
             </div>
             <div className="field">
               <label>Template version
-                <input value={`Apparel Basic Visual v1 (${activeOffer?.sku_code??"APPAREL"})`} readOnly/>
+                <input value={`${activeOffer?.title.en??selectedCategoryName} (${activeOffer?.sku_code??selectedCategoryName.toUpperCase()})`} readOnly/>
               </label>
             </div>
           </div>
@@ -1091,10 +1166,10 @@ export function NewOrder() {
           badge={serverQuote?<Tag tone="green">Quote rev {serverQuote.revision}</Tag>:<Tag tone="yellow">Calculating</Tag>}
         >
           <div className="grid cols2">
-            <dl className="def"><dt>Product category</dt><dd>Apparel</dd></dl>
+            <dl className="def"><dt>Product category</dt><dd>{selectedCategoryName}</dd></dl>
             <dl className="def"><dt>Service</dt><dd>{serviceLabel}</dd></dl>
             <dl className="def"><dt>Items / samples</dt><dd>{totalItems}</dd></dl>
-            <dl className="def"><dt>Template</dt><dd>Apparel Basic Visual v1 ({activeOffer?.sku_code})</dd></dl>
+            <dl className="def"><dt>Template</dt><dd>{activeOffer?.title.en??selectedCategoryName} ({activeOffer?.sku_code})</dd></dl>
           </div>
 
           <div className="sep"/>
@@ -1157,7 +1232,7 @@ export function NewOrder() {
           badge={<Tag tone="blue">{draftOrder?.public_no??"Ready"}</Tag>}
         >
           <div className="grid cols2">
-            <dl className="def"><dt>Order item</dt><dd>Apparel / {serviceLabel}</dd></dl>
+            <dl className="def"><dt>Order item</dt><dd>{selectedCategoryName} / {serviceLabel}</dd></dl>
             <dl className="def"><dt>Service fee</dt><dd className="mono">{usd(displayCents)}</dd></dl>
             <dl className="def"><dt>Receiving code</dt><dd><span className="mono">{receiving.data?.receiving_code??"QCW-PERMANENT"}</span></dd></dl>
             <dl className="def"><dt>Order status</dt><dd>{draftOrder?label(draftOrder.state):"Draft ready for submission"}</dd></dl>
@@ -1165,12 +1240,14 @@ export function NewOrder() {
 
           <div className="sep"/>
           <div className="line-note warning">
-            <strong>Server-verified payment confirmation:</strong> The production system confirms a provider-signed Stripe webhook callback; in local development mode, clicking the button below executes the server-side demo payment confirmation and transitions your order directly to <span className="mono">awaiting_samples</span>.
+            {providers.data?.demo
+              ?<><strong>Server-verified payment confirmation:</strong> The production system confirms a provider-signed Stripe webhook callback; in local development mode, clicking the button below executes the server-side demo payment confirmation and transitions your order directly to <span className="mono">awaiting_samples</span>.</>
+              :<><strong>Server-verified payment confirmation:</strong> Continuing opens Stripe Checkout. Your order transitions to <span className="mono">awaiting_samples</span> only after QCWarehouse verifies the signed Stripe webhook event.</>}
           </div>
 
           <div className="actions" style={{marginTop:16}}>
             <button type="button" className="button primary" onClick={submitAndSimulatePayment}>
-              Simulate payment confirmation &amp; create order →
+              {providers.data?.demo?"Simulate payment confirmation & create order →":"Submit order & continue to Stripe Checkout →"}
             </button>
             {draftOrder&&<Link className="button sm" href={"/orders/"+draftOrder.public_no}>Open Order {draftOrder.public_no}</Link>}
             <Link className="button sm" href="/account">View receiving address</Link>

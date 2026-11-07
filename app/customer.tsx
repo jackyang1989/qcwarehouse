@@ -364,12 +364,14 @@ export function ReportView({number,version}:{number:string;version?:number}) {
   const r=useLoad(base&&version?base+"/versions/"+version:base);
   const viewer=useRef<HTMLDialogElement>(null);
   const [photo,setPhoto]=useState<{id:string;label:string}>();
+  const [disputeTicket,setDisputeTicket]=useState<string>();
   const reportPath="/orders/"+number+"/report";
   const report=r.data;
   function showPhoto(id:string,label:string) {
     setPhoto({id,label});
     viewer.current?.showModal();
   }
+  const allCheckpoints:Row[]=report?.snapshot?.sections?.flatMap((s:Row)=>s.results??[])??[];
   return <>
     <div className="page-head"><Link href={"/orders/"+number}>← Order {number}</Link>
       <p className="eyebrow report-eyebrow">INSPECTION / EVIDENCE RECORD</p><h1 className="order-number">{report?.snapshot.report_no??"Inspection report"}</h1>
@@ -384,6 +386,7 @@ export function ReportView({number,version}:{number:string;version?:number}) {
           const {url}=await request(base+"/versions/"+report.version+"/pdf");
           location.assign(url);
         }}>Download version {report.version} PDF</Action>
+        <Link className="button" href={"/orders/"+number+"/dispositions"}>Choose item handling →</Link>
       </div>
       <Panel title="Published versions">
         <Table headers={["Version","Status","Published","Revision reason"]} rows={report.versions.map((v:Row)=>[
@@ -393,8 +396,37 @@ export function ReportView({number,version}:{number:string;version?:number}) {
       </Panel>
       {id&&<ReportShares key={report.version} orderId={id} version={report.version}/>}
       {report.snapshot.sections.map((s:Row)=><Panel key={s.task_id} title={s.title}>
-        <ReportSection results={s.results} grouped={["compare","reference_match"].includes(s.service)} showPhoto={showPhoto}/>
+        {s.summary&&<p className="muted small">Expected items: {s.summary.expected_count} · Inspected: {s.summary.checked_count} · Observed issues: {s.summary.issue_count}</p>}
+        <ReportSection section={s} results={s.results} grouped={["compare","reference_match"].includes(s.service)} showPhoto={showPhoto}/>
       </Panel>)}
+      <Panel title="Scope &amp; what we do not inspect">
+        <p className="muted">{report.snapshot.scope_notice??"Findings apply only to the physical samples received and the checks listed in this report."}</p>
+        {Array.isArray(report.snapshot.not_inspected)&&report.snapshot.not_inspected.length>0&&<ul>
+          {report.snapshot.not_inspected.map((line:string,idx:number)=><li key={idx}>{line}</li>)}
+        </ul>}
+      </Panel>
+      {id&&allCheckpoints.length>0&&<Panel title="Question or dispute a checkpoint in this report">
+        <Form key={disputeTicket} label="Submit report dispute" run={async f=>{
+          const target=text(f,"checkpoint");
+          const [item_code,item_key]=target.split("::");
+          const res=await request("/orders/"+id+"/report/disputes","POST",{
+            version:report.version,
+            item_code,
+            item_key,
+            subject:text(f,"subject")||undefined,
+            message:text(f,"message"),
+          });
+          setDisputeTicket(res.public_no);
+        }}>
+          <Select name="checkpoint" label="Checkpoint" choices={allCheckpoints.map((c:Row)=>({
+            id:`${c.item}::${c.item_key}`,
+            label:`${c.item} · ${c.label} (${c.status})`,
+          }))}/>
+          <Field name="subject" label="Summary (optional)" required={false}/>
+          <label>Details of your question or dispute<textarea name="message" required maxLength={2000}/></label>
+        </Form>
+        {disputeTicket&&<p className="notice" role="status">Report dispute case <strong className="code">{disputeTicket}</strong> is open and linked to version {report.version}.</p>}
+      </Panel>}
     </>}
     <dialog ref={viewer} className="evidence-dialog" aria-labelledby="report-evidence-title" onClose={()=>setPhoto(undefined)}>
       <div className="row"><h2 id="report-evidence-title">{photo?.label??"Report evidence"}</h2><form method="dialog"><button type="submit">Close</button></form></div>
@@ -405,8 +437,13 @@ export function ReportView({number,version}:{number:string;version?:number}) {
     </dialog>
   </>;
 }
-function ReportSection({results,grouped,showPhoto}:{results:Row[];grouped:boolean;showPhoto:(id:string,label:string)=>void}) {
-  const result=(x:Row)=>[x.typed_value!=null?String(x.typed_value):label(x.status.toLowerCase()),x.unit,x.reason].filter(Boolean).join(" · ");
+function ReportSection({section,results,grouped,showPhoto}:{section:Row;results:Row[];grouped:boolean;showPhoto:(id:string,label:string)=>void}) {
+  const result=(x:Row)=>{
+    const base=[x.typed_value!=null?String(x.typed_value):label(x.status.toLowerCase()),x.unit,x.reason].filter(Boolean).join(" · ");
+    const circ=typeof x.derived_circumference==="number"?` (Circumference: ${x.derived_circumference} cm)`:"";
+    const tol=typeof x.within_tolerance==="boolean"?` · ${x.within_tolerance?"Within stated tolerance":"Outside stated tolerance"}`:"";
+    return base+circ+tol;
+  };
   const evidence=(x:Row)=>x.evidence_ids.map((m:string)=><button className="evidence-open" type="button" key={m}
     aria-label={`View ${x.label} evidence for ${x.item}`} onClick={()=>showPhoto(m,x.label+" · "+x.item)}>
     <img className="thumb" src={"/api/v1/media/"+m} alt="" loading="lazy"/></button>);
@@ -415,13 +452,21 @@ function ReportSection({results,grouped,showPhoto}:{results:Row[];grouped:boolea
   const items=[...new Set(results.map(x=>String(x.item)))];
   const checks=new Map<string,Row>();
   for(const x of results) checks.set(x.item_key,x);
-  return <div className="report-comparison"><Table headers={["Check",...items]} rows={[...checks.values()].map(check=>[
-    <div>{check.label}<small className="muted"><br/>{check.method}</small></div>,
-    ...items.map(item=>{
-      const x=results.find(r=>r.item===item&&r.item_key===check.item_key);
-      return x?<div>{result(x)}<div>{evidence(x)}</div></div>:"—";
-    })
-  ])}/></div>;
+  const diffMap=new Map<string,Row>((section.comparison?.diffs??[]).map((d:Row)=>[d.point_code,d]));
+  return <div className="report-comparison">
+    <Table headers={["Check",...items,"Diff (max - min)"]} rows={[...checks.values()].map(check=>{
+      const d=diffMap.get(check.item_key);
+      const diffLabel=d?`${d.display_diff}${d.max_minus_min!=null&&d.unit?" "+d.unit:""}`:"—";
+      return [
+        <div>{check.label}<small className="muted"><br/>{check.method}</small></div>,
+        ...items.map(item=>{
+          const x=results.find(r=>r.item===item&&r.item_key===check.item_key);
+          return x?<div>{result(x)}<div>{evidence(x)}</div></div>:"—";
+        }),
+        <span className="code">{diffLabel}</span>,
+      ];
+    })}/>
+  </div>;
 }
 export function TrackView({kind,id,embedded=false}:{kind:"parcels"|"shipments";id:string;embedded?:boolean}) {
   const path=kind==="parcels"?"/me/parcels/":"/shipments/";

@@ -30,19 +30,22 @@ export function EvidenceIllustration() {
 
 export function SampleReportPreview() {
   return <figure className="report-artifact">
-    <div className="report-ribbon"><strong>▤ &nbsp; QCWarehouse</strong><span>Inspection report · Sample data</span></div>
+    <div className="report-ribbon"><strong>▤ &nbsp; QCWarehouse</strong><span>Demonstration report · Desensitized sample data</span></div>
     <dl className="proof-data">
-      <div><dt>Order / Report</dt><dd>QW-DEMO-204<br/>Version 02</dd></div>
-      <div><dt>Service</dt><dd>Sample comparison<br/>3 comparable items</dd></div>
-      <div><dt>Scope</dt><dd>Apparel / visual<br/>Measured &amp; observed</dd></div>
+      <div><dt>Order / Report</dt><dd>QW-DEMO-204<br/>Version 02 (Published)</dd></div>
+      <div><dt>Service</dt><dd>Sample comparison<br/>Supplier A / Supplier B / Supplier C</dd></div>
+      <div><dt>Scope</dt><dd>Apparel / visual &amp; flat measurement<br/>3 comparable items</dd></div>
     </dl>
     <div className="table-wrap" tabIndex={0} role="region" aria-label="Illustrative sample measurements">
-      <table><thead><tr>{["Measurement","Sample A","Sample B","Sample C"].map(label=><th key={label} scope="col">{label}</th>)}</tr></thead>
-      <tbody><tr><th scope="row">Body length</th><td>72.0 cm</td><td>72.5 cm</td><td>71.8 cm</td></tr>
-        <tr><th scope="row">Chest (flat)</th><td>55.0 cm</td><td>56.0 cm</td><td>54.8 cm</td></tr>
-        <tr><th scope="row">Visible seam note</th><td>No issue recorded</td><td>See photo B-04</td><td>No issue recorded</td></tr></tbody></table>
+      <table><thead><tr>{["Measurement","Supplier A (Sample A)","Supplier B (Sample B)","Supplier C (Sample C)","Diff (max - min)"].map(label=><th key={label} scope="col">{label}</th>)}</tr></thead>
+      <tbody>
+        <tr><th scope="row">Body length</th><td>72.0 cm</td><td>72.5 cm</td><td>71.8 cm</td><td>0.7 cm</td></tr>
+        <tr><th scope="row">Chest (flat / circumference)</th><td>55.0 cm (110.0 cm)</td><td>56.0 cm (112.0 cm)</td><td>54.8 cm (109.6 cm)</td><td>1.2 cm</td></tr>
+        <tr><th scope="row">Hem width (missing on C)</th><td>51.0 cm</td><td>51.5 cm</td><td>Not tested (drawstring sealed)</td><td>—</td></tr>
+        <tr><th scope="row">Visible seam observation</th><td>No issue recorded</td><td>Observed issue · Loose cuff stitch (Photo B-04)</td><td>No issue recorded</td><td>—</td></tr>
+      </tbody></table>
     </div>
-    <figcaption>Illustrative data only. Values and photo references are examples.</figcaption>
+    <figcaption>Demonstration report only. Supplier names, item codes, and photo references are desensitized examples. What we do not inspect: chemical composition, wash-shrinkage, destructive testing, brand authenticity certification, or unreceived production batches.</figcaption>
   </figure>;
 }
 

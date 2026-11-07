@@ -9,6 +9,88 @@ import { staffAccess } from "./staff-access";
 
 type ResultInput={item_key:string;component:string;attempt:number;status:string;method:string;is_final:boolean;typed_value?:unknown;unit?:string;reason?:string;evidence_ids?:string[];details?:Record<string,unknown>};
 
+const FORBIDDEN_WORDING_PATTERNS:RegExp[]=[
+  /\bcertified\b/i,
+  /\bcertificate\b/i,
+  /\blab\s+tested\b/i,
+  /\blaboratory\b/i,
+  /\b100\s*%/i,
+  /\bdefect[- ]?free\b/i,
+  /\baql\b/i,
+  /\bauthentic\b/i,
+  /\bgenuine\b/i,
+  /\bcounterfeit\b/i,
+  /\bfake\b/i,
+  /\bguaranteed\b/i,
+  /\bsafe\s+for\b/i,
+  /\bnon[- ]?toxic\b/i,
+  /\bhypoallergenic\b/i,
+  /\bpassed\b/i,
+  /\bfailed\b/i,
+  /\bapproved\b/i,
+  /\brejected\b/i,
+  /\bbest\b/i,
+  /\bworst\b/i,
+  /\brecommend(?:ed|s)?\b/i,
+  /ΔE/i,
+  /\bdelta[- ]?e\b/i,
+  /\bspectrophotometer\b/i,
+  /\bopaque\b/i,
+  /\bsquat[- ]?proof\b/i,
+  /\bgsm\s*[:=]?\s*\d/i,
+  /\b\d+\s*%\s*(cotton|nylon|polyester|spandex|elastane)\b/i,
+];
+
+const DEFAULT_NOT_INSPECTED=[
+  "Fiber content or fabric composition",
+  "Fabric weight (GSM)",
+  "Chemical safety or restricted substances",
+  "Colorfastness, shrinkage, or wash durability",
+  "Formal abrasion or pilling resistance",
+  "Elasticity recovery over time",
+  "Brand authenticity or intellectual property status",
+  "Regulatory or labeling compliance",
+  "Comfort or fit on a body",
+  "Quality of any production batch",
+];
+
+export function assertAllowedWording(...texts:(string|null|undefined)[]) {
+  for(const raw of texts) {
+    if(!raw) continue;
+    for(const pattern of FORBIDDEN_WORDING_PATTERNS) {
+      guard(!pattern.test(raw),"FORBIDDEN_WORDING",
+        "Report text contains prohibited certification, grading, or laboratory claim wording.",422);
+    }
+  }
+}
+
+function hasUntranslatedChinese(text:string|null|undefined):boolean {
+  if(!text) return false;
+  return /[\u4e00-\u9fff]/.test(text);
+}
+
+type ToleranceRule={point_code:string;min?:number;max?:number;unit?:string};
+function extractTolerances(options:unknown,attributes:unknown):ToleranceRule[] {
+  const rules:ToleranceRule[]=[];
+  for(const src of [options,attributes]) {
+    if(!src || typeof src!=="object") continue;
+    const raw=(src as Record<string,unknown>).customer_tolerance ?? (src as Record<string,unknown>).tolerances;
+    if(Array.isArray(raw)) {
+      for(const item of raw) {
+        if(item && typeof item==="object" && typeof (item as Record<string,unknown>).point_code==="string") {
+          rules.push({
+            point_code:String((item as Record<string,unknown>).point_code),
+            ...(typeof (item as Record<string,unknown>).min==="number"?{min:Number((item as Record<string,unknown>).min)}:{}),
+            ...(typeof (item as Record<string,unknown>).max==="number"?{max:Number((item as Record<string,unknown>).max)}:{}),
+            ...(typeof (item as Record<string,unknown>).unit==="string"?{unit:String((item as Record<string,unknown>).unit)}:{}),
+          });
+        }
+      }
+    }
+  }
+  return rules;
+}
+
 const componentLabels:Record<string,string>={
   main:"Item",
   top:"Top (上装)",
@@ -415,11 +497,18 @@ export async function recordResults(db:DB,actor:Actor,id:string,rev:number,resul
     const componentAllowed=members.some(m=>m.id===value.component) && (Boolean(t.group_id) || !check?.component || check.component===value.component);
     guard(check && componentAllowed && check.method===value.method,"RESULT_INVALID","Check, item, and method must match the template.",422);
     if(value.status==="RECORDED") {
-      guard(typeof value.typed_value===check.type && (check.unit??undefined)===(value.unit??undefined),"RESULT_INVALID","Enter the configured value type and unit.",422);
+      const expectedJsType=check.type==="text"?"string":check.type;
+      guard(typeof value.typed_value===expectedJsType && (check.unit??undefined)===(value.unit??undefined),"RESULT_INVALID","Enter the configured value type and unit.",422);
     }
     if(["NOT_TESTED","NOT_APPLICABLE","BLOCKED"].includes(value.status)) {
       guard(value.typed_value==null && Boolean(value.reason?.trim()),"RESULT_INVALID","Provide a reason when a check is not tested, not applicable, or blocked.",422);
     }
+    assertAllowedWording(
+      value.reason,
+      typeof value.typed_value==="string"?value.typed_value:null,
+      typeof value.details?.note==="string"?value.details.note:null,
+      typeof value.details?.note_en==="string"?value.details.note_en:null,
+    );
     if(value.status==="OBSERVED_ISSUE") {
       const note=value.reason?.trim() || (typeof value.details?.note==="string"?value.details.note.trim():"");
       guard(value.evidence_ids?.length && (note || value.details),"EVIDENCE_REQUIRED","Describe the issue and attach evidence.",422);
@@ -636,7 +725,16 @@ export async function submitReport(db:DB,actor:Actor,id:string,rev:number,ids:st
   const o=await one(db,"select * from orders where id=$1 for update",[id]);
   revision(o.revision,rev);
   guard(o.state==="inspecting","REPORT_UNAVAILABLE","The order is not ready for report submission.");
-  const tasks=(await db.query(`select t.*,st.code service,so.title,v.content
+  const unlinkedExpected=(await db.query(
+    `select 1 from order_lines l join expected_items e on e.order_line_id=l.id
+     where l.order_id=$1 and e.in_scope
+       and not exists(select 1 from order_line_item_links a where a.expected_item_id=e.id and a.unlinked_at is null)
+     limit 1`,
+    [id]
+  )).rowCount;
+  guard(!unlinkedExpected,"REPORT_INCOMPLETE","All in-scope items must be linked and inspected before report submission.");
+  const tasks=(await db.query(`select t.*,st.code service,so.title,v.content,l.options line_options,l.attributes line_attributes,
+    (select count(*)::int from expected_items e where e.order_line_id=l.id and e.in_scope) expected_count
     from inspection_tasks t join order_lines l on l.id=t.order_line_id join template_versions v on v.id=t.template_version_id
     join service_offers so on so.id=l.offer_id join service_types st on st.id=so.service_type_id where l.order_id=$1 and t.state<>'VOID' order by t.id`,[id])).rows;
   guard(tasks.length===new Set(ids).size && tasks.every(t=>t.state==="SUBMITTED" && ids.includes(t.id)) &&
@@ -644,20 +742,96 @@ export async function submitReport(db:DB,actor:Actor,id:string,rev:number,ids:st
   const sections=[];
   for(const t of tasks) {
     const template=templateSchema.parse(t.content);
-    const rows=(await db.query(`select r.item_key,r.component,r.status,r.typed_value,r.unit,r.method,r.reason,
+    const tolerances=extractTolerances(t.line_options,t.line_attributes);
+    const rows=(await db.query(`select r.item_key,r.component,r.status,r.typed_value,r.unit,r.method,r.reason,r.details,
       array(select m.id from media_assets m where m.result_id=r.id and m.status='ready' order by m.id) evidence_ids
       from inspection_results r where r.task_id=$1 and r.is_final order by r.component,r.item_key`,[t.id])).rows;
     const members=await components(db,t);
     const single=t.assignment_id?await one<{code:string}>(db,`select w.code from warehouse_items w join order_line_item_links a on a.item_id=w.id where a.id=$1`,[t.assignment_id]):null;
-    sections.push({task_id:t.id,template_version_id:t.template_version_id,title:t.title.en,service:t.service,inspector_id:t.assignee_id,
-      results:rows.map(r=>({...r,label:template.checks.find(c=>c.key===r.item_key)?.label??r.item_key,item:single?.code??members.find(m=>m.id===r.component)?.code??r.component}))});
+    const mappedResults=rows.map(r=>{
+      const check=template.checks.find(c=>c.key===r.item_key);
+      const tol=tolerances.find(rule=>rule.point_code===r.item_key);
+      const hasTolerance=Boolean(tol && (typeof tol.min==="number" || typeof tol.max==="number") && r.status==="RECORDED" && typeof r.typed_value==="number");
+      const withinTolerance=hasTolerance
+        ?((typeof tol!.min!=="number" || Number(r.typed_value)>=tol!.min) && (typeof tol!.max!=="number" || Number(r.typed_value)<=tol!.max))
+        :undefined;
+      const derivedCircumference=typeof r.details?.derived_circumference==="number"?r.details.derived_circumference:undefined;
+      const englishReason=(typeof r.details?.note_en==="string" && r.details.note_en.trim())?r.details.note_en.trim():r.reason;
+      assertAllowedWording(englishReason,typeof r.typed_value==="string"?r.typed_value:null);
+      return {
+        item_key:r.item_key,
+        component:r.component,
+        status:r.status,
+        typed_value:r.typed_value,
+        unit:r.unit,
+        method:r.method,
+        reason:englishReason,
+        evidence_ids:r.evidence_ids,
+        label:check?.label??r.item_key,
+        item:single?.code??members.find(m=>m.id===r.component)?.code??r.component,
+        ...(derivedCircumference!==undefined?{derived_circumference:derivedCircumference}:{}),
+        ...(withinTolerance!==undefined?{within_tolerance:withinTolerance}:{}),
+        ...(r.details?.severity?{severity:r.details.severity}:{}),
+        ...(r.details?.part_code?{part_code:r.details.part_code}:{}),
+        ...(r.details?.uncertain?{uncertain:true}:{}),
+      };
+    });
+
+    let comparison:{
+      diffs:{point_code:string;label:string;unit:string|null;max_minus_min:number|null;display_diff:string}[];
+      order_shots:{code:string;media_id:string}[];
+    }|undefined;
+    if(t.group_id) {
+      const diffs=template.checks.filter(c=>c.type==="number").map(c=>{
+        const memberRows=members.map(m=>mappedResults.find(r=>r.component===m.id && r.item_key===c.key));
+        const allNumeric=memberRows.length>=2 && memberRows.every(r=>r && r.status==="RECORDED" && typeof r.typed_value==="number");
+        if(!allNumeric) {
+          return {point_code:c.key,label:c.label,unit:c.unit??null,max_minus_min:null,display_diff:"—"};
+        }
+        const nums=memberRows.map(r=>Number(r!.typed_value));
+        const diff=roundMetric(Math.max(...nums)-Math.min(...nums));
+        return {point_code:c.key,label:c.label,unit:c.unit??null,max_minus_min:diff,display_diff:String(diff)};
+      });
+      const orderShots=(await db.query<{code:string;media_id:string}>(
+        `select shot_code code,id media_id from media_assets
+         where task_id=$1 and status='ready' and shot_code is not null and coalesce(component,'group') in ('group','order','main')
+         order by shot_code,id`,
+        [t.id]
+      )).rows;
+      comparison={diffs,order_shots:orderShots};
+    }
+
+    const issueCount=mappedResults.filter(r=>r.status==="OBSERVED_ISSUE").length;
+    sections.push({
+      task_id:t.id,
+      order_line_id:t.order_line_id,
+      template_version_id:t.template_version_id,
+      title:t.title.en,
+      service:t.service,
+      inspector_id:t.assignee_id,
+      summary:{
+        expected_count:t.group_id?members.length:1,
+        checked_count:t.group_id?members.length:1,
+        issue_count:issueCount,
+      },
+      ...(comparison?{comparison}:{}),
+      results:mappedResults,
+    });
   }
   const report=(await db.query("select * from reports where order_id=$1 for update",[id])).rows[0] ??
     await one(db,"insert into reports(id,order_id,public_no) values($1,$2,$3) returning *",[uuid(),id,code("R-")]);
   const version=await one<{n:number}>(db,"select coalesce(max(version),0)::int+1 n from report_versions where report_id=$1",[report.id]);
+  const snapshot={
+    order_no:o.public_no,
+    report_no:report.public_no,
+    quote_id:o.submission_snapshot.quote_id,
+    not_inspected:DEFAULT_NOT_INSPECTED,
+    scope_notice:"Findings apply only to the physical samples received and the checks listed in this report.",
+    sections,
+  };
   const v=await one(db,`insert into report_versions(id,report_id,version,state,snapshot,created_by)
     values($1,$2,$3,'submitted',$4,$5) returning id,version,state`,
-    [uuid(),report.id,version.n,{order_no:o.public_no,report_no:report.public_no,quote_id:o.submission_snapshot.quote_id,sections},actor.id]);
+    [uuid(),report.id,version.n,snapshot,actor.id]);
   await db.query("update orders set state='qa_review',revision=revision+1 where id=$1",[id]);
   await audit(db,actor,"submit_report","report_versions",v.id);
   return v;
@@ -679,10 +853,42 @@ export async function approveReport(db:DB,actor:Actor,id:string,rev:number,check
   const v=await reviewTarget(db,actor,id,rev);
   guard(checklist.includes("reviewed_en")&&checklist.includes("evidence_checked"),
     "REPORT_UNAVAILABLE","Confirm the English text and inspect the evidence before approval.");
+  for(const section of v.snapshot.sections??[]) {
+    for(const res of section.results??[]) {
+      assertAllowedWording(res.reason,typeof res.typed_value==="string"?res.typed_value:null);
+      guard(!hasUntranslatedChinese(res.reason) && (typeof res.typed_value!=="string" || !hasUntranslatedChinese(res.typed_value)),
+        "ENGLISH_TRANSLATION_REQUIRED",
+        "Customer-facing report observations and reasons must be reviewed in English before approval.",422);
+    }
+  }
   await db.query("update report_versions set state='qa_approved',reviewed_by=$2,reviewed_at=now(),revision=revision+1 where id=$1",[id,actor.id]);
   await event(db,"report.render",{version_id:id});
   await audit(db,actor,"approve_report","report_versions",id);
   return {id,version:v.version,state:"qa_approved"};
+}
+
+export async function translateReportCandidate(
+  db:DB,
+  actor:Actor,
+  id:string,
+  input:{revision:number;translations:{section:number;result:number;reason_en:string}[]}
+) {
+  const v=await reviewTarget(db,actor,id,input.revision);
+  for(const item of input.translations) {
+    const section=v.snapshot.sections?.[item.section];
+    const result=section?.results?.[item.result];
+    guard(result,"RESULT_INVALID","Select a valid checkpoint in this report candidate.",422);
+    const cleanEn=item.reason_en.trim();
+    guard(cleanEn.length>=2 && !hasUntranslatedChinese(cleanEn),"ENGLISH_TRANSLATION_REQUIRED","Provide a complete English translation.",422);
+    assertAllowedWording(cleanEn);
+    if(result.reason && !result.reason_zh) {
+      result.reason_zh=result.reason;
+    }
+    result.reason=cleanEn;
+  }
+  await db.query("update report_versions set snapshot=$2,revision=revision+1 where id=$1",[id,v.snapshot]);
+  await audit(db,actor,"translate_report_candidate","report_versions",id,{count:input.translations.length});
+  return {id,version:v.version,revision:v.revision+1,state:v.state};
 }
 export async function returnReport(db:DB,actor:Actor,id:string,rev:number,reason:string) {
   const v=await reviewTarget(db,actor,id,rev);
@@ -749,6 +955,7 @@ export async function staffReport(db:DB,actor:Actor,id:string) {
 }
 export async function amendReport(db:DB,actor:Actor,id:string,input:z.infer<typeof amendReportInput>) {
   role(actor,...staffAccess.reportEditing);
+  assertAllowedWording(input.reason);
   const initial=await one(db,"select org_id from orders where id=(select order_id from reports where id=$1)",[id]);
   await lock(db,"org:"+initial.org_id);
   const current=await one(db,`select v.* from reports r join report_versions v on v.report_id=r.id
@@ -777,10 +984,12 @@ export async function editReportRevision(db:DB,actor:Actor,id:string,input:z.inf
     const template=await one(db,"select content from template_versions where id=$1",[section.template_version_id]);
     const check=templateSchema.parse(template.content).checks.find(c=>c.key===result.item_key);
     guard(check,"RESULT_INVALID","The checkpoint is missing from its original template.",422);
-    guard(edit.status!=="RECORDED"||typeof edit.typed_value===check.type,"RESULT_INVALID","Use the checkpoint's configured value type.",422);
+    const expectedJsType=check.type==="text"?"string":check.type;
+    guard(edit.status!=="RECORDED"||typeof edit.typed_value===expectedJsType,"RESULT_INVALID","Use the checkpoint's configured value type.",422);
     guard(!["NOT_TESTED","NOT_APPLICABLE","OBSERVED_ISSUE"].includes(edit.status)||edit.reason.length>=2,
       "RESULT_INVALID","Explain the observed issue or missing result.",422);
     guard(edit.status!=="OBSERVED_ISSUE"||result.evidence_ids.length>0,"EVIDENCE_REQUIRED","An observed issue requires supporting evidence.",422);
+    assertAllowedWording(edit.reason,typeof edit.typed_value==="string"?edit.typed_value:null);
     Object.assign(result,{status:edit.status,typed_value:edit.status==="RECORDED"?edit.typed_value:null,reason:edit.reason||null});
   }
   await db.query("update report_versions set snapshot=$2,revision=revision+1 where id=$1",[id,v.snapshot]);
@@ -798,17 +1007,74 @@ export async function submitReportRevision(db:DB,actor:Actor,id:string,rev:numbe
   await audit(db,actor,"submit_revision","report_versions",id);
   return {id,revision:v.revision+1,state:"submitted"};
 }
-type ReportResult={item:string;label:string;status:string;typed_value:unknown;unit:string|null;reason:string|null;method:string;evidence_ids:string[]};
-type Snapshot={order_no:string;report_no:string;quote_id:string;sections:{title:string;service:string;results:ReportResult[]}[]};
+
+export async function createReportDispute(
+  db:DB,
+  actor:Actor,
+  orderId:string,
+  input:{version?:number;item_code?:string;item_key:string;subject?:string;message:string}
+) {
+  const org=organization(actor);
+  await lock(db,"org:"+org);
+  const v=await one<{id:string;version:number;report_no:string;order_no:string;snapshot:{sections:{results:{item:string;item_key:string;label:string}[]}[]}}>(
+    db,
+    `select v.id,v.version,r.public_no report_no,o.public_no order_no,v.snapshot
+     from orders o join reports r on r.order_id=o.id join report_versions v on v.report_id=r.id
+     where o.id=$1 and o.org_id=$2 and v.version=coalesce($3,r.published_version) and v.state in ('published','superseded')`,
+    [orderId,org,input.version??null]
+  );
+  const matched=v.snapshot.sections.flatMap(s=>s.results).find(r=>
+    r.item_key===input.item_key && (!input.item_code || r.item===input.item_code)
+  );
+  guard(matched,"RESULT_INVALID","Select a valid checkpoint in this report version.",422);
+  const ticketId=uuid(),publicNo=code("CASE-");
+  const subject=(input.subject?.trim() || `Report ${v.report_no} v${v.version} dispute: ${matched.label} (${matched.item})`).slice(0,150);
+  const details={
+    dispute_type:"report_dispute",
+    report_version_id:v.id,
+    report_version:v.version,
+    report_no:v.report_no,
+    item_code:matched.item,
+    item_key:matched.item_key,
+    checkpoint_label:matched.label,
+  };
+  await db.query(
+    `insert into tickets(id,public_no,org_id,order_id,category,subject,state,details,next_action_at)
+     values($1,$2,$3,$4,'measurement_dispute',$5,'waiting_internal',$6,now() + interval '24 hours')`,
+    [ticketId,publicNo,org,orderId,subject,details]
+  );
+  await db.query(
+    `insert into ticket_events(id,ticket_id,actor_type,actor_id,kind,body,media_ids)
+     values($1,$2,'customer',$3,'message',$4,'{}'::uuid[])`,
+    [uuid(),ticketId,actor.id,input.message.trim()]
+  );
+  await audit(db,actor,"create_report_dispute","tickets",ticketId,details);
+  return {ticket_id:ticketId,public_no:publicNo,state:"waiting_internal",category:"measurement_dispute",details};
+}
+
+type ReportResult={
+  item:string;label:string;status:string;typed_value:unknown;unit:string|null;reason:string|null;method:string;
+  evidence_ids:string[];derived_circumference?:number;within_tolerance?:boolean;
+};
+type Snapshot={
+  order_no:string;report_no:string;quote_id:string;
+  sections:{
+    title:string;service:string;
+    comparison?:{diffs:{point_code:string;label:string;unit:string|null;max_minus_min:number|null;display_diff:string}[]};
+    results:ReportResult[];
+  }[];
+};
 async function renderPDF(db:DB,org:string,snapshot:Snapshot,version:number,amendReason?:string) {
   const doc=await PDFDocument.create(),font=await doc.embedFont(StandardFonts.Helvetica),bold=await doc.embedFont(StandardFonts.HelveticaBold);
   doc.setTitle(`QC Warehouse ${snapshot.report_no}`);
-  let page=doc.addPage([595,842]),y=790;
+  const pages:ReturnType<typeof doc.addPage>[]=[];
+  const newPage=()=>{const p=doc.addPage([595,842]);pages.push(p);return p;};
+  let page=newPage(),y=790;
   const latin=(s:string)=>s.normalize("NFKD").replace(/[^\x20-\x7e]/g,"?");
   function print(s:string,size=10,strong=false) {
     const f=strong?bold:font;
     for(const line of latin(s).match(/.{1,94}/g)??[""]) {
-      if(y<52) {page=doc.addPage([595,842]); y=790;}
+      if(y<64) {page=newPage(); y=790;}
       page.drawText(line,{x:45,y,size,font:f,color:rgb(.06,.13,.16)}); y-=size+6;
     }
   }
@@ -824,7 +1090,7 @@ async function renderPDF(db:DB,org:string,snapshot:Snapshot,version:number,amend
     }
     const scale=Math.min(220/image.width,144/image.height,1);
     const {width,height}=image.scale(scale);
-    if(y-height<52) {page=doc.addPage([595,842]);y=790;}
+    if(y-height<64) {page=newPage();y=790;}
     page.drawImage(image,{x:45,y:y-height,width,height});
     y-=height+10;
   }
@@ -835,11 +1101,26 @@ async function renderPDF(db:DB,org:string,snapshot:Snapshot,version:number,amend
   for(const s of snapshot.sections) {
     print(s.title,13,true);
     for(const r of s.results) {
-      print(`${r.item} | ${r.label} | ${r.status} ${r.typed_value??""} ${r.unit??""} ${r.reason??""}`);
+      const circ=typeof r.derived_circumference==="number"?` (Circumference: ${r.derived_circumference} cm)`:"";
+      const tol=typeof r.within_tolerance==="boolean"?` [${r.within_tolerance?"Within stated tolerance":"Outside stated tolerance"}]`:"";
+      print(`${r.item} | ${r.label} | ${r.status} ${r.typed_value??""} ${r.unit??""}${circ}${tol} ${r.reason??""}`);
       for(const id of r.evidence_ids) await evidence(id);
+    }
+    if(s.comparison?.diffs?.length) {
+      print("Comparison differences (max - min):",11,true);
+      for(const d of s.comparison.diffs) {
+        print(`  ${d.label}: ${d.display_diff}${d.max_minus_min!==null && d.unit?" "+d.unit:""}`);
+      }
     }
     y-=10;
   }
+  const totalPages=pages.length;
+  pages.forEach((p,idx)=>{
+    p.drawText(
+      latin(`QC Warehouse | ${snapshot.report_no} v${version} | Page ${idx+1} of ${totalPages} | Findings apply only to the samples received.`),
+      {x:45,y:28,size:8,font,color:rgb(.35,.42,.46)}
+    );
+  });
   return Buffer.from(await doc.save());
 }
 export async function publishReport(db:DB,id:string) {
@@ -855,7 +1136,11 @@ export async function publishReport(db:DB,id:string) {
     "REPORT_BLOCKED","Report is temporarily blocked.");
   const bytes=await renderPDF(db,first.org_id,v.snapshot,v.version,v.amend_reason);
   const key="reports/"+id+".pdf";
-  await db.query("insert into private_files(key,data,mime) values($1,$2,'application/pdf')",[key,bytes]);
+  await db.query(
+    `insert into private_files(key,data,mime) values($1,$2,'application/pdf')
+     on conflict(key) do update set data=excluded.data,mime=excluded.mime`,
+    [key,bytes]
+  );
   if(v.published_version) await db.query("update report_versions set state='superseded' where report_id=$1 and version=$2 and state='published'",[v.report_id,v.published_version]);
   await db.query(`update report_versions set state='published',pdf_key=$2,pdf_sha256=$3,renderer_version='pdf-lib-v2',published_at=now(),revision=revision+1 where id=$1`,[id,key,hash(bytes)]);
   await db.query("update reports set published_version=$2,current_version=$2 where id=$1",[v.report_id,v.version]);

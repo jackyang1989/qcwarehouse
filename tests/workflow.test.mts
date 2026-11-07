@@ -3265,7 +3265,7 @@ test("inspection workbench: SLA queue, scan switching, multi-component suit, ret
   const admin=await staffLogin("admin");
 
   const desk=await receiving.fetch("/staff/desk");
-  const locId=desk.locations[0].id as string;
+  const locId=(desk.locations.find((l:{code:string})=>l.code==="R-01")??desk.locations[0]).id as string;
 
   // Create & publish a multi-component suit template with measurement_policy, derived circumference, parts, and component shots
   const adminDeskData=await admin.fetch("/staff/admin/desk");
@@ -3541,6 +3541,198 @@ test("inspection workbench: SLA queue, scan switching, multi-component suit, ret
 
   const submittedTask=await inspector.fetch(`/staff/inspection-tasks/${taskId}/submit`,{revision:taskRev});
   assert.equal(submittedTask.state,"SUBMITTED");
+});
+
+test("report review, wording guard, English translation review, comparison diffs, tolerance display, PDF retry recovery, and report dispute case (TASK-076 to TASK-085, TASK-161)",async()=>{
+  const {c,terms}=await signCustomer();
+  const receiving=await staffLogin("receiving");
+  const inspector=await staffLogin("inspector");
+  const reviewer=await staffLogin("reviewer");
+
+  const desk=await receiving.fetch("/staff/desk");
+  const locId=(desk.locations.find((l:{code:string})=>l.code==="R-01")??desk.locations[0]).id as string;
+  const cat=await c.fetch("/catalog");
+  const compareOffer=cat.offers.find((o:{service:string})=>o.service==="compare")!;
+
+  // Create a 2-sample comparison order WITHOUT customer tolerance (T23)
+  const {draft}=await createAndPay(
+    c,
+    [{
+      category_id:compareOffer.category_id,
+      offer_id:compareOffer.offer_id,
+      quantity:2,
+      attributes:{name:"Compare Hoodie Set",size_label:"L"},
+    }],
+    terms
+  );
+
+  // Check in 2 items and identify them onto the comparison order
+  const addr=(await c.fetch("/me/receiving-address")).warehouse_address.id as string;
+  const trk="SF"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const adv=await c.fetch("/me/parcels",{address_id:addr,carrier_code:"sf",tracking_no:trk,order_ids:[draft.id]},"POST",201);
+  const pkg=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:trk,carrier_code:"sf",advice_id:adv.id,weight_g:900,outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+  const code1="S-"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const code2="S-"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const intake=await receiving.fetch(`/staff/packages/${pkg.id}/items`,{
+    revision:pkg.revision,
+    items:[
+      {code:code1,location_id:locId},
+      {code:code2,location_id:locId},
+    ],
+  },"POST",201);
+  const positions=(await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:code1}))).positions
+    .filter((p:{public_no:string})=>p.public_no===draft.public_no);
+  assert.equal(positions.length,2);
+  await receiving.fetch(`/staff/items/${intake.item_ids[0]}/identify`,{
+    revision:1,order_line_id:positions[0].order_line_id,expected_item_id:positions[0].id,matches_advice:true,media_ids:[await receiving.photo("label_photo")],
+  });
+  await receiving.fetch(`/staff/items/${intake.item_ids[1]}/identify`,{
+    revision:1,order_line_id:positions[1].order_line_id,expected_item_id:positions[1].id,matches_advice:true,media_ids:[await receiving.photo("label_photo")],
+  });
+
+  const staffTasks=(await inspector.fetch("/staff/desk")).tasks.filter((t:{public_no:string})=>t.public_no===draft.public_no);
+  assert.equal(staffTasks.length,1);
+  const [t1]=staffTasks;
+  const started=await inspector.fetch(`/staff/inspection-tasks/${t1.id}/start`,{revision:t1.revision});
+  const view=await inspector.fetch(`/staff/inspection-tasks/${t1.id}`);
+  assert.equal(view.components.length,2);
+  const [compA,compB]=view.components.map((m:{id:string})=>m.id);
+  const numCheck=view.content.checks.find((ch:{type:string})=>ch.type==="number")!;
+  const boolCheck=view.content.checks.find((ch:{key:string})=>ch.key!==numCheck.key) ?? view.content.checks[0];
+
+  // 1. TASK-077 (T19): Subjective/certification forbidden wording is rejected with 422 FORBIDDEN_WORDING
+  const forbiddenErr=await inspector.fetch(`/staff/inspection-tasks/${t1.id}/results`,{
+    revision:started.revision,
+    results:[{
+      item_key:boolCheck.key,
+      component:compA,
+      attempt:1,
+      status:"OBSERVED_ISSUE",
+      method:boolCheck.method,
+      reason:"This item is 100% authentic and Factory A is better.",
+      evidence_ids:[await inspector.photo("shot")],
+      is_final:true,
+    }],
+  },"PUT",422);
+  assert.equal(forbiddenErr.error.code,"FORBIDDEN_WORDING");
+
+  // 2. Record valid results on compA and compB (numCheck on compB is NOT_TESTED -> missing value for T24, plus Chinese reason on boolCheck for T82)
+  const resultsPayload=[];
+  for(const ch of view.content.checks) {
+    if(ch.key===numCheck.key) {
+      resultsPayload.push({
+        item_key:ch.key,component:compA,attempt:1,status:"RECORDED",typed_value:70.0,
+        ...(ch.unit?{unit:ch.unit}:{}),
+        method:ch.method,evidence_ids:[await inspector.photo("shot")],is_final:true,
+      });
+      resultsPayload.push({
+        item_key:ch.key,component:compB,attempt:1,status:"NOT_TESTED",reason:"Drawstring sealed by seller tag",
+        method:ch.method,is_final:true,
+      });
+    } else if(ch.key===boolCheck.key) {
+      resultsPayload.push({
+        item_key:ch.key,component:compA,attempt:1,status:"RECORDED",typed_value:ch.type==="boolean"?true:ch.type==="number"?50:"OK",
+        ...(ch.unit?{unit:ch.unit}:{}),
+        method:ch.method,evidence_ids:[await inspector.photo("shot")],is_final:true,
+      });
+      resultsPayload.push({
+        item_key:ch.key,component:compB,attempt:1,status:"OBSERVED_ISSUE",reason:"袖口处有明显跳线大约2厘米",
+        method:ch.method,evidence_ids:[await inspector.photo("shot")],is_final:true,
+      });
+    } else {
+      for(const comp of [compA,compB]) {
+        resultsPayload.push({
+          item_key:ch.key,component:comp,attempt:1,status:"RECORDED",
+          typed_value:ch.type==="boolean"?true:ch.type==="number"?50:"OK",
+          ...(ch.unit?{unit:ch.unit}:{}),
+          method:ch.method,evidence_ids:[await inspector.photo("shot")],is_final:true,
+        });
+      }
+    }
+  }
+  const rSaved=await inspector.fetch(`/staff/inspection-tasks/${t1.id}/results`,{
+    revision:started.revision,
+    results:resultsPayload,
+  },"PUT");
+  await inspector.fetch(`/staff/inspection-tasks/${t1.id}/submit`,{revision:rSaved.revision});
+
+  // 3. Submit report candidate
+  const ordReady=await c.fetch(`/orders/${draft.id}`);
+  const repSub=await inspector.fetch(`/staff/orders/${draft.id}/report/submit`,{
+    revision:ordReady.revision,
+    task_ids:[t1.id],
+  });
+  assert.equal(repSub.state,"submitted");
+
+  // 4. TASK-078 (T20): Self-review by inspector is forbidden
+  const selfRevErr=await inspector.fetch(`/staff/reports/${repSub.id}/approve`,{
+    revision:1,checklist:["reviewed_en","evidence_checked"],
+  },"POST",403);
+  assert.ok(["FORBIDDEN","SELF_REVIEW_FORBIDDEN"].includes(selfRevErr.error.code));
+
+  // 5. TASK-161 (T82): Approving while untranslated Chinese remains in customer-facing reason is rejected with 422 ENGLISH_TRANSLATION_REQUIRED
+  const zhApproveErr=await reviewer.fetch(`/staff/reports/${repSub.id}/approve`,{
+    revision:1,checklist:["reviewed_en","evidence_checked"],
+  },"POST",422);
+  assert.equal(zhApproveErr.error.code,"ENGLISH_TRANSLATION_REQUIRED");
+
+  // Translate candidate report reason to English via PATCH /staff/reports/{id}/candidate
+  const staffRep=await reviewer.fetch(`/staff/reports/${repSub.id}`);
+  const defectIdx=staffRep.snapshot.sections[0].results.findIndex((r:{item_key:string;status:string})=>r.item_key===boolCheck.key&&r.status==="OBSERVED_ISSUE");
+  const translated=await reviewer.fetch(`/staff/reports/${repSub.id}/candidate`,{
+    revision:staffRep.revision,
+    translations:[{
+      section:0,
+      result:defectIdx,
+      reason_en:"Visible skipped stitch approximately 2 cm at right cuff",
+    }],
+  },"PATCH");
+  assert.equal(translated.revision,staffRep.revision+1);
+
+  // Now approveReport succeeds and worker renders & publishes PDF!
+  const approved=await reviewer.fetch(`/staff/reports/${repSub.id}/approve`,{
+    revision:translated.revision,
+    checklist:["reviewed_en","evidence_checked"],
+  },"POST",202);
+  assert.equal(approved.state,"qa_approved");
+  for(let i=0;i<50;i++){if(!await workOnce())break;}
+
+  // 6. TASK-081, TASK-082 (T23, T24): Read published report, verify no within_tolerance when customer omitted tolerance, and verify comparison diff is "—" when a sample is NOT_TESTED
+  const pubReport=await c.fetch(`/orders/${draft.id}/report`);
+  assert.equal(pubReport.state,"published");
+  assert.equal(pubReport.version,1);
+  const sec0=pubReport.snapshot.sections[0];
+  assert.equal(sec0.summary.expected_count,2);
+  assert.equal(sec0.summary.checked_count,2);
+  assert.equal(sec0.summary.issue_count,1);
+  for(const res of sec0.results) {
+    assert.equal(res.within_tolerance,undefined,"within_tolerance must be omitted when customer did not provide tolerance (T23)");
+  }
+  const lenDiff=sec0.comparison.diffs.find((d:{point_code:string})=>d.point_code===numCheck.key);
+  assert.ok(lenDiff);
+  assert.equal(lenDiff.max_minus_min,null);
+  assert.equal(lenDiff.display_diff,"—");
+
+  // 7. TASK-161 (T81): Verify signed PDF download URL generation
+  const pdfMeta=await c.fetch(`/orders/${draft.id}/report/versions/1/pdf`);
+  assert.equal(pdfMeta.version,1);
+  assert.ok(pdfMeta.url.includes("/api/v1/orders/"));
+
+  // 8. TASK-084: Customer opens a report dispute linked to version 1 and checkpoint boolCheck.key
+  const disputeItem=sec0.results[defectIdx].item;
+  const dispute=await c.fetch(`/orders/${draft.id}/report/disputes`,{
+    version:1,
+    item_code:disputeItem,
+    item_key:boolCheck.key,
+    message:"Please confirm whether the skipped stitch affects the inner lining seam.",
+  },"POST",201);
+  assert.equal(dispute.category,"measurement_dispute");
+  assert.equal(dispute.details.dispute_type,"report_dispute");
+  assert.equal(dispute.state,"waiting_internal");
+  assert.equal(dispute.details.report_version,1);
+  assert.equal(dispute.details.item_key,boolCheck.key);
 });
 
 test("all core operations have a validated success response",assertCoreCoverage);

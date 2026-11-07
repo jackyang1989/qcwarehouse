@@ -12,7 +12,7 @@ import { failedJobs, retryFailedJob } from "./worker";
 import { customerEmailDeliveryStatus, receivePostmarkWebhook, retryEmailDelivery, staffEmailDeliveries } from "./email";
 import { catalog, issueManualQuote, orderDetail, quoteOrder, requestManualQuote, saveOrder, submitOrder } from "./orders";
 import { advise, assign, bindUnmatchedPackageOwner, checkIn, decideIntakeClaim, identifyItem, intakeItems, lookup, quarantineItem, quarantinePackage, requestIntakeClaim, savePhoto, unassignItem, waybill } from "./intake";
-import { amendReport, amendReportInput, approveReport, checkTaskCompleteness, editReportRevision, findInspectionTaskByScan, readReport, recordResults, recordTaskShot, recordTaskStep, reportDesk, returnReport, revisionChanges, staffReport, startTask, submitReport, submitReportRevision, submitTask, taskDetail } from "./inspection";
+import { amendReport, amendReportInput, approveReport, checkTaskCompleteness, createReportDispute, editReportRevision, findInspectionTaskByScan, readReport, recordResults, recordTaskShot, recordTaskStep, reportDesk, returnReport, revisionChanges, staffReport, startTask, submitReport, submitReportRevision, submitTask, taskDetail, translateReportCandidate } from "./inspection";
 import { acceptQuote, confirmBatch, handover, instruct, packShipment, planBatch, quoteBatch, receiveReturn, releaseReferenceSample, storageQuote } from "./dispatch";
 import { checkout, demoPay, orderPayment, orderRefundPayments, refundApprove, refundRequest, stripeEvent, verifyStripe } from "./payments";
 import { approveTrackingTranslation, correctCustomerParcelTracking, correctStaffTracking, providerCallback, refreshTracking, submitTrackingTranslation, tracking, trackingAdmin, verificationState, verifyTracking } from "./logistics";
@@ -486,6 +486,27 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
     }
     return json({id:r.id,version:r.version,state:r.state,snapshot:r.snapshot,published_at:r.published_at,amend_reason:r.amend_reason,versions:r.versions});
   });
+  const reportDisputes=path.match(/^\/orders\/([a-f0-9-]{36})\/report\/disputes$/i);
+  if(method==="POST" && reportDisputes) {
+    return extraWrite(req,path,actor,z.object({
+      version:z.number().int().positive().optional(),
+      item_code:z.string().trim().min(1).max(80).optional(),
+      item_key:z.string().trim().min(1).max(80),
+      subject:z.string().trim().min(2).max(150).optional(),
+      message:z.string().trim().min(2).max(2000),
+    }),(db,a,b)=>createReportDispute(db,a,idSchema.parse(reportDisputes[1]),b),201);
+  }
+  const reportCandidate=path.match(/^\/staff\/reports\/([a-f0-9-]{36})\/candidate$/i);
+  if(method==="PATCH" && reportCandidate) {
+    return extraWrite(req,path,actor,z.object({
+      revision:revSchema,
+      translations:z.array(z.object({
+        section:z.number().int().nonnegative(),
+        result:z.number().int().nonnegative(),
+        reason_en:z.string().trim().min(2).max(2000),
+      })).min(1),
+    }),(db,a,b)=>translateReportCandidate(db,a,idSchema.parse(reportCandidate[1]),b));
+  }
   const mediaUrlRoute=path.match(/^\/media\/([a-f0-9-]{36})\/url$/i);
   if(method==="GET" && mediaUrlRoute) {
     return json(await transaction(db=>createMediaReadUrl(db,actorRequired(actor),idSchema.parse(mediaUrlRoute[1]))));

@@ -126,8 +126,19 @@ async function applyPayment(db:DB,pid:string,providerRef:string,details:object) 
     confirmedOrderId=order.id;
     if(!heldForPayment) await activatePaidOrder(db,order.id);
   } else if(charge.purpose==="dispatch") {
-    await db.query(`update dispatch_batches b set state='paid',revision=b.revision+1 from dispatch_quote_versions q
-      where q.id=$1 and q.batch_id=b.id and b.state='quoted'`,[charge.dispatch_quote_id]);
+    const dq=await one(db,
+      `select q.id,q.batch_id,b.state batch_state,
+              (select id from dispatch_quote_versions where batch_id=b.id order by revision desc limit 1) latest_quote_id
+       from dispatch_quote_versions q join dispatch_batches b on b.id=q.batch_id
+       where q.id=$1 for update of q,b`,
+      [charge.dispatch_quote_id]
+    );
+    if(dq.batch_state!=="quoted" || dq.id!==dq.latest_quote_id) {
+      await db.query("insert into tickets(id,public_no,org_id,order_id,category,subject,details) values($1,$2,$3,null,'payment_refund',$4,$5)",
+        [uuid(),code("PAY-"),charge.org_id,"Reconcile late payment for superseded dispatch quote",{payment_id:pid,batch_id:dq.batch_id,dispatch_quote_id:dq.id}]);
+      return;
+    }
+    await db.query("update dispatch_batches set state='paid',revision=revision+1 where id=$1",[dq.batch_id]);
   } else {
     const item=await one(db,`select d.item_id,d.id,q.snapshot from storage_quotes q join disposition_requests d on d.id=q.disposition_id where q.id=$1`,[charge.storage_quote_id]);
     const updated=await one(db,`update warehouse_items set storage_until=greatest(coalesce(storage_until,now()),now())+make_interval(days=>$2),

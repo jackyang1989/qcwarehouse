@@ -31,6 +31,7 @@ const {businessDeadline}=await import("../packages/core/orders");
 before(async()=>{
   const actual=await pool.query<{name:string}>("select current_database() name");
   assert.equal(actual.rows[0].name,databaseName,"Connected to a different database than expected.");
+  await pool.query("drop schema if exists public cascade; create schema public;");
   for(const args of [["--env-file-if-exists=.env","scripts/migrate.mjs"],["--env-file-if-exists=.env","--import","tsx","scripts/demo.ts"]])
     execFileSync(process.execPath,args,{env:process.env,stdio:"pipe"});
   await pool.query(readFileSync(new URL("./shadow-categories.sql",import.meta.url),"utf8"));
@@ -3733,6 +3734,257 @@ test("report review, wording guard, English translation review, comparison diffs
   assert.equal(dispute.state,"waiting_internal");
   assert.equal(dispute.details.report_version,1);
   assert.equal(dispute.details.item_key,boolCheck.key);
+});
+
+test("TASK-086..100 & TASK-160: per-item dispositions, shipping rates & calculator, manual parcel pricing, consolidation/split amendments, storage reminders, and financial reconciliation",async()=>{
+  const admin=await staffLogin("admin");
+  const receiving=await staffLogin("receiving");
+  const {c,terms}=await signCustomer();
+  const termsId=terms.find((t:{kind:string})=>t.kind==="terms")?.id ?? terms[0].id;
+  const stdOffer=(await c.fetch("/catalog")).offers.find((o:{sku_code:string})=>o.sku_code==="apparel-inspection-1");
+
+  // 1. TASK-091 & TASK-092: Publish a new shipping rate version and verify the shipping rate calculator
+  const newRate=await admin.fetch("/staff/admin/shipping-rates",{
+    first_weight_g:1000,first_cents:900,extra_step_g:500,extra_cents:250,handling_cents:150,
+  },"POST",201);
+  assert.ok(newRate.version>=2);
+
+  const calcPreview=await admin.fetch("/staff/admin/shipping-rates/calculate",{
+    rate_version_id:newRate.id,
+    parcels:[{weight_g:800},{weight_g:1350}],
+  });
+  assert.equal(calcPreview.version,newRate.version);
+  // 800g -> 900 cents; 1350g -> 900 + 1*250 = 1150 cents; handling = 150 cents -> total 2200 cents
+  assert.equal(calcPreview.parcels[0].amount_cents,900);
+  assert.equal(calcPreview.parcels[1].amount_cents,1150);
+  assert.equal(calcPreview.handling_cents,150);
+  assert.equal(calcPreview.total_cents,2200);
+
+  // 2. Create two orders (o1 with 2 items, o2 with 1 item) plus 1 zero-order stored item for c
+  const {draft:o1}=await createAndPay(c,[{category_id:stdOffer.category_id,offer_id:stdOffer.offer_id,quantity:2,attributes:{name:"STD-DISP-1"}}],terms);
+  const {draft:o2}=await createAndPay(c,[{category_id:stdOffer.category_id,offer_id:stdOffer.offer_id,quantity:1,attributes:{name:"STD-DISP-2"}}],terms);
+  const addr=(await c.fetch("/me/receiving-address")).warehouse_address.id as string;
+  const desk=await receiving.fetch("/staff/desk");
+  const locId=(desk.locations.find((l:{code:string})=>l.code==="R-01")??desk.locations[0]).id as string;
+
+  async function receiveAndIdentify(order:{id:string;public_no:string},count:number) {
+    const trk="SF"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+    const adv=await c.fetch("/me/parcels",{address_id:addr,carrier_code:"sf",tracking_no:trk,order_ids:[order.id]},"POST",201);
+    const pkg=await receiving.fetch("/staff/intake/check-in",{
+      tracking_no:trk,carrier_code:"sf",advice_id:adv.id,weight_g:900,outer_media_ids:[await receiving.photo("intake_outer")],
+    },"POST",201);
+    const codes=Array.from({length:count},()=>"S-"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase());
+    const unpacked=await receiving.fetch(`/staff/packages/${pkg.id}/items`,{
+      revision:pkg.revision,
+      items:codes.map(code=>({code,location_id:locId})),
+    },"POST",201);
+    const pos=(await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:codes[0]}))).positions
+      .filter((p:{public_no:string})=>p.public_no===order.public_no);
+    for(let i=0;i<count;i++) {
+      await receiving.fetch(`/staff/items/${unpacked.item_ids[i]}/identify`,{
+        revision:1,order_line_id:pos[i].order_line_id,expected_item_id:pos[i].id,matches_advice:true,media_ids:[await receiving.photo("label_photo")],
+      });
+    }
+    const ordNow=await c.fetch(`/orders/${order.id}`);
+    await c.fetch(`/orders/${order.id}/cancel`,{revision:ordNow.revision,reason:"Cancel before inspection to test item disposition"});
+    return unpacked.item_ids as string[];
+  }
+
+  const [item1A,item1B]=await receiveAndIdentify(o1,2);
+  const [item2A]=await receiveAndIdentify(o2,1);
+
+  // Also check in a zero-order parcel for customer c and unpack itemZero
+  const zeroTrk="SF"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const zeroAdv=await c.fetch("/me/parcels",{address_id:addr,carrier_code:"sf",tracking_no:zeroTrk,order_ids:[]},"POST",201);
+  const zeroPkg=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:zeroTrk,carrier_code:"sf",advice_id:zeroAdv.id,weight_g:500,outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+  const zeroCode="S-"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const zeroUnpacked=await receiving.fetch(`/staff/packages/${zeroPkg.id}/items`,{
+    revision:zeroPkg.revision,
+    items:[{code:zeroCode,location_id:locId}],
+  },"POST",201);
+  const itemZero=zeroUnpacked.item_ids[0] as string;
+
+  // 3. TASK-086, TASK-087, TASK-089, TASK-090 (T62):
+  // - Forwarder disposition without member_code (or blank member_code) is rejected with 422 DESTINATION_INCOMPLETE
+  const missingMember=await c.fetch(`/orders/${o1.id}/dispositions`,{
+    item_id:item1A,
+    action:"to_forwarder",
+    terms_version_id:termsId,
+    destination:{recipient:"Fwd Hub",phone:"13800001111",address:"Shenzhen Baoan Hub",member_code:"   "},
+  },"POST",422);
+  assert.equal(missingMember.error.code,"DESTINATION_INCOMPLETE");
+
+  // - Request retain (storage extension for 45 days) on item1B, then cancel it before payment, then switch to return_to_seller
+  const retainDisp=await c.fetch(`/orders/${o1.id}/dispositions`,{
+    item_id:item1B,
+    action:"retain",
+    days:45,
+    terms_version_id:termsId,
+  },"POST",201);
+  assert.ok(retainDisp.id);
+
+  // Duplicate active disposition on item1B is rejected with 409 ITEM_RESERVED
+  const dupDisp=await c.fetch(`/orders/${o1.id}/dispositions`,{
+    item_id:item1B,
+    action:"return_to_seller",
+    terms_version_id:termsId,
+    destination:{recipient:"Seller",phone:"13900002222",address:"Hangzhou"},
+    return_info:{requested_from_seller:true,customer_pays_shipping:true},
+  },"POST",409);
+  assert.equal(dupDisp.error.code,"ITEM_RESERVED");
+
+  // Cancel unlocked retain disposition on item1B
+  const cancelledDisp=await c.fetch(`/me/dispositions/${retainDisp.id}/cancel`,{});
+  assert.equal(cancelledDisp.state,"cancelled");
+
+  // Now item1B can be instructed to return_to_seller!
+  const retDisp1B=await c.fetch(`/orders/${o1.id}/dispositions`,{
+    item_id:item1B,
+    action:"return_to_seller",
+    terms_version_id:termsId,
+    destination:{recipient:"Seller Return Dept",phone:"13900002222",address:"Hangzhou Binjiang Rd"},
+    return_info:{requested_from_seller:true,customer_pays_shipping:true},
+  },"POST",201);
+  assert.ok(retDisp1B.id);
+
+  // 4. TASK-160 (T76, T79, T80, T111): Consolidate item1A (order 1), item2A (order 2), and itemZero (zero-order) into a single to_forwarder batch!
+  const fwdDest={recipient:"Fwd Warehouse",phone:"13800001111",address:"Shenzhen Logistics Park",member_code:"MBR-8899"};
+  const disp1A=await c.fetch(`/orders/${o1.id}/dispositions`,{
+    item_id:item1A,action:"to_forwarder",terms_version_id:termsId,destination:fwdDest,
+  },"POST",201);
+  const disp2A=await c.fetch(`/orders/${o2.id}/dispositions`,{
+    item_id:item2A,action:"to_forwarder",terms_version_id:termsId,destination:fwdDest,
+  },"POST",201);
+  const dispZero=await c.fetch(`/me/items/${itemZero}/dispositions`,{
+    action:"to_forwarder",terms_version_id:termsId,destination:fwdDest,
+  },"POST",201);
+
+  const batch=await c.fetch("/dispatch-batches",{disposition_ids:[disp1A.id,disp2A.id,dispZero.id]},"POST",201);
+  const confirmedBatch=await c.fetch(`/dispatch-batches/${batch.batch_id}/confirm`,{revision:batch.revision});
+  assert.equal(confirmedBatch.revision,batch.revision+1);
+
+  // Attempting to cancel a disposition locked in a confirmed batch is rejected with 409 BATCH_LOCKED
+  const lockedCancelErr=await c.fetch(`/me/dispositions/${disp1A.id}/cancel`,{},"POST",409);
+  assert.equal(lockedCancelErr.error.code,"BATCH_LOCKED");
+
+  // 5. TASK-094: Out-of-rule manual parcel pricing requires manual_reason (422 MANUAL_REASON_REQUIRED without reason)
+  const missingManualReason=await admin.fetch(`/staff/dispatch-batches/${batch.batch_id}/manual-quote`,{
+    revision:confirmedBatch.revision,
+    rate_version_id:newRate.id,
+    parcels:[
+      {item_ids:[item1A,item2A],weight_g:1200,manual_amount_cents:2500},
+      {item_ids:[itemZero],weight_g:600},
+    ],
+  },"POST",422);
+  assert.equal(missingManualReason.error.code,"MANUAL_REASON_REQUIRED");
+
+  const q1=await admin.fetch(`/staff/dispatch-batches/${batch.batch_id}/manual-quote`,{
+    revision:confirmedBatch.revision,
+    rate_version_id:newRate.id,
+    manual_reason:"Oversized coat box requires custom carrier surcharge",
+    parcels:[
+      {item_ids:[item1A,item2A],weight_g:1200,manual_amount_cents:2500},
+      {item_ids:[itemZero],weight_g:600},
+    ],
+  });
+  // Parcel 1 = 2500 (manual), Parcel 2 = 900 (first weight), handling = 150 -> total 3550 cents
+  assert.equal(q1.amount_cents,3550);
+
+  // Accept q1 to create charge1 (and verify cross-order + zero-order allocation!)
+  const acc1=await c.fetch(`/quotes/${q1.quote_id}/accept`,{revision:q1.revision});
+  assert.equal(acc1.amount_cents,3550);
+  const chk1=await c.fetch(`/charges/${acc1.charge_item_id}/checkout`,{quote_revision:q1.revision});
+
+  // 6. TASK-160 (T80): Customer amends the batch BEFORE paying (changes destination address), which voids charge1 and resets batch to confirmed
+  const batchBeforeAmend=await c.fetch(`/dispatch-batches/${batch.batch_id}`);
+  const amendedPrePay=await c.fetch(`/dispatch-batches/${batch.batch_id}/amend`,{
+    revision:batchBeforeAmend.revision,
+    destination:{...fwdDest,address:"Shenzhen New Bonded Zone #2"},
+  });
+  assert.equal(amendedPrePay.state,"confirmed");
+  assert.equal(amendedPrePay.refund_ticket_id,null);
+
+  // Late payment arriving for superseded q1/acc1 must NOT mark batch paid and must open a payment_refund reconciliation ticket!
+  await pool.query("update charge_items set voided_at=null where id=$1",[acc1.charge_item_id]);
+  await c.fetch(`/checkout/demo/${chk1.attempt_id}`,{});
+  const batchAfterLate=await c.fetch(`/dispatch-batches/${batch.batch_id}`);
+  assert.equal(batchAfterLate.state,"confirmed","Late payment on superseded quote must not mark amended batch paid (T80)");
+
+  // 7. Re-quote the amended batch, accept, and pay
+  const q2=await receiving.fetch(`/staff/dispatch-batches/${batch.batch_id}/quote`,{
+    revision:batchAfterLate.revision,
+    rate_version_id:newRate.id,
+    parcels:[
+      {item_ids:[item1A,item2A],weight_g:1200},
+      {item_ids:[itemZero],weight_g:600},
+    ],
+  });
+  const acc2=await c.fetch(`/quotes/${q2.quote_id}/accept`,{revision:q2.revision});
+  const chk2=await c.fetch(`/charges/${acc2.charge_item_id}/checkout`,{quote_revision:q2.revision});
+  await c.fetch(`/checkout/demo/${chk2.attempt_id}`,{});
+
+  // Pack Parcel 1 ([item1A, item2A]) and hand it over to carrier, leaving itemZero unshipped
+  const batchPaid=await c.fetch(`/dispatch-batches/${batch.batch_id}`);
+  assert.equal(batchPaid.state,"paid");
+  const pack1=await receiving.fetch(`/staff/dispatch-batches/${batch.batch_id}/parcels`,{
+    revision:batchPaid.revision,
+    quote_id:q2.quote_id,
+    item_ids:[item1A,item2A],
+    weight_g:1200,
+    packed_media_ids:[await receiving.photo("dispatch")],
+  },"POST",201);
+  const shipTrk1="SF"+randomUUID().replaceAll("-","").slice(0,10).toUpperCase();
+  const ship1=await receiving.fetch(`/staff/shipments/${pack1.shipment_id}/handover`,{
+    revision:pack1.revision,
+    item_ids:[item1A,item2A],
+    carrier_code:"sf",
+    tracking_no:shipTrk1,
+    evidence_ids:[await receiving.photo("dispatch")],
+    handed_at:new Date().toISOString(),
+  });
+  assert.equal(ship1.state,"shipped");
+
+  // Attempting to remove already-shipped item1A via amend is rejected with 409 SHIPMENT_ALREADY_HANDED_OVER
+  const batchPart=await c.fetch(`/dispatch-batches/${batch.batch_id}`);
+  assert.equal(batchPart.state,"paid");
+  const shipAmendErr=await c.fetch(`/dispatch-batches/${batch.batch_id}/amend`,{
+    revision:batchPart.revision,
+    remove_item_ids:[item1A],
+  },"POST",409);
+  assert.equal(shipAmendErr.error.code,"SHIPMENT_ALREADY_HANDED_OVER");
+
+  // Amending remaining unshipped itemZero (removing it from this batch so it returns to requested, while the batch with shipped items completes)
+  const splitRes=await c.fetch(`/dispatch-batches/${batch.batch_id}/amend`,{
+    revision:batchPart.revision,
+    remove_item_ids:[itemZero],
+  });
+  assert.equal(splitRes.state,"completed");
+  assert.ok(splitRes.refund_ticket_id,"Post-payment amendment must open a payment_refund reconciliation ticket");
+
+  // 8. TASK-099 (T53): Cancel retDisp1B so item1B has no pending instruction, then check storage reminders and verify round deduplication
+  await c.fetch(`/me/dispositions/${retDisp1B.id}/cancel`,{});
+  await pool.query("update warehouse_items set storage_until=now() + interval '2 days' where id=$1",[item1B]);
+  const rem1=await admin.fetch("/staff/admin/storage/check-reminders",{});
+  assert.ok(rem1.sent_count>=1);
+  const rem2=await admin.fetch("/staff/admin/storage/check-reminders",{});
+  assert.equal(rem2.sent_count,0,"Second reminder check in same storage_until window must be deduplicated (T53)");
+
+  // Confirm customer /actions includes storage_expiring for item1B
+  const cActions=await c.fetch("/actions");
+  assert.ok(cActions.rows.some((r:{kind:string;state:string})=>r.kind==="storage"&&r.state==="storage_expiring"));
+
+  // 9. TASK-100 (T56, T111): Verify joint financial reconciliation across inspection, dispatch (with cross-order + zero-order balance), storage, and refunds
+  const recon=await admin.fetch("/staff/admin/reconciliation");
+  assert.ok(recon.summary.inspection_paid_cents>0);
+  assert.ok(recon.summary.dispatch_paid_cents>0);
+  const dispatchReconRow=recon.rows.find((r:{charge_id:string})=>r.charge_id===acc2.charge_item_id);
+  assert.ok(dispatchReconRow);
+  assert.equal(dispatchReconRow.allocation_balanced,true);
+  assert.equal(dispatchReconRow.allocations.length,2,"Two order allocations (o1 and o2)");
+  assert.ok(dispatchReconRow.unallocated_cents>0,"Zero-order item share is tracked in unallocated_cents");
+  assert.equal(dispatchReconRow.allocated_cents+dispatchReconRow.unallocated_cents,dispatchReconRow.amount_cents);
 });
 
 test("all core operations have a validated success response",assertCoreCoverage);

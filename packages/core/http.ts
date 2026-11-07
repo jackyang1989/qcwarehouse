@@ -13,10 +13,10 @@ import { customerEmailDeliveryStatus, receivePostmarkWebhook, retryEmailDelivery
 import { catalog, issueManualQuote, orderDetail, quoteOrder, requestManualQuote, saveOrder, submitOrder } from "./orders";
 import { advise, assign, bindUnmatchedPackageOwner, checkIn, decideIntakeClaim, identifyItem, intakeItems, lookup, quarantineItem, quarantinePackage, requestIntakeClaim, savePhoto, unassignItem, waybill } from "./intake";
 import { amendReport, amendReportInput, approveReport, checkTaskCompleteness, createReportDispute, editReportRevision, findInspectionTaskByScan, readReport, recordResults, recordTaskShot, recordTaskStep, reportDesk, returnReport, revisionChanges, staffReport, startTask, submitReport, submitReportRevision, submitTask, taskDetail, translateReportCandidate } from "./inspection";
-import { acceptQuote, confirmBatch, handover, instruct, packShipment, planBatch, quoteBatch, receiveReturn, releaseReferenceSample, storageQuote } from "./dispatch";
+import { acceptQuote, amendDispatchBatch, calculateShippingPreview, cancelDisposition, checkStorageReminders, confirmBatch, handover, instruct, packShipment, planBatch, publishShippingRate, quoteBatch, readDispatchBatch, receiveReturn, releaseReferenceSample, storageQuote } from "./dispatch";
 import { checkout, demoPay, orderPayment, orderRefundPayments, refundApprove, refundRequest, stripeEvent, verifyStripe } from "./payments";
 import { approveTrackingTranslation, correctCustomerParcelTracking, correctStaffTracking, providerCallback, refreshTracking, submitTrackingTranslation, tracking, trackingAdmin, verificationState, verifyTracking } from "./logistics";
-import { adminDesk, bills, customerActions, customerDesk, customerNotifications, dispatchQueueStates, items, markNotificationRead, readOrderByPublicNumber, searchStaffOrders, staffOrderDetail, staffOrderFilters, warehouseDesk, warehouseDispatchBatch, warehouseDispatchQueue, warehouseItem, warehousePackage } from "./reads";
+import { adminDesk, bills, customerActions, customerDesk, customerNotifications, dispatchQueueStates, items, markNotificationRead, readOrderByPublicNumber, reconcileFinance, searchStaffOrders, staffOrderDetail, staffOrderFilters, warehouseDesk, warehouseDispatchBatch, warehouseDispatchQueue, warehouseItem, warehousePackage } from "./reads";
 import { staffAccess } from "./staff-access";
 import { customerDestination, withDestination } from "./portal-routes";
 import { orderFulfillmentRecord } from "./fulfillment-reads";
@@ -714,8 +714,63 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   if(method==="POST" && skuPrice) return extraWrite(req,path,actor,staffSchemas.skuPrice,(db,a,b)=>publishSkuPrice(db,a,skuPrice[1].toLowerCase(),b));
   const refRelease=path.match(/^\/me\/reference-samples\/([a-f0-9-]{36})\/release$/i);
   if(method==="POST" && refRelease) return extraWrite(req,path,actor,staffSchemas.referenceRelease,(db,a,b)=>releaseReferenceSample(db,a,idSchema.parse(refRelease[1]),b));
+  const cancelDisp=path.match(/^\/me\/dispositions\/([a-f0-9-]{36})\/cancel$/i);
+  if(method==="POST" && cancelDisp) return extraWrite(req,path,actor,z.object({revision:revSchema.optional(),reason:z.string().trim().max(1000).optional()}),
+    (db,a,b)=>cancelDisposition(db,a,idSchema.parse(cancelDisp[1]),b));
+  const custBatch=path.match(/^\/dispatch-batches\/([a-f0-9-]{36})$/i);
+  if(method==="GET" && custBatch) return json(await transaction(db=>readDispatchBatch(db,actorRequired(actor),idSchema.parse(custBatch[1]))));
+  const amendBatch=path.match(/^\/dispatch-batches\/([a-f0-9-]{36})\/amend$/i);
+  if(method==="POST" && amendBatch) return extraWrite(req,path,actor,z.object({
+    revision:revSchema,
+    destination:z.object({recipient:z.string().trim().min(1).max(120),phone:z.string().trim().min(1).max(40),address:z.string().trim().min(1).max(500),member_code:z.string().trim().max(80).optional()}).optional(),
+    remove_item_ids:z.array(idSchema).optional(),
+    reason:z.string().trim().min(2).max(1000).optional().default("Customer amended dispatch batch"),
+  }),(db,a,b)=>amendDispatchBatch(db,a,idSchema.parse(amendBatch[1]),b));
+  if(method==="POST" && path==="/staff/admin/shipping-rates") {
+    return extraWrite(req,path,actor,z.object({
+      first_weight_g:z.number().int().positive(),
+      first_cents:z.number().int().positive(),
+      extra_step_g:z.number().int().positive(),
+      extra_cents:z.number().int().nonnegative(),
+      handling_cents:z.number().int().nonnegative(),
+      zones:z.record(z.string(),z.object({
+        first_weight_g:z.number().int().positive(),
+        first_cents:z.number().int().positive(),
+        extra_step_g:z.number().int().positive(),
+        extra_cents:z.number().int().nonnegative(),
+      })).optional(),
+    }),publishShippingRate,201);
+  }
+  if(method==="POST" && path==="/staff/admin/shipping-rates/calculate") {
+    return extraWrite(req,path,actor,z.object({
+      rate_version_id:idSchema.optional(),
+      zone:z.string().trim().max(80).optional(),
+      parcels:z.array(z.object({weight_g:z.number().int().positive()})).min(1).max(50),
+    }),calculateShippingPreview);
+  }
+  const manualBatchQuote=path.match(/^\/staff\/dispatch-batches\/([a-f0-9-]{36})\/manual-quote$/i);
+  if(method==="POST" && manualBatchQuote) {
+    return extraWrite(req,path,actor,z.object({
+      revision:revSchema,
+      rate_version_id:idSchema,
+      manual_reason:z.string().trim().min(4).max(1000).optional(),
+      parcels:z.array(z.object({
+        item_ids:z.array(idSchema).min(1),
+        weight_g:z.number().int().positive(),
+        manual_amount_cents:z.number().int().nonnegative().optional(),
+        manual_reason:z.string().trim().min(4).max(1000).optional(),
+      })).min(1).max(50),
+    }),(db,a,b)=>quoteBatch(db,a,idSchema.parse(manualBatchQuote[1]),b.revision,b.rate_version_id,b.parcels,b.manual_reason));
+  }
+  if(method==="POST" && path==="/staff/admin/storage/check-reminders") {
+    return extraWrite(req,path,actor,z.object({}),(db,a)=>{role(a,"warehouse_admin","super_admin","support");return checkStorageReminders(db);});
+  }
+  if(method==="GET" && path==="/staff/admin/reconciliation") {
+    const includeTest=url.searchParams.get("include_test")!=="0" && url.searchParams.get("test")!=="production";
+    return json(await transaction(db=>reconcileFinance(db,actorRequired(actor),includeTest)));
+  }
   const store=path.match(/^\/staff\/dispositions\/([a-f0-9-]{36})\/storage-quote$/i);
-  if(method==="POST" && store) return extraWrite(req,path,actor,z.object({}),(db,a)=>storageQuote(db,a,idSchema.parse(store[1])));
+  if(method==="POST" && store) return extraWrite(req,path,actor,z.object({days:z.number().int().min(1).max(365).optional()}),(db,a,b)=>storageQuote(db,a,idSchema.parse(store[1]),b));
   const cancel=path.match(/^\/orders\/([a-f0-9-]{36})\/cancel$/i);
   if(method==="POST" && cancel) return extraWrite(req,path,actor,z.object({revision:revSchema}),(db,a,b)=>cancelOrder(db,a,idSchema.parse(cancel[1]),b.revision));
   const hold=path.match(/^\/staff\/orders\/([a-f0-9-]{36})\/(hold|resume)$/i);

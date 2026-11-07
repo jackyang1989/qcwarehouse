@@ -88,6 +88,13 @@ export async function customerActions(db:DB,actor:Actor) {
           and exists(select 1 from reference_reservations rr where rr.reference_id=r.id and rr.released_at is null)
         )
       )
+    union all select w.id,'storage',
+      case when w.storage_until<=now() then 'storage_expired' else 'storage_expiring' end,
+      w.code,w.storage_until
+      from warehouse_items w
+      where w.org_id=$1 and w.custody_state in ('received','stored') and w.parent_item_id is null
+        and w.storage_until is not null and w.storage_until<=now()+interval '3 days'
+        and not exists(select 1 from disposition_requests d where d.item_id=w.id and d.state='requested')
   ) actions order by due_at nulls last,kind,reference,id limit 200`,[org,actor.id]);
   return {rows};
 }
@@ -329,6 +336,7 @@ export async function adminDesk(db:DB,actor:Actor) {
       join charge_items c on c.id=p.charge_item_id left join inspection_quotes q on q.id=c.inspection_quote_id
       left join orders o on o.id=q.order_id order by r.created_at desc limit 100`)).rows:[],
     payments:finance?(await db.query("select id,charge_item_id,state,amount_cents,provider_ref from payments order by created_at desc limit 150")).rows:[],
+    shippingRates:(finance||actor.roles.includes("super_admin"))?(await db.query("select id,version,rules,effective_at from shipping_rate_versions order by version desc limit 50")).rows:[],
     warehouseAddressAlert:actor.roles.includes("super_admin")?(await db.query(`select 1 from notifications
       where user_id=$1 and template='warehouse.address_required'
       and not exists(select 1 from warehouse_addresses where is_default and active) limit 1`,[actor.id])).rowCount===1:false,
@@ -439,4 +447,86 @@ export async function staffOrderDetail(db:DB,actor:Actor,publicNo:string) {
   return {order:orderDTO(order),created_at:order.created_at,paid_at:order.paid_at,
     samples_ready_at:order.samples_ready_at,sla_due_at:order.sla_due_at,report_published_at:order.report_published_at,closed_at:order.closed_at,
     customer,lines,items,parcels,tickets,blocks,activity,shipments};
+}
+
+export async function reconcileFinance(db:DB,actor:Actor,includeTest=true) {
+  role(actor,...staffAccess.finance);
+  const {rows}=await db.query<{
+    charge_item_id:string;purpose:string;amount_cents:number;currency:string;
+    state:string;paid_cents:number;refunded_cents:number;batch_id:string|null;
+    inspection_order_id:string|null;inspection_order_no:string|null;is_test:boolean;
+    allocations:{order_id:string;public_no:string;amount_cents:number}[];
+  }>(
+    `select c.id charge_item_id,c.purpose,c.amount_cents,c.currency,
+            case when c.voided_at is not null then 'void'
+                 when c.applied_payment_id is not null or c.free_authorization is not null then 'paid'
+                 else 'open' end state,
+            coalesce((select p.amount_cents from payments p where p.id=c.applied_payment_id and p.state in ('succeeded','partially_refunded','refunded')),0)::int paid_cents,
+            coalesce((select sum(r.amount_cents)::int from refunds r join payments p on p.id=r.payment_id where p.charge_item_id=c.id and r.state in ('approved','succeeded')),0)::int refunded_cents,
+            dq.batch_id,
+            iq.order_id inspection_order_id,
+            io.public_no inspection_order_no,
+            coalesce(io.is_test,false) is_test,
+            coalesce((
+              select jsonb_agg(jsonb_build_object('order_id',a.order_id,'public_no',o.public_no,'amount_cents',a.amount_cents) order by o.public_no)
+              from charge_allocations a join orders o on o.id=a.order_id
+              where a.charge_id=c.id
+            ),'[]'::jsonb) allocations
+     from charge_items c
+     left join inspection_quotes iq on iq.id=c.inspection_quote_id
+     left join orders io on io.id=iq.order_id
+     left join dispatch_quote_versions dq on dq.id=c.dispatch_quote_id
+     left join storage_quotes sq on sq.id=c.storage_quote_id
+     where ($1::boolean or coalesce(io.is_test,false)=false)
+     order by c.id desc limit 400`,
+    [includeTest]
+  );
+
+  const items=rows.map(r=>{
+    const allocs=r.purpose==="inspection" && r.inspection_order_id && r.inspection_order_no
+      ?[{order_id:r.inspection_order_id,public_no:r.inspection_order_no,amount_cents:r.amount_cents}]
+      :(r.allocations??[]);
+    const allocatedCents=allocs.reduce((n,a)=>n+Number(a.amount_cents),0);
+    const unallocatedCents=r.amount_cents-allocatedCents;
+    const netCents=r.paid_cents-r.refunded_cents;
+    return {
+      charge_id:r.charge_item_id,
+      charge_item_id:r.charge_item_id,
+      purpose:r.purpose,
+      order_public_no:r.inspection_order_no,
+      amount_cents:r.amount_cents,
+      currency:r.currency,
+      state:r.state,
+      paid_cents:r.paid_cents,
+      refunded_cents:r.refunded_cents,
+      net_cents:netCents,
+      batch_id:r.batch_id,
+      allocations:allocs,
+      allocated_cents:allocatedCents,
+      unallocated_cents:unallocatedCents,
+      allocation_balanced:allocatedCents+unallocatedCents===r.amount_cents && unallocatedCents>=0,
+    };
+  });
+
+  const inspectionPaid=items.filter(x=>x.purpose==="inspection").reduce((n,x)=>n+x.paid_cents,0);
+  const dispatchPaid=items.filter(x=>x.purpose==="dispatch").reduce((n,x)=>n+x.paid_cents,0);
+  const storagePaid=items.filter(x=>x.purpose==="storage").reduce((n,x)=>n+x.paid_cents,0);
+  const refundedTotal=items.reduce((n,x)=>n+x.refunded_cents,0);
+  const netReceived=items.reduce((n,x)=>n+x.net_cents,0);
+  const summary={
+    inspection_cents:inspectionPaid,
+    inspection_paid_cents:inspectionPaid,
+    dispatch_cents:dispatchPaid,
+    dispatch_paid_cents:dispatchPaid,
+    storage_cents:storagePaid,
+    storage_paid_cents:storagePaid,
+    paid_cents:items.reduce((n,x)=>n+x.paid_cents,0),
+    refunded_cents:refundedTotal,
+    net_cents:netReceived,
+    net_received_cents:netReceived,
+    unallocated_dispatch_cents:items.filter(x=>x.purpose==="dispatch"&&x.state==="paid").reduce((n,x)=>n+x.unallocated_cents,0),
+    all_balanced:items.every(x=>x.allocation_balanced),
+  };
+
+  return {summary,rows:items};
 }

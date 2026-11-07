@@ -1096,6 +1096,10 @@ paths:
                 terms_version_id:
                   type: string
                   format: uuid
+                days:
+                  type: integer
+                  minimum: 1
+                  maximum: 365
                 destination:
                   type: object
                   properties:
@@ -1856,6 +1860,10 @@ paths:
                 terms_version_id:
                   type: string
                   format: uuid
+                days:
+                  type: integer
+                  minimum: 1
+                  maximum: 365
                 destination:
                   type: object
                   properties:

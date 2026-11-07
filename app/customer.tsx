@@ -806,6 +806,7 @@ const actionTitles:Record<string,string>={
   dispatch:"Review shipping payment",storage:"Review storage payment",
   bounced:"We couldn't deliver email to this address",complained:"We couldn't deliver email to this address",
   reference_expired:"Update expired reference sample",reference_conflict:"Resolve reference sample in use before shipping",
+  storage_expiring:"Storage expiring soon — choose handling or extend",storage_expired:"Storage expired — choose handling or extend",
 };
 export function CustomerActions() {
   const {data,error,reload}=useLoad("/actions");
@@ -819,7 +820,7 @@ export function CustomerActions() {
       const href=row.kind==="order"?"/orders/"+row.reference+(row.state==="awaiting_payment"?"/payment":row.state==="awaiting_samples"?"/parcels":""):row.kind==="parcel"?"/parcels/"+row.id:
         row.kind==="quote"||row.kind==="charge"?"/account/billing#"+row.kind+"-"+row.id:
         row.kind==="scope"?"/orders/"+row.reference+"#scope-"+row.id:
-        row.kind==="reference"?"/items":
+        row.kind==="reference"||row.kind==="storage"?"/items":
         row.kind==="email"?"/account":"/support/cases/"+row.id;
       return [row.kind==="scope"?"Review inspection scope":actionTitles[row.state],row.reference?<span className="code">{row.reference}</span>:"—",stamp(row.due_at),<Link href={href}>Open</Link>];
     })} empty="You’re all caught up. New actions will appear here when an order, parcel, quote or case needs your input."/></Panel>}
@@ -868,8 +869,10 @@ function ItemInstructionForm({items,orderId,storage=false,onSave}:{
       const destination=needsDestination?{recipient:text(f,"recipient"),phone:text(f,"phone"),address:text(f,"address"),
         ...(currentAction==="to_forwarder"?{member_code:text(f,"member_code")}:{})}:undefined;
       const deadline=text(f,"deadline");
+      const retainDays=currentAction==="retain"?Number(text(f,"days")||30):undefined;
       const result=await request(orderId?"/orders/"+orderId+"/dispositions":"/me/items/"+itemId+"/dispositions","POST",{
         ...(orderId?{item_id:itemId}:{}),action:currentAction,terms_version_id:termsId,...(destination?{destination}:{}),
+        ...(retainDays?{days:retainDays}:{}),
         ...(currentAction==="return_to_seller"?{return_info:{requested_from_seller:true,customer_pays_shipping:true,
           ...(deadline?{deadline:new Date(deadline).toISOString()}:{})}}:{}),
       });
@@ -880,6 +883,7 @@ function ItemInstructionForm({items,orderId,storage=false,onSave}:{
         <option value="return_to_seller">Return to seller</option><option value="to_forwarder">Send to freight forwarder</option>
         <option value="to_domestic_address">Send to a domestic address</option><option value="retain">Extend storage</option>
         <option value="reserve_reference">Reserve as reference sample (90 days)</option></select></label>}
+      {currentAction==="retain"&&<Field name="days" label="Additional storage days" type="number" value={30}/>}
       {needsDestination&&<><Field name="recipient" label="Recipient"/><Field name="phone" label="Destination phone"/>
         <label>{currentAction==="return_to_seller"?"Return address supplied by your seller":"Destination address"}<textarea name="address" required/></label></>}
       {currentAction==="to_forwarder"&&<Field name="member_code" label="Forwarder member code"/>}
@@ -904,7 +908,10 @@ function OrderHandling({order,storage,onSave}:{order:Row;storage:boolean;onSave:
         <span className="code">{item.code}</span>,label(item.custody_state),stamp(item.storage_until),stamp(item.paid_storage_until),
         item.instruction?<><Tag>{label(item.instruction.action)}</Tag>{!storage&&item.instruction.awaiting_batch&&
           <label className="small"><input type="checkbox" checked={selection.includes(item.instruction.id)} onChange={e=>
-            setSelected(current=>e.target.checked?[...current,item.instruction.id]:current.filter(id=>id!==item.instruction.id))}/> Select for shipping</label>}</>:"—",
+            setSelected(current=>e.target.checked?[...current,item.instruction.id]:current.filter(id=>id!==item.instruction.id))}/> Select for shipping</label>}
+          {item.instruction.state==="requested"&&<Action run={async()=>{
+            await request("/me/dispositions/"+item.instruction.id+"/cancel","POST",{});onSave();
+          }}>Cancel</Action>}</>:"—",
       ])} empty="No warehouse items are linked to this inspection."/>
       {!storage&&selection.length>0&&<Action primary run={async()=>{
         const batch=await request("/dispatch-batches","POST",{disposition_ids:selection});

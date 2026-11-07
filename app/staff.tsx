@@ -715,6 +715,7 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
         r.reason,usd(r.amount_cents),r.state==="requested"?"待独立审批":label(r.state),r.provider_ref??"—",
         r.state==="requested"&&superAdmin?(r.requested_by===actor.id?<small>等待另一位超管审批</small>:<RefundApproval refund={r} reload={reload}/>):null,
       ])} empty="近期没有退款记录。"/></Panel>
+      <FinanceReconciliationPanel/>
     </>}
     {page==="settings"&&<>
       {superAdmin&&<Panel title="公共收件仓址">
@@ -794,9 +795,83 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
           <Field name="days" label="承诺工作日" type="number" min={1} max={180} value={3}/>
         </Form>}
       </Panel>}
+      {superAdmin&&<ShippingRateConfigPanel rates={data.shippingRates??[]} onSave={reload}/>}
       {superAdmin&&<Panel title="作业异常"><Table headers={["作业","尝试","错误","下次"]} rows={data.jobErrors.map((j:Row)=>[j.type,j.attempts,j.last_error,stamp(j.next_attempt_at)])}/></Panel>}
     </>}
   </>;
+}
+
+function FinanceReconciliationPanel() {
+  const {data,error,reload}=useLoad("/staff/admin/reconciliation");
+  return <Panel title="多笔收费联合对账与跨单分摊（PAGE-M08）">
+    <div className="row"><p className="muted">展示质检费、运费（含跨单分摊与零委托分摊校验）、仓储延期费与退款汇总。</p>
+      <button type="button" onClick={reload}>刷新对账</button></div>
+    {error&&<ErrorBlock error={error}/>}
+    {!data&&!error&&<p role="status">正在加载对账数据…</p>}
+    {data&&<>
+      {data.summary&&<div className="metric-strip">
+        <div className="metric"><span>质检实收</span><strong>{usd(data.summary.inspection_paid_cents)}</strong></div>
+        <div className="metric"><span>运费实收</span><strong>{usd(data.summary.dispatch_paid_cents)}</strong></div>
+        <div className="metric"><span>仓储实收</span><strong>{usd(data.summary.storage_paid_cents)}</strong></div>
+        <div className="metric"><span>已退总额</span><strong>{usd(data.summary.refunded_cents)}</strong></div>
+        <div className="metric"><span>净实收</span><strong>{usd(data.summary.net_received_cents)}</strong></div>
+      </div>}
+      <Table headers={["收费项","类型","关联订单/批次","应收","实收","已退","跨单分摊校验","状态"]} rows={(data.rows??[]).map((r:Row)=>[
+        <span className="code">{r.charge_id.slice(0,8)}</span>,
+        ({inspection:"质检费",dispatch:"运费",storage:"仓储费"} as Row)[r.purpose]??r.purpose,
+        r.order_public_no??(r.batch_id?`Batch ${r.batch_id.slice(0,8)}`:"—"),
+        usd(r.amount_cents),usd(r.paid_cents),usd(r.refunded_cents),
+        r.purpose==="dispatch"?(r.allocation_balanced?
+          `平衡（订单分摊 ${usd(r.allocated_cents)}${r.unallocated_cents?` + 零委托 ${usd(r.unallocated_cents)}`:""}）`:"分摊异常"):"—",
+        <Tag>{label(r.state)}</Tag>,
+      ])} empty="暂无收费对账记录。"/>
+    </>}
+  </Panel>;
+}
+
+function ShippingRateConfigPanel({rates,onSave}:{rates:Row[];onSave:()=>void}) {
+  const [preview,setPreview]=useState<Row>();
+  return <Panel title="国内运价版本与运费试算器（PAGE-M10）">
+    <Table headers={["版本","首重 (g)","首重费","续重步长 (g)","续重单价","操作费","发布时间"]} rows={rates.map((r:Row)=>[
+      `v${r.version}`,r.rules?.first_weight_g??1000,usd(r.rules?.first_cents??0),
+      r.rules?.extra_step_g??500,usd(r.rules?.extra_cents??0),usd(r.rules?.handling_cents??0),stamp(r.published_at),
+    ])} empty="暂无运价版本。"/>
+    <div className="ops-columns">
+      <Form label="发布新运价版本" run={async f=>{
+        await request("/staff/admin/shipping-rates","POST",{
+          first_weight_g:Number(text(f,"first_weight_g")),
+          first_cents:Math.round(Number(text(f,"first_usd"))*100),
+          extra_step_g:Number(text(f,"step_g")),
+          extra_cents:Math.round(Number(text(f,"step_usd"))*100),
+          handling_cents:Math.round(Number(text(f,"handling_usd"))*100),
+        });
+        onSave();
+      }}>
+        <Field name="first_weight_g" label="首重克重 (g)" type="number" min={1} value={1000}/>
+        <Field name="first_usd" label="首重费用 (USD)" type="number" min={0} step=".01" value={8}/>
+        <Field name="step_g" label="续重步长 (g)" type="number" min={1} value={500}/>
+        <Field name="step_usd" label="续重单价 (USD)" type="number" min={0} step=".01" value={2}/>
+        <Field name="handling_usd" label="每批操作费 (USD)" type="number" min={0} step=".01" value={1}/>
+      </Form>
+      <div>
+        <Form label="试算运费" run={async f=>{
+          const weights=text(f,"weights").split(",").map(s=>Number(s.trim())).filter(n=>n>0);
+          const res=await request("/staff/admin/shipping-rates/calculate","POST",{
+            ...(text(f,"rate_version_id")?{rate_version_id:text(f,"rate_version_id")}:{}),
+            parcels:weights.map(weight_g=>({weight_g})),
+          });
+          setPreview(res);
+        }}>
+          <Select name="rate_version_id" label="运价版本（默认最新）" required={false}
+            choices={rates.map(r=>({id:r.id,label:`v${r.version}`}))}/>
+          <Field name="weights" label="包裹重量列表（克，逗号分隔，如 800, 1350）" value="1200"/>
+        </Form>
+        {preview&&<p className="notice" role="status">
+          试算结果（版本 v{preview.version}）：包裹运费合计 {usd(preview.parcels.reduce((sum:number,p:Row)=>sum+p.amount_cents,0))} + 操作费 {usd(preview.handling_cents)} = <strong>{usd(preview.total_cents)}</strong>
+        </p>}
+      </div>
+    </div>
+  </Panel>;
 }
 
 function orderSearchParams(params:Readonly<URLSearchParams>) {

@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
+import { request } from "./ui";
+import type { Actor } from "../packages/core/common";
 
 export function Brand() {
   return <Link className="wordmark" href="/" aria-label="QCWarehouse home">
@@ -16,20 +18,46 @@ export function Brand() {
   </Link>;
 }
 
-export function QuickSwitch({active}:{active:"public"|"customer"|"warehouse"|"admin"}) {
+export async function switchDemoPortal(targetHref:string, demoEmail:string) {
+  try {
+    await request("/auth/demo/switch","POST",{email:demoEmail});
+  } catch {
+    // Fall back to normal navigation when not in local demo mode
+  }
+  location.assign(targetHref);
+}
+
+export function QuickSwitch({active,actor}:{active:"public"|"customer"|"warehouse"|"admin";actor?:Actor|null}) {
+  const canCustomer = actor?.kind==="customer";
+  const canWarehouse = actor?.kind==="staff" && actor.roles.some(r=>["receiver","warehouse_admin","inspector","reviewer","super_admin"].includes(r));
+  const canAdmin = actor?.kind==="staff" && actor.roles.some(r=>["super_admin","finance","support","template_admin"].includes(r));
+
   return <div className="quick-switch" role="navigation" aria-label="Portal switcher">
     <Link href="/" className={active==="public"?"on":""}>Website</Link>
-    <Link href="/orders" className={active==="customer"?"on":""}>Customer</Link>
-    <Link href="/wh" className={active==="warehouse"?"on":""}>Warehouse</Link>
-    <Link href="/admin" className={active==="admin"?"on":""}>Admin</Link>
+    <Link
+      href="/orders"
+      className={active==="customer"?"on":""}
+      onClick={canCustomer?undefined:(e=>{e.preventDefault();void switchDemoPortal("/orders","customer@qcw.test");})}
+    >Customer</Link>
+    <Link
+      href="/wh"
+      className={active==="warehouse"?"on":""}
+      onClick={canWarehouse?undefined:(e=>{e.preventDefault();void switchDemoPortal("/wh","admin@qcw.test");})}
+    >Warehouse</Link>
+    <Link
+      href="/admin"
+      className={active==="admin"?"on":""}
+      onClick={canAdmin?undefined:(e=>{e.preventDefault();void switchDemoPortal("/admin","admin@qcw.test");})}
+    >Admin</Link>
   </div>;
 }
 
-export function PublicHeader({accountHref,accountAction,staff,path="/"}:{
-  accountHref?:string;accountAction?:ReactNode;staff?:boolean;path?:string;
+export function PublicHeader({accountHref,accountAction,staff,path="/",actor}:{
+  accountHref?:string;accountAction?:ReactNode;staff?:boolean;path?:string;actor?:Actor|null;
 }) {
   return <header className="top">
     <div className="workspace-brand"><Brand/><span className="workspace-context">INSPECTION PLATFORM</span></div>
+    <span className="topspacer"/>
     <nav className="public-nav" aria-label="Primary">
       {[
         ["/catalog","Services"],["/categories","Product Categories"],["/how-it-works","How It Works"],
@@ -37,7 +65,7 @@ export function PublicHeader({accountHref,accountAction,staff,path="/"}:{
       ].map(([href,label])=><Link key={href} href={href} aria-current={path===href||href==="/catalog"&&path.startsWith("/services/")?"page":undefined}>{label}</Link>)}
     </nav>
     <div className="public-header-actions">
-      <QuickSwitch active="public"/>
+      <QuickSwitch active="public" actor={actor}/>
       <Link className="button sm" href={accountHref??"/login"}>{staff?"员工工作区":accountHref?"My Workspace":"Sign In"}</Link>
       {accountAction}
       {!staff&&<Link className="button primary sm" href="/orders/new">Start Inspection</Link>}

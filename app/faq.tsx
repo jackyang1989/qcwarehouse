@@ -59,16 +59,30 @@ export function FAQ() {
   const groups=topics.map(([title,items])=>({title,items:items.filter(([,question,answer])=>
     question.toLowerCase().includes(term)||answer.toLowerCase().includes(term))})).filter(group=>group.items.length);
   return <div className="faq">
-    <div className="page-head public-masthead"><p className="eyebrow">SUPPORT / KNOWLEDGE BASE</p><h1>Frequently asked questions</h1>
-      <p className="muted">Find answers about inspections, receiving, reports and shipping.</p></div>
-    <label className="faq-search">Search questions<input type="search" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Try tracking, returns or reports"/></label>
-    {groups.length===0&&<p role="status" className="notice">No matching questions. Try a different search or open a <Link href="/support">support case</Link>.</p>}
-    {groups.map(({title,items})=><section className="faq-group" key={title}><h2>{title}</h2>
-      {items.map(([id,question,answer])=><details className="faq-item" key={id} id={id}>
-        <summary>{question}</summary><p>{answer}</p>
-        <a className="small" href={"#"+id}>Link to this answer</a>
-      </details>)}
-    </section>)}
-    <div className="actions"><Link href="/catalog">Browse services</Link><Link href="/legal/restricted-items">Restricted items</Link><Link href="/legal/terms">Terms of service</Link><Link href="/support">Open a support case</Link></div>
+    <div className="breadcrumb"><Link href="/">QCWarehouse</Link> &nbsp; › &nbsp; <b>Frequently Asked Questions</b></div>
+    <div className="page-head">
+      <div>
+        <p className="eyebrow">QCWAREHOUSE / INSPECTION</p>
+        <h1>Frequently Asked Questions</h1>
+        <p className="muted">Search by subject, and expand each answer.</p>
+      </div>
+      <div className="head-actions">
+        <Link className="button primary" href="/contact">Ask a question</Link>
+      </div>
+    </div>
+    <div className="card">
+      <div className="selectbar">
+        <div className="search"><input type="search" aria-label="Search FAQ" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search shipping, inspection, reports, payments…"/></div>
+        {query&&<button type="button" className="button sm" onClick={()=>setQuery("")}>Clear</button>}
+      </div>
+      {groups.length===0&&<p role="status" className="notice">No matching questions. Try a different search or open a <Link href="/support">support case</Link>.</p>}
+      {groups.map(({title,items})=><section className="faq-group" key={title}>
+        {items.map(([id,question,answer])=><details className="faq-item" key={id} id={id}>
+          <summary>{question} <span className="tag gray" style={{marginLeft:8}}>{title}</span></summary><p>{answer}</p>
+          <a className="button sm" style={{marginTop:6}} href={"#"+id}>Copy direct link</a>
+        </details>)}
+      </section>)}
+    </div>
+    <div className="actions"><Link className="button" href="/catalog">Browse services</Link><Link className="button" href="/legal/restricted-items">Restricted items</Link><Link className="button" href="/legal/terms">Terms of service</Link><Link className="button" href="/support">Open a support case</Link></div>
   </div>;
 }

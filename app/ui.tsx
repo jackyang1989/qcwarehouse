@@ -140,7 +140,7 @@ export function Panel({title,subtitle,badge,children,id}:{title:ReactNode;subtit
   </section>;
 }
 export function Empty({children}:{children:ReactNode}) {return <p className="muted">{children}</p>;}
-export function Tag({children,tone}:{children:ReactNode;tone?:"green"|"yellow"|"blue"|"red"|"gray"}) {
+export function Tag({children,tone}:{children:ReactNode;tone?:"green"|"yellow"|"blue"|"red"|"gray"|"outline"}) {
   const raw=typeof children==="string"?children.toLowerCase():"";
   const auto=tone??(/active|available|confirmed|ready|published|completed|approved|paid|delivered|已启用|已完成|已发布|已通过|正常/.test(raw)?"green":
     /draft|awaiting|pending|processing|open|review|quoting|待|草稿|处理中/.test(raw)?"yellow":

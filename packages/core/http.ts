@@ -5,7 +5,7 @@ import addFormats from "ajv-formats";
 import { parse } from "yaml";
 import { z } from "zod";
 import { transaction, pool, type DB } from "../db";
-import { actorFrom, appOrigin, closeCustomerAccount, completeRegistration, confirmEmailChange, cookie, csrfCookie, csrfTokenFor, currentTerms, decideAccountRecovery, executeAccountRecovery, finishProvider, getCookie, linkProviderIdentity, listIdentities, listSessions, pendingProvider, publicPolicy, readAccountRecoveryStatus, reportDownloadSignature, reportShareToken, requestAccountRecovery, requestEmailChange, revokeOtherSessions, revokeSession, staffSignIn, staffUpdateUserRoles, staffUpdateUserStatus, startCustomerReauth, startOtp, startProvider, unlinkIdentity, verifyCsrfToken, verifyCustomerReauth, verifyOtp, verifyReportDownload } from "./auth";
+import { actorFrom, appOrigin, closeCustomerAccount, completeRegistration, confirmEmailChange, cookie, csrfCookie, csrfTokenFor, currentTerms, decideAccountRecovery, demoSwitchAccount, executeAccountRecovery, finishProvider, getCookie, linkProviderIdentity, listIdentities, listSessions, pendingProvider, publicPolicy, readAccountRecoveryStatus, reportDownloadSignature, reportShareToken, requestAccountRecovery, requestEmailChange, revokeOtherSessions, revokeSession, staffSignIn, staffUpdateUserRoles, staffUpdateUserStatus, startCustomerReauth, startOtp, startProvider, unlinkIdentity, verifyCsrfToken, verifyCustomerReauth, verifyOtp, verifyReportDownload } from "./auth";
 import { Problem, audit, guard, hash, idempotent, isDemo, one, organization, role, uuid, type Actor } from "./common";
 import { integrationPreflight, signInMethods } from "./integrations";
 import { failedJobs, retryFailedJob } from "./worker";
@@ -206,6 +206,12 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
     csrf(req);
     const {challenge_id,code}=z.object({challenge_id:idSchema,code:z.string().regex(/^\d{6}$/)}).parse(await input(req));
     const result=await verifyOtp(challenge_id,code,getCookie(req,"qcw_browser"));
+    return json({state:result.state,kind:result.kind},200,authResult(result));
+  }
+  if(method==="POST" && path==="/auth/demo/switch") {
+    csrf(req);
+    const {email}=z.object({email:emailSchema}).parse(await input(req));
+    const result=await demoSwitchAccount(email);
     return json({state:result.state,kind:result.kind},200,authResult(result));
   }
   if(method==="POST" && path==="/auth/reauth/start") {

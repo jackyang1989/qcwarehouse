@@ -29,7 +29,7 @@ export default async function Home() {
   const actor=await actorForSession((await cookies()).get("session")?.value);
   const accountHref=actor?.kind==="customer"?"/account":actor?staffHome(actor.roles):undefined;
   return <>
-    <PublicHeader accountHref={accountHref} staff={actor?.kind==="staff"}/>
+    <PublicHeader accountHref={accountHref} staff={actor?.kind==="staff"} actor={actor}/>
     <main className="marketing" id="main-content">
       <section className="marketing-hero" aria-labelledby="home-title">
         <div className="hero-inner">

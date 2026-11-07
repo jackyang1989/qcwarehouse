@@ -5,6 +5,7 @@ import { ScopeReview } from "./scope-review";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { Action, checked, Empty, ErrorBlock, Field, Form, Panel, Photo, request, RequestError, Select, stamp, Table, Tag, text, upload, useLoad, usd, type Row } from "./ui";
+import { switchDemoPortal } from "./chrome";
 import { staffTabs } from "../packages/core/portal-routes";
 
 const label=(s:string)=>({
@@ -54,17 +55,37 @@ export function WarehouseDesk({path,actor}:{path:string;actor:Row}) {
     dispatch:["出库与退回","核对客户逐件授权、报价、包裹交接与退回入库。"],
   }[current]??["仓库工作台",""];
   const overviewMetrics:[string,string,number,string][]=[
-    ...(canReceive?[["/wh/intake","近期包裹",data.packages.length,"已登记到仓记录"]] as [string,string,number,string][]:[]),
-    ...(canInspect||canReview?[["/wh/inspection","检查任务",data.tasks.length,"待领取、执行中与已提交"]] as [string,string,number,string][]:[]),
-    ...(canReview?[["/wh/review","待处理报告",data.reports.length,"复核与生成 PDF"]] as [string,string,number,string][]:[]),
-    ...(canShip?[["/wh/dispatch","发运批次",data.batches.length,"待报价、待付款及已付款"]] as [string,string,number,string][]:[]),
+    ...(canReceive?[["/wh/intake","近期包裹",data.packages.length,"已登记到仓记录"]] as [string,string,number,string][]:[["/wh","近期包裹",data.packages.length,"已登记到仓记录"]] as [string,string,number,string][]),
+    ...(canInspect||canReview?[["/wh/inspection","检查任务",data.tasks.length,"待领取、执行中与已提交"]] as [string,string,number,string][]:[["/wh","检查任务",data.tasks.length,"待领取、执行中与已提交"]] as [string,string,number,string][]),
+    ...(canReview?[["/wh/review","待处理报告",data.reports.length,"复核与生成 PDF"]] as [string,string,number,string][]:[["/wh","待处理报告",data.reports.length,"复核与生成 PDF"]] as [string,string,number,string][]),
+    ...(canShip?[["/wh/dispatch","发运批次",data.batches.length,"待报价、待付款及已付款"]] as [string,string,number,string][]:[["/wh","发运批次",data.batches.length,"待报价、待付款及已付款"]] as [string,string,number,string][]),
   ];
+  const activeRoleEmail=actor.roles.includes("super_admin")?"admin@qcw.test":actor.roles.includes("reviewer")?"reviewer@qcw.test":actor.roles.includes("inspector")?"inspector@qcw.test":"receiving@qcw.test";
   return <><div className="page-head row"><div><p className="eyebrow">Warehouse operations</p><h1>{heading[0]}</h1><p className="muted">{heading[1]}</p></div>
-    {current==="overview"&&canReceive&&<div className="head-actions"><Link className="button primary" href="/wh/scan">扫码查件</Link><Link className="button" href="/wh/intake">收货登记</Link></div>}
+    {current==="overview"&&<div className="head-actions">{canReceive&&<><Link className="button primary" href="/wh/scan">扫码查件</Link><Link className="button" href="/wh/intake">收货登记</Link></>}{canInspect&&<Link className="button primary" href="/wh/inspection">开始检查</Link>}{canReview&&<Link className="button" href="/wh/review">复核报告</Link>}</div>}
   </div>
+    <div className="rolebar" role="region" aria-label="演示员工角色切换">
+      <div>
+        <strong>演示员工角色</strong>
+        <span className="small muted" style={{marginLeft:10}}>生产环境通过服务端 RBAC 控制每个操作；本地演示可一键切换岗位测试全链路。</span>
+      </div>
+      <div className="pilltabs">
+        {[
+          ["receiving@qcw.test","收货员 (Receiving)","/wh"],
+          ["inspector@qcw.test","检查员 (Inspector)","/wh/inspection"],
+          ["reviewer@qcw.test","复核员 (Reviewer)","/wh/review"],
+          ["admin@qcw.test","全权限仓管 / 超管","/wh"],
+        ].map(([email,roleLabel,dest])=><button
+          key={email}
+          type="button"
+          className={`button sm ${activeRoleEmail===email?"primary":""}`}
+          onClick={()=>void switchDemoPortal(dest,email)}
+        >{roleLabel}</button>)}
+      </div>
+    </div>
     {current==="overview"&&<>
       <div className="metric-strip" aria-label="仓库作业摘要">{overviewMetrics.map(([href,title,value,detail])=>
-        <Link className="metric" href={href} key={href}><span>{title}</span><strong>{value}</strong><small>{detail}</small></Link>)}</div>
+        <Link className="metric" href={href} key={title}><span>{title}</span><strong>{value}</strong><small>{detail}</small></Link>)}</div>
       <div className="ops-columns">
         {canReceive?<Panel title="近期实收包裹">
           <Table headers={["包裹码","实物件数","状态"]} rows={data.packages.slice(0,6).map((parcel:Row)=>[

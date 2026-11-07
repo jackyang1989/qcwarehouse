@@ -5,6 +5,7 @@ import { ScopeReview } from "./scope-review";
 import { ReportShares } from "./report-sharing";
 import { RecentUpdates } from "./notifications";
 import { PlatformIcon } from "./chrome";
+import { ApparelIllustration } from "./report-guide";
 import { CategoryTiles } from "./category-coverage";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -28,34 +29,228 @@ const orderNext:Record<string,string>={
 };
 
 const serviceDetails={
-  inspection:{title:"Product inspection",description:"Commission a check for each item you send, from one piece to a larger group. The selected template determines the checks and evidence."},
-  compare:{title:"Side-by-side sample comparison",description:"Compare two or three items of the same kind against the selected checks. Each item keeps its own results and evidence."},
-  reference_match:{title:"Reference sample comparison",description:"Compare a new item with an eligible reference sample already stored in your account. The reference must be available for the selected service."},
+  inspection:{
+    title:"Product Inspection",
+    description:"Visual quality, dimensional checks and observable workmanship, item by item.",
+    fourthPoint:"Individual findings and exceptions",
+  },
+  compare:{
+    title:"Sample Comparison",
+    description:"Compare equivalent samples under the same inspection conditions.",
+    fourthPoint:"Side-by-side matrix and observable differences",
+  },
+  reference_match:{
+    title:"Reference Sample Matching",
+    description:"Evaluate new samples against a reference you approve and authorize us to retain.",
+    fourthPoint:"Reference sample discrepancies and declared tolerance",
+  },
 };
+
+const prototypeCategories=[
+  {id:"apparel",name:"Apparel",state:"ACTIVE",desc:"T-shirts, leggings, sportswear and dresses",icon:"♧"},
+  {id:"footwear",name:"Footwear",state:"PLANNED",desc:"Shoes, sneakers and footwear",icon:"◈"},
+  {id:"bags",name:"Bags & Accessories",state:"PLANNED",desc:"Handbags, backpacks and accessories",icon:"▢"},
+  {id:"home",name:"Home & Lifestyle",state:"PLANNED",desc:"Home textiles, decor and everyday goods",icon:"⌂"},
+  {id:"electronics",name:"Electronics",state:"RESTRICTED",desc:"Limited visual checks only; no electrical certification",icon:"▤"},
+  {id:"toys",name:"Toys & Children’s Products",state:"RESTRICTED",desc:"Safety-critical checks require separate capability review",icon:"◇"},
+] as const;
+
 export function Catalog({path}:{path:string}) {
   const {data,error,reload}=useLoad("/catalog");
   const [category,setCategory]=useState<string>();
+  const [estService,setEstService]=useState<"inspection"|"compare"|"reference_match">("compare");
+  const [estQty,setEstQty]=useState<number>(3);
   const requestedCategory=useSearchParams().get("category")??"";
   const service=servicePages[path as keyof typeof servicePages];
   const info=service?serviceDetails[service]:null;
   const offers:Row[]=(data?.offers??[]).filter((offer:Row)=>!service||offer.service===service);
   const categories=new Map<string,string>(offers.map(o=>[o.category_id,o.category.en]));
-  const activeCategory=category??requestedCategory;
+  const firstCatId=categories.keys().next().value??"";
+  const activeCategory=category??(requestedCategory||firstCatId);
   const selected=categories.has(activeCategory)?activeCategory:"";
   const isCategories=path==="/categories",isPricing=path==="/pricing";
-  return <><section className="page-head public-masthead"><p className="eyebrow">{isCategories?"Category coverage":isPricing?"Pricing":"Service catalogue"}</p>
-    <h1>{info?.title??(isCategories?"Product categories":isPricing?"Inspection pricing":"Inspection services")}</h1>
-    <p className="muted">{info?.description??"Select a product category to see the available services and quantity ranges."}</p>
-    {info&&<div className="actions"><Link className="button" href="/report-guide">Explore Sample Report →</Link></div>}</section>
-    {isCategories&&<div className="catalog-coverage"><CategoryTiles offers={offers.map(offer=>({category_id:offer.category_id,category:offer.category}))}/></div>}
-    {path==="/catalog"&&<div className="land-services catalog-coverage">
+
+  const estCents = estService==="inspection" ? 2900 * Math.max(1,estQty)
+    : estService==="compare" ? (estQty<=2 ? 5900 : 7900 + Math.max(0,estQty-3)*3000)
+    : 3900 * Math.max(1,estQty);
+
+  const pageTitle = info?.title ?? (isCategories ? "Product Categories" : isPricing ? "Service Pricing" : "Inspection Services");
+  const pageSub = info?.description ?? (
+    isCategories ? "One platform. Inspection methods and service availability are controlled per category." :
+    isPricing ? "Approved pricing and processing capacity govern real orders. Product inspection fee is separate from shipping, handling and storage." :
+    "Select a product category and inspection service to see approved templates and quantity ranges."
+  );
+
+  return <>
+    <div className="breadcrumb"><Link href="/">QCWarehouse</Link> &nbsp; › &nbsp; <b>{pageTitle}</b></div>
+    <section className="page-head">
+      <div>
+        <p className="eyebrow">QCWAREHOUSE / INSPECTION</p>
+        <h1>{pageTitle}</h1>
+        <p className="muted">{pageSub}</p>
+      </div>
+      <div className="head-actions">
+        {info&&<Link className="button sm" href="/report-guide">View sample report</Link>}
+        <Link className="button primary" href="/orders/new">{info?"Start This Service":isPricing?"Get Started":"Start Inspection"}</Link>
+      </div>
+    </section>
+
+    {info&&<>
+      <div className="small-hero">
+        <div className="row between flexwrap">
+          <div>
+            <div className="label">SERVICE FRAMEWORK / APPAREL LIVE</div>
+            <h2 style={{margin:"9px 0"}}>{info.title}</h2>
+            <p style={{maxWidth:560}}>{info.description}</p>
+            <div className="row flexwrap">
+              <span className="tag blue">Versioned checklist</span>
+              <span className="tag green">Sample-level evidence</span>
+              <span className="tag blue">Report available</span>
+            </div>
+          </div>
+          <div className="product-illustration" style={{width:190,maxWidth:"100%"}}>
+            <ApparelIllustration kind="shirt"/>
+          </div>
+        </div>
+      </div>
+      <div className="grid cols2">
+        <section className="card">
+          <div className="card-head"><div><h3>What we inspect</h3><p>Select only checks approved for the product category.</p></div></div>
+          <ul className="list">
+            <li><span className="idx">1</span>Sample identity, quantity and packaging</li>
+            <li><span className="idx">2</span>Visual condition, workmanship and visible damage</li>
+            <li><span className="idx">3</span>Applicable measurements and photo evidence</li>
+            <li><span className="idx">4</span>{info.fourthPoint}</li>
+          </ul>
+        </section>
+        <section className="card">
+          <div className="card-head"><div><h3>Scope and availability</h3><p>Exact contents depend on the chosen category and template.</p></div></div>
+          <div className="metric-list">
+            {["Apparel ACTIVE","Laboratory tests not included","Other categories gated","Domestic forwarding optional"].map(t=>
+              <div className="metric-box" key={t}><div className="cap">SERVICE CONDITION</div><strong>{t}</strong></div>
+            )}
+          </div>
+          <div className="sep"/>
+          <div className="row flexwrap">
+            <Link className="button sm" href="/report-guide">View sample report</Link>
+            <Link className="button sm" href="/pricing">Pricing</Link>
+          </div>
+        </section>
+      </div>
+    </>}
+
+    {isCategories&&<>
+      <div className="grid cols3" style={{marginBottom:18}}>
+        {prototypeCategories.map(c=>{
+          const liveOffer=offers.find((o:Row)=>String(o.category?.en??"").toLowerCase().includes(c.id));
+          return <div className="card flat" key={c.id}>
+            <div className="category-card">
+              <div className="glyph">{c.icon}</div>
+              <div style={{flex:1}}>
+                <div className="row between">
+                  <strong>{c.name}</strong>
+                  <span className={`tag ${c.state==="ACTIVE"?"green":c.state==="PLANNED"?"yellow":"red"}`}>
+                    {c.state==="ACTIVE"?"Available":c.state==="PLANNED"?"Planned":"Restricted"}
+                  </span>
+                </div>
+                <p style={{margin:"8px 0 12px"}}>{c.desc}</p>
+                <div className="row flexwrap">
+                  {c.state==="ACTIVE"?(
+                    <Link className="button primary sm" href={liveOffer?"/orders/new?offer="+liveOffer.offer_id:"/orders/new"}>Select category →</Link>
+                  ):(
+                    <Link className="button sm" href="/contact">Ask about this category</Link>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>;
+        })}
+      </div>
+      <div style={{display:"none"}}><CategoryTiles offers={offers.map(offer=>({category_id:offer.category_id,category:offer.category}))}/></div>
+      <section className="card">
+        <div className="card-head"><div><h3>Category activation is governed</h3><p>A future category is not automatically eligible for checkout.</p></div></div>
+        <div className="grid cols3">
+          {([
+            ["1","Versioned template and evidence rules"],
+            ["2","Equipment, staff and SOP approved"],
+            ["3","Price, service terms and test report validated"],
+          ] as const).map(([num,text])=><div className="data-sample" key={num}>
+            <span className="number-tile">{num}</span>
+            <div style={{marginTop:10}}><strong>{text}</strong></div>
+          </div>)}
+        </div>
+      </section>
+    </>}
+
+    {isPricing&&<>
+      <div className="line-note warning" style={{marginBottom:18}}>
+        Product inspection fee is separate from shipping, additional handling, storage and any tax. Server-confirmed price snapshots govern real orders.
+      </div>
+      <div className="grid cols3" style={{marginBottom:18}}>
+        {([
+          ["Individual Inspection","From $29","per apparel item","Single or multiple physical samples, each checked separately.","/services/inspection"],
+          ["Sample Comparison","$59–$79","2–3 sample apparel set","2-sample set $59; 3-sample comparison set $79 under approved templates.","/services/compare"],
+          ["Reference Matching","$39","per new comparison","Compare a new sample against an eligible reference sample stored in your account.","/services/reference"],
+        ] as const).map(([label,price,unit,desc,href])=><div className="card" key={label}>
+          <div className="label">{label}</div>
+          <h2 style={{margin:"14px 0 2px"}}>{price}</h2>
+          <div className="small muted">{unit}</div>
+          <p style={{minHeight:65,margin:"20px 0"}}>{desc}</p>
+          <div className="row flexwrap">
+            <Link className="button primary full" href="/orders/new">Configure inspection</Link>
+          </div>
+          <div style={{marginTop:8,textAlign:"center"}}><Link className="small" href={href}>Service details →</Link></div>
+        </div>)}
+      </div>
+      <section className="card">
+        <div className="card-head"><div><h3>Estimate the inspection fee</h3><p>Select a service and sample quantity to preview the standard Apparel rate.</p></div></div>
+        <div className="fields">
+          <div className="field">
+            <label htmlFor="pricing-service">Service</label>
+            <select id="pricing-service" value={estService} onChange={e=>setEstService(e.target.value as "inspection"|"compare"|"reference_match")}>
+              <option value="inspection">Individual Inspection</option>
+              <option value="compare">Sample Comparison</option>
+              <option value="reference_match">Reference Matching</option>
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="pricing-qty">Quantity</label>
+            <select id="pricing-qty" value={estQty} onChange={e=>setEstQty(Number(e.target.value))}>
+              {[1,2,3,4,5,10,30].map(n=><option key={n} value={n}>{n} {n===1?"item":"items"}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="display-quote" style={{marginTop:16}}>
+          <div className="label">Estimate, excl. shipping</div>
+          <div className="big">{usd(estCents)}</div>
+          <div className="small muted">Exact eligibility, scope, capacity and item count are checked before order payment.</div>
+        </div>
+      </section>
+      <section className="card">
+        <div className="card-head"><div><h3>Fee structure &amp; billing timing</h3></div></div>
+        <div className="tablewrap">
+          <table className="tbl">
+            <thead><tr><th>Charge type</th><th>When charged</th><th>Remarks</th></tr></thead>
+            <tbody>
+              <tr><td>Inspection fee</td><td>After scope approval</td><td>Before inspection work begins</td></tr>
+              <tr><td>Domestic forwarding</td><td>After item selection and weighing</td><td>Quoted per package, not part of inspection fee</td></tr>
+              <tr><td>Storage extension</td><td>After free storage ends</td><td>Per-item, configurable by policy</td></tr>
+              <tr><td>Refund / adjustment</td><td>Only after review</td><td>Approval is not a completed refund</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </>}
+
+    {path==="/catalog"&&<div className="land-services catalog-coverage" style={{marginBottom:18}}>
       {Object.entries(servicePages).map(([href,code])=><Link className="land-svc" href={href} key={href}><span className="symbol"><PlatformIcon name={code==="compare"?"compare":code==="inspection"?"inspection":"packages"}/></span>
         <h3>{serviceDetails[code].title}</h3><p>{serviceDetails[code].description}</p><span className="go">View service →</span></Link>)}
     </div>}
+
     <Tabs path={path} links={[["/catalog","All services"],...Object.entries(servicePages).map(([href,code]):[string,string]=>[href,serviceDetails[code].title])]}/>
     {error&&<><ErrorBlock error={error}/><button type="button" onClick={reload}>Try again</button></>}
     {!data&&!error&&<p role="status">Loading services…</p>}
-    {categories.size>0&&<div className="catalog-filter"><h2>Product category</h2><div className="actions" aria-label="Product categories">{[...categories].map(([id,name])=>
+    {categories.size>0&&<div className="catalog-filter"><h2>Available service packages</h2><div className="actions" aria-label="Product categories">{[...categories].map(([id,name])=>
       <button type="button" className={selected===id?"primary":""} aria-pressed={selected===id} key={id} onClick={()=>setCategory(id)}>{name}</button>)}</div></div>}
     {categories.size>0&&!selected&&<p className="muted">Select a category to see available checks and pricing.</p>}
     {selected&&<section className="catalog-offers" aria-label={categories.get(selected)+" offers"}>
@@ -70,9 +265,10 @@ export function Catalog({path}:{path:string}) {
       </article>)}
     </section>}
     {data&&offers.length===0&&<Empty>No matching services are available for purchase yet.</Empty>}
-    <div className="catalog-support"><div><h2>Need a different scope?</h2><p className="muted">Tell us the category, quantity and checks you need.</p></div><Link className="button" href="/contact">Request a custom inspection →</Link></div></>;
+    <div className="catalog-support"><div><h2>Need a different scope?</h2><p className="muted">Tell us the category, quantity and checks you need.</p></div><Link className="button" href="/contact">Request a custom inspection →</Link></div>
+  </>;
 }
-const legalTitles:Record<string,string>={terms:"Terms of service",privacy:"Privacy notice",restricted_items:"Restricted items",report_notice:"Report notice"};
+const legalTitles:Record<string,string>={terms:"Terms of Service",privacy:"Privacy Policy",restricted_items:"Restricted Items",report_notice:"Report Limitations"};
 function PolicyLinks({policies}:{policies:Row[]}) {
   return <ul>{policies.map(t=>{
     const page=Object.entries(legalPages).find(([,kind])=>kind===t.kind)?.[0];
@@ -87,28 +283,79 @@ export function Legal({path}:{path:string}) {
   const suffix=versions.length?"?"+new URLSearchParams(versions.map(v=>["version",v])):"";
   const {data,error,reload}=useLoad("/public/terms"+(kind?"/"+kind+suffix:""));
   const terms:Row[]=data?.terms??[];
-  return <><div className="page-head public-masthead"><p className="eyebrow">Policies</p><h1>{kind?legalTitles[kind]:"Terms & privacy"}</h1></div>
+  const title=kind?legalTitles[kind]:"Terms & Privacy";
+  return <>
+    <div className="breadcrumb"><Link href="/">QCWarehouse</Link> &nbsp; › &nbsp; <b>{title}</b></div>
+    <div className="page-head">
+      <div>
+        <p className="eyebrow">QCWAREHOUSE / POLICIES</p>
+        <h1>{title}</h1>
+        <p className="muted">Historical customer consents and the exact policy version at the point of order remain retrievable.</p>
+      </div>
+      <div className="head-actions">
+        <Link className="button sm" href="/orders/new">Return to order</Link>
+      </div>
+    </div>
     <Tabs path={path} links={Object.entries(legalPages).map(([href,key]):[string,string]=>[href,legalTitles[key]])}/>
     {kind&&versions.length>0&&<p><Link href={path}>View the current version</Link></p>}
     {error&&<><ErrorBlock error={error}/><button type="button" onClick={reload}>Try again</button></>}
     {!data&&!error&&<p role="status">Loading policies…</p>}
     {data&&terms.length===0&&<Empty>No current version is available.</Empty>}
-    {terms.map(t=><Panel key={t.id} title={legalTitles[t.kind]}>
+    {terms.map(t=><Panel key={t.id} title={legalTitles[t.kind]} badge={<span className="tag yellow">Version {t.version}</span>}>
       <p className="muted">Version {t.version} · Effective <time dateTime={t.effective_at}>{t.effective_at.slice(0,10)} UTC</time></p>
       <div className="policy-content">{t.content_md}</div>
-    </Panel>)}</>;
+    </Panel>)}
+  </>;
 }
 const customerSteps=[
-  ["Get your receiving address","Create an account and copy the shared warehouse address with your personal receiving code."],
-  ["Buy directly from the seller","Use the warehouse address at the seller’s checkout. You pay the seller and keep their purchase record."],
-  ["Register the waybill and commission your checks","Add the original seller tracking number. Choose an available service for your category. Inspection timing starts when all commissioned items have been received and identified."],
-  ["Review your report","Read the recorded checks and evidence for the items in your inspection."],
-  ["Choose where each item goes","Provide a forwarding address or the seller’s approved return address. You arrange the seller return and pay the quoted shipping. The warehouse records the actual outbound tracking number after handover."],
+  ["Register & get your receiving code","Every account receives a permanent personal parcel code and the current common receiving address."],
+  ["Buy from your supplier","Purchase yourself; share the receiving details with a domestic Chinese seller or factory."],
+  ["Track and identify parcels","Record the seller’s actual carrier tracking number. Warehouse receipt is confirmed independently from carrier delivery."],
+  ["Inspection & quality review","Inspect by approved category template; attach evidence to exact samples and run independent review."],
+  ["Review report & direct handling","Receive a versioned report; tell us exactly which items to store, consolidate, forward or return."],
 ];
 export function HowItWorks() {
-  return <><div className="page-head public-masthead"><p className="eyebrow">From purchase to dispatch</p><h1>How it works</h1><p className="muted">Follow your items from the seller’s shipment through inspection and warehouse handling.</p></div>
-    <ol className="process-detail">{customerSteps.map(([title,body],index)=><li className="panel" key={title}><span className="symbol">{String(index+1).padStart(2,"0")}</span><div><h2>{title}</h2><p className="muted">{body}</p></div></li>)}</ol>
-    <div className="actions"><Link className="button primary" href="/catalog">Find an inspection service</Link><Link href="/faq">Read frequently asked questions</Link></div></>;
+  return <>
+    <div className="breadcrumb"><Link href="/">QCWarehouse</Link> &nbsp; › &nbsp; <b>How It Works</b></div>
+    <div className="page-head">
+      <div>
+        <p className="eyebrow">QCWAREHOUSE / INSPECTION</p>
+        <h1>How It Works</h1>
+        <p className="muted">A clear chain of custody from a seller’s parcel to a documented inspection report.</p>
+      </div>
+      <div className="head-actions">
+        <Link className="button primary" href="/orders/new">Create Inspection</Link>
+      </div>
+    </div>
+    <section className="card">
+      <div className="grid cols5">
+        {customerSteps.map(([title,body],index)=><div key={title}>
+          <span className="number-tile">{String(index+1).padStart(2,"0")}</span>
+          <h3 style={{margin:"13px 0 8px"}}>{title}</h3>
+          <p className="small">{body}</p>
+        </div>)}
+      </div>
+    </section>
+    <section className="card">
+      <div className="card-head"><div><h3>Who is responsible?</h3></div></div>
+      <div className="tablewrap">
+        <table className="tbl">
+          <thead><tr><th>Action</th><th>Customer</th><th>QCWarehouse</th></tr></thead>
+          <tbody>
+            <tr><td>Purchase &amp; supplier payment</td><td><span className="tag blue">Responsible</span></td><td>Not provided</td></tr>
+            <tr><td>Initial domestic shipment</td><td><span className="tag blue">Provide tracking</span></td><td>Track / receive</td></tr>
+            <tr><td>Physical inspection</td><td>Specify requested scope</td><td><span className="tag green">Executes approved checks</span></td></tr>
+            <tr><td>Return authorization</td><td>Obtain address / request return</td><td><span className="tag green">Ship upon instruction</span></td></tr>
+            <tr><td>International shipping</td><td>Arrange with your forwarder</td><td>Domestic handoff only when authorized</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <div className="line-note" style={{marginBottom:18}}>
+      The inspection start date is calculated only after the agreed samples are physically received, identified, and the service scope and payment are confirmed.
+    </div>
+    <div className="actions"><Link className="button primary" href="/catalog">Find an inspection service</Link><Link className="button" href="/faq">Read frequently asked questions</Link></div>
+  </>;
 }
 const wizardCategoryCatalog=[
   {key:"apparel",name:"Apparel",icon:"♧",fallbackState:"ACTIVE"},

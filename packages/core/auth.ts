@@ -208,6 +208,22 @@ export async function verifyOtp(challengeId: string, otp: string, browser: strin
   if(result instanceof Problem) throw result;
   return result;
 }
+export async function demoSwitchAccount(email: string) {
+  const normalized = email.trim().toLowerCase();
+  guard(isDemo() && process.env.NODE_ENV !== "production" && normalized.endsWith("@qcw.test"),
+    "DEMO_UNAVAILABLE", "Demo account switching is only available in local demo mode.", 403);
+  return transaction(async db => {
+    const account = (await db.query<{id: string; staff: boolean}>(`
+      select u.id, exists(select 1 from staff_roles where user_id=u.id) as staff
+      from users u join user_emails e on e.user_id=u.id
+      where e.normalized_email=$1 and u.status='active'
+    `, [normalized])).rows[0];
+    guard(account, "ACCOUNT_NOT_FOUND", "Demo account not found.", 404);
+    const kind = account.staff ? "staff" as const : "customer" as const;
+    const secret = await session(db, account.id, kind, account.staff);
+    return { state: "signed_in" as const, secret, kind };
+  });
+}
 export async function currentTerms(db: DB, kinds: string[]) {
   return (await db.query<{id:string;kind:string;version:string;content_md:string;effective_at:Date}>(`select distinct on(kind) id,kind,version,content_md,effective_at
     from terms_versions where kind=any($1) and effective_at<=now() order by kind,effective_at desc,id`,[kinds])).rows;

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Catalog, CustomerActions, CustomerDesk, DemoCheckout, HowItWorks, Legal, NewOrder, OrderFulfillment, OrderView, ReportView, TrackView } from "./customer";
 import { AdminDesk, LogisticsConfiguration, LogisticsDesk, StaffOrder, TaskView, WarehouseDesk, WarehouseDispatchBatch, WarehouseItemView, WarehousePackageView, WarehouseScan } from "./staff";
 import { Action, request, Tag } from "./ui";
-import { Brand, PublicHeader, QuickSwitch, SiteFooter, WorkspaceNavigation } from "./chrome";
+import { Brand, PublicHeader, QuickSwitch, SiteFooter, switchDemoPortal, WorkspaceNavigation } from "./chrome";
 import { FAQ } from "./faq";
 import { PublicInquiry } from "./public-inquiry";
 import { ReportGuide } from "./report-guide";
@@ -34,10 +34,21 @@ export function Portal({path,target,route,actor:a}:{path:string;target:string;ro
   else if(route.view==="report-guide") content=<ReportGuide/>;
   else if(route.view==="legal") content=<Legal path={path}/>;
   else if(!a) content=null;
-  else if(isStaff && a.kind!=="staff") content=<section className="panel narrow"><h1>需要员工权限</h1><p>请使用已分配权限的员工账号登录。</p>
-    <Link className="button primary" href={withDestination("/staff/login",target)}>前往员工登录</Link></section>;
+  else if(isStaff && a.kind!=="staff") content=<section className="panel narrow"><h1>需要员工权限</h1><p>请使用已分配权限的员工账号登录，或在本地演示环境下直接切换角色。</p>
+    <div className="actions">
+      <button type="button" className="button primary" onClick={()=>void switchDemoPortal(target,"admin@qcw.test")}>
+        一键切换为{route.area==="warehouse"?"仓库":"管理后台"}演示账号
+      </button>
+      <Link className="button" href={withDestination("/staff/login",target)}>前往员工登录</Link>
+    </div></section>;
   else if(isStaff&&!canOpenStaffPage(path,route,a.roles)) content=<section className="panel"><h1>当前账号无权访问</h1>
-    <p>请联系管理员确认当前岗位的权限。</p>{staffHome(a.roles)&&<Link className="button" href={staffHome(a.roles)!}>返回工作区</Link>}</section>;
+    <p>请联系管理员确认当前岗位的权限，或切换至对应岗位演示账号。</p>
+    <div className="actions">
+      <button type="button" className="button primary" onClick={()=>void switchDemoPortal(target,"admin@qcw.test")}>
+        切换为全权限演示员工账号
+      </button>
+      {staffHome(a.roles)&&<Link className="button" href={staffHome(a.roles)!}>返回工作区</Link>}
+    </div></section>;
   else if(route.view==="logistics") content=<LogisticsDesk/>;
   else if(route.view==="logistics-configuration") content=<LogisticsConfiguration/>;
   else if(route.view==="warehouse-scan") content=<WarehouseScan/>;
@@ -58,7 +69,12 @@ export function Portal({path,target,route,actor:a}:{path:string;target:string;ro
   else if(route.view==="warehouse") content=<WarehouseDesk path={path} actor={a}/>;
   else if(a.kind!=="customer") content=<section className="panel narrow"><h1>Customer account required</h1>
     <p>Use your customer account to open the customer workspace.</p>
-    <Link className="button primary" href={withDestination("/login",customerDestination(target))}>Sign in as a customer</Link></section>;
+    <div className="actions">
+      <button type="button" className="button primary" onClick={()=>void switchDemoPortal(customerDestination(target)??"/orders","customer@qcw.test")}>
+        One-click switch to Demo Customer
+      </button>
+      <Link className="button" href={withDestination("/login",customerDestination(target))}>Sign in as a customer</Link>
+    </div></section>;
   else if(route.view==="new-order") content=<NewOrder/>;
   else if(route.view==="customer-actions") content=<CustomerActions/>;
   else if(route.view==="customer-case") content=<CustomerCase key={route.recordId??route.id} id={route.recordId??route.id} order={route.recordId?route.id:undefined}/>;
@@ -74,7 +90,7 @@ export function Portal({path,target,route,actor:a}:{path:string;target:string;ro
   const signOut=a?<Action run={async()=>{await request("/auth/logout","POST",{});location.assign(a.kind==="staff"?"/staff/login":"/login");}}>{a.kind==="staff"?"退出登录":"Sign out"}</Action>:undefined;
   const homeLink=a?.kind==="customer"?"/account":a?staffHome(a.roles):undefined;
   if(publicPage||!a||links.length===0) return <>
-    <PublicHeader path={path} accountHref={homeLink} staff={a?.kind==="staff"} accountAction={signOut}/>
+    <PublicHeader path={path} accountHref={homeLink} staff={a?.kind==="staff"} accountAction={signOut} actor={a}/>
     <main className={`public-shell view-${route.view}`} id="main-content" lang={locale}>{content}</main>
     <SiteFooter/>
   </>;
@@ -83,9 +99,9 @@ export function Portal({path,target,route,actor:a}:{path:string;target:string;ro
   const currentLink=links.find(([href])=>href===path);
   const parentLink=links.filter(([href])=>href!=="/wh"&&href!=="/admin"&&path.startsWith(href+"/")).sort(([left],[right])=>right.length-left.length)[0];
   const topLinks:[string,string][]=route.area==="warehouse"?[
-    ["/wh/scan","扫码中心"],["/wh/intake","到件签收"],["/wh/storage","库位管理"],["/wh/inspection","质检队列"],["/wh/dispatch","交接出库"],
+    ["/wh/scan","扫码查询"],["/wh/inspection","检查队列"],["/wh/review","报告复核"],["/wh/dispatch","出库管理"],
   ]:route.area==="admin"?[
-    ["/admin","运营总览"],["/admin/orders","订单中心"],["/admin/storage/locations","库位主数据"],["/admin/finance","财务退款"],["/admin/settings","系统配置"],
+    ["/admin/orders","订单管理"],["/admin/finance","财务"],["/admin/logistics","物流监控"],["/admin/settings","模板配置"],["/admin/storage/locations","库位管理"],
   ]:[
     ["/catalog","Services"],["/categories","Product Categories"],["/how-it-works","How It Works"],["/report-guide","Reports"],["/pricing","Pricing"],
   ];
@@ -94,13 +110,13 @@ export function Portal({path,target,route,actor:a}:{path:string;target:string;ro
     <a className="skip-link" href="#main-content">{isStaff?"跳至主要内容":"Skip to main content"}</a>
     <header className="workspace-top">
       <div className="workspace-brand"><Brand/><span className="workspace-context">INSPECTION PLATFORM</span></div>
+      <span className="topspacer"/>
       <nav className="topnav" aria-label={isStaff?"快捷导航":"Platform navigation"}>
         {topLinks.map(([href,label])=><Link key={href} href={href} aria-current={path===href?"page":undefined}>{label}</Link>)}
       </nav>
       <div className="header-right">
-        <QuickSwitch active={route.area as "customer"|"warehouse"|"admin"}/>
-        <Tag tone="blue">{route.area==="admin"?"Role: Admin":route.area==="warehouse"?"Role: Warehouse":"Customer Workspace"}</Tag>
-        {route.area==="customer"&&path!=="/orders/new"&&<Link className="button primary sm" href="/orders/new">Start Inspection</Link>}
+        <QuickSwitch active={route.area as "customer"|"warehouse"|"admin"} actor={a}/>
+        <Tag tone="outline">{isStaff?"内部演示":"Customer preview"}</Tag>
         {signOut}
       </div>
     </header>

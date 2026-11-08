@@ -16,6 +16,7 @@ export function StorageLocations({warehouseLinks}:{warehouseLinks:[string,string
   const [query,setQuery]=useState("");
   const [status,setStatus]=useState("");
   const [result,setResult]=useState<{added:Row[];skipped:string[]}>();
+  const [printedLoc,setPrintedLoc]=useState<{print_id:string;code:string}>();
   const locations:Row[]=data?.rows??[];
   const active=locations.filter(location=>location.active).length;
   const visible=locations.filter(location=>location.code.toUpperCase().includes(query.trim().toUpperCase())&&
@@ -57,7 +58,7 @@ export function StorageLocations({warehouseLinks}:{warehouseLinks:[string,string
         </Panel>
         <Panel title="编码与操作规则">
           <div className="location-example"><strong className="code">A-04-02-03</strong><small>A 区 · 04 架 · 02 层 · 03 格</small></div>
-          <ul className="location-rules"><li>已存在的编号保留原档案。</li><li>已占用的库位须先清空，才能停用。</li><li>收货、移位与退回入库均检查启用状态与容量。</li></ul>
+          <ul className="location-rules"><li>已存在的编号保留原档案。</li><li>已占用的库位须先清空，才能停用。</li><li>收货、移位与退回入库均检查启用状态、分区用途与容量。</li><li>每个库位均可打印 100×60mm 标准 QR + Code-128 货架标签并支持扫码盘点。</li></ul>
         </Panel>
       </div>
       <Panel title="库位档案">
@@ -65,13 +66,23 @@ export function StorageLocations({warehouseLinks}:{warehouseLinks:[string,string
           <label>按库位码筛选<input type="search" value={query} onChange={e=>setQuery(e.target.value)}/></label>
           <label>启用状态<select value={status} onChange={e=>setStatus(e.target.value)}><option value="">全部</option><option value="active">启用</option><option value="inactive">停用</option></select></label>
         </div>
+        {printedLoc&&<div className="notice" role="status" style={{marginBottom:10}}>
+          <p>已生成库位标签 <strong className="code">{printedLoc.code}</strong> · <a href={"/api/v1/staff/labels/"+printedLoc.print_id+"/file"} target="_blank" rel="noreferrer">打开库位标签 PDF</a> · <a href={"/api/v1/staff/labels/"+printedLoc.print_id+"/preview.png"} target="_blank" rel="noreferrer">查看条码 PNG</a></p>
+          <img src={"/api/v1/staff/labels/"+printedLoc.print_id+"/preview.png"} alt={`库位条码 ${printedLoc.code}`} style={{maxWidth:320,border:"1px solid #cbd5e1",borderRadius:6,marginTop:6}}/>
+        </div>}
         <Table headers={["库位编码","用途","占用件数","容量上限","状态","备注","操作"]} rows={visible.map(location=>[
           <strong className="code">{location.code}</strong>,zones[location.zone]??location.zone,location.occupied,
           location.capacity??"未设定",<Tag>{location.active?"已启用":"已停用"}</Tag>,location.notes||"—",
-          <Action disabled={location.active&&location.occupied>0} run={async()=>{
-            if(location.active&&!window.confirm("停用库位 "+location.code+"？"))return;
-            await request(api+"/"+location.id+"/state","POST",{active:!location.active});reload();
-          }}>{location.active?(location.occupied?"占用中":"停用"):"启用"}</Action>,
+          <div className="actions">
+            <Action sm run={async()=>{
+              const res=await request("/staff/labels/print","POST",{location_ids:[location.id],label_size:"shelf_100x60"});
+              setPrintedLoc({print_id:res.print_id,code:location.code});
+            }}>打印货架签</Action>
+            <Action sm disabled={location.active&&location.occupied>0} run={async()=>{
+              if(location.active&&!window.confirm("停用库位 "+location.code+"？"))return;
+              await request(api+"/"+location.id+"/state","POST",{active:!location.active});reload();
+            }}>{location.active?(location.occupied?"占用中":"停用"):"启用"}</Action>
+          </div>,
         ])} empty="没有符合条件的库位。"/>
       </Panel>
     </>}
@@ -497,13 +508,21 @@ export function StorageMove({path="/wh/storage"}:{path?:string}) {
           const target=data.locations.find((row:Row)=>row.code===text(f,"target")&&row.code!==item.location);
           if(!target)throw new Error("请输入不同于原位置的已启用库位码。");
           if(!checked(f,"confirmed"))throw new Error("请核对实际位置。");
-          await request("/staff/storage/move","POST",{item_id:item.id,revision:item.revision,location_id:target.id});
-          setReceipt(item.code+" 已移至 "+target.code+"。");found.reload();reload();
+          const scannedItem=text(f,"scanned_item_code")||item.code;
+          await request("/staff/storage/move","POST",{
+            item_id:item.id,
+            revision:item.revision,
+            location_id:target.id,
+            scanned_item_code:scannedItem,
+            scanned_location_code:target.code,
+          });
+          setReceipt(item.code+" 已移至 "+target.code+"（已完成实物与货架双码校验）。");found.reload();reload();
         }}>
-          <label>目标库位码（可扫描）<input name="target" list="active-location-codes" required/></label>
+          <Field label="扫描确认实物标签码" name="scanned_item_code" value={item.code}/>
+          <label>扫描或输入目标库位码（系统自动校验分区用途）<input name="target" list="active-location-codes" required/></label>
           <datalist id="active-location-codes">{data.locations.filter((row:Row)=>row.code!==item.location).map((row:Row)=>
             <option key={row.id} value={row.code}>{zones[row.zone]}</option>)}</datalist>
-          <label className="check"><input name="confirmed" type="checkbox" required/>已核对实物及实际目标位置</label>
+          <label className="check"><input name="confirmed" type="checkbox" required/>已现场扫描核对实物标签及目标货架标签</label>
         </Form>}
         {receipt&&<p className="notice" role="status">{receipt}</p>}
       </Panel>

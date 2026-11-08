@@ -1,4 +1,5 @@
 import { addEmailOtpIdentity } from "../packages/core/auth";
+import { APPAREL_SUBCATEGORY_TEMPLATES } from "../packages/core/inspection";
 import { pool, transaction } from "../packages/db";
 import { hash, lock, one, uuid } from "../packages/core/common";
 
@@ -30,7 +31,10 @@ async function seed() {
       ($3,'Q-01','quarantine',null,'异常与隔离区'),
       ($4,'A-04-02-01','post_inspection',10,'A区 04架 02层 01格'),
       ($5,'A-04-02-02','post_inspection',10,'A区 04架 02层 02格'),
-      ($6,'A-04-02-03','reference',10,'确认样专区')`,[uuid(),uuid(),uuid(),uuid(),uuid(),uuid()]);
+      ($6,'A-04-02-03','reference',10,'确认样专区'),
+      ($7,'U-01','unmatched',20,'未关联/待认领包裹与实物暂存区'),
+      ($8,'W-01','queue',30,'待检排队货架区'),
+      ($9,'I-01','inspecting',15,'质检台作业暂存区')`,[uuid(),uuid(),uuid(),uuid(),uuid(),uuid(),uuid(),uuid(),uuid()]);
     const custId=uuid(), custOrgId=uuid();
     await db.query("insert into users(id,display_name,locale) values($1,'Demo Customer','en')",[custId]);
     await db.query("insert into organizations(id,name) values($1,'Personal workspace')",[custOrgId]);
@@ -54,18 +58,42 @@ async function seed() {
     }
     const category=await one<{id:string}>(db,"select id from categories where slug='apparel'");
     const checks=[
-      {key:"appearance",label:"Visible condition",zh:"外观",type:"boolean",method:"Visual observation",required:true,evidence:true},
-      {key:"width",label:"Flat width",zh:"平铺宽度",type:"number",unit:"cm",method:"Measure laid flat without stretching",required:true,evidence:true},
-      {key:"label",label:"Label transcription",zh:"标签记录",type:"text",method:"Read the visible label",required:false,evidence:false}
+      {key:"appearance",label:"Visible condition",zh:"外观",type:"boolean",method:"Visual observation",required:true,evidence:true,parts:["collar","chest_front","waistband","crotch_gusset","hem"]},
+      {key:"width",label:"Flat width",zh:"平铺宽度",type:"number",unit:"cm",precision:0.1,diagram:"/diagrams/tops.svg",method:"Measure laid flat without stretching",required:true,evidence:true},
+      {key:"label",label:"Label transcription",zh:"标签记录",type:"text",method:"Read the visible label",required:false,evidence:false},
+      {key:"body_length_cm",label:"Front Body Length HPS",zh:"前衣长 (上衣)",type:"number",unit:"cm",precision:0.1,diagram:"/diagrams/tops.svg",method:"Measure from High Point Shoulder (HPS) vertically down to bottom hem.",required:true,evidence:false,applies_if:{garment_type:"tops"}},
+      {key:"shoulder_width_cm",label:"Shoulder Width",zh:"肩宽 (上衣)",type:"number",unit:"cm",precision:0.1,diagram:"/diagrams/tops.svg",method:"Measure straight from left shoulder point to right shoulder point.",required:true,evidence:false,applies_if:{garment_type:"tops"}},
+      {key:"sleeve_length_cm",label:"Sleeve Length",zh:"袖长 (上衣)",type:"number",unit:"cm",precision:0.1,diagram:"/diagrams/tops.svg",method:"Measure from shoulder seam apex to cuff edge.",required:true,evidence:false,applies_if:{garment_type:"tops"}},
+      {key:"waist_flat_cm",label:"1/2 Waist Width Relaxed",zh:"平铺半腰围 (裤装)",type:"number",unit:"cm",precision:0.1,derived:{circumference_cm:"2x"},diagram:"/diagrams/bottoms.svg",method:"Align front and back top edges of waistband; measure straight across.",required:true,evidence:false,applies_if:{garment_type:"bottoms"}},
+      {key:"hip_flat_cm",label:"1/2 Hip Width Flat",zh:"平铺半臀围 (裤装)",type:"number",unit:"cm",precision:0.1,derived:{circumference_cm:"2x"},diagram:"/diagrams/bottoms.svg",method:"Measure straight across hip.",required:true,evidence:false,applies_if:{garment_type:"bottoms"}},
+      {key:"inseam_cm",label:"Inseam Length",zh:"内长/裤内长 (裤装)",type:"number",unit:"cm",precision:0.1,diagram:"/diagrams/bottoms.svg",method:"Measure from crotch seam intersection along inner leg seam to bottom ankle opening.",required:true,evidence:false,applies_if:{garment_type:"bottoms"}},
+      {key:"underbust_flat_cm",label:"1/2 Underbust Band Relaxed",zh:"平铺半下扒宽 (运动内衣)",type:"number",unit:"cm",precision:0.1,derived:{circumference_cm:"2x"},diagram:"/diagrams/sports_bra.svg",method:"Measure straight across bottom edge of elastic underbust band relaxed.",required:true,evidence:false,applies_if:{garment_type:"sports_bra"}},
+      {key:"strap_to_hem_cm",label:"Total Length HPS to Underbust",zh:"肩带顶点至下扒总长 (运动内衣)",type:"number",unit:"cm",precision:0.1,diagram:"/diagrams/sports_bra.svg",method:"Measure vertically from top of shoulder strap to bottom edge of underbust band.",required:true,evidence:false,applies_if:{garment_type:"sports_bra"}},
     ];
+    const serviceTypeIds=new Map<string,string>();
     for(const [service,en,zh,offers] of [
       ["inspection","Item inspection","逐件检查",[[1,100,2900]]],
       ["compare","Side-by-side comparison","横向对比",[[2,2,5900],[3,3,7900]]],
       ["reference_match","Reference comparison","确认样对照",[[1,1,3900]]]
     ] as const) {
       const type=await one<{id:string}>(db,"insert into service_types(code,labels) values($1,$2) returning id",[service,{en,"zh-CN":zh}]);
+      serviceTypeIds.set(service,type.id);
+      const baseContent={
+        checks,
+        diagram:"/diagrams/tops.svg",
+        measure_conditions:"Garment laid flat on standard inspection table without stretching; steel tape calibrated to 0.1 cm.",
+        parts:[
+          {code:"collar",label:"Collar / Neckband (领口)"},
+          {code:"chest_front",label:"Front Chest Panel (前胸)"},
+          {code:"waistband",label:"Waistband (腰头)"},
+          {code:"crotch_gusset",label:"Crotch / Gusset (裆部)"},
+          {code:"side_seam",label:"Side Seam (侧缝)"},
+          {code:"hem",label:"Bottom Hem / Cuff (下摆/脚口)"},
+          {code:"care_label",label:"Main / Care Label (主唛/洗水唛)"},
+        ],
+      };
       const tpl=await one<{id:string}>(db,`insert into template_versions(template_key,category_id,service_type_id,version,content,content_hash,state,author_id,reviewer_id,published_at)
-        values($1,$2,$3,1,$4,$5,'PUBLISHED',$6,$7,now()) returning id`,["apparel-"+service,category.id,type.id,{checks},hash(JSON.stringify(checks)),inspector,reviewer]);
+        values($1,$2,$3,1,$4,$5,'PUBLISHED',$6,$7,now()) returning id`,["apparel-"+service,category.id,type.id,baseContent,hash(JSON.stringify(baseContent)),inspector,reviewer]);
       await db.query("insert into template_capabilities values($1,$2)",[tpl.id,capability.id]);
       for(const [minimum,maximum,price] of offers) {
         const offer=await one<{id:string}>(db,"insert into service_offers(sku_code,service_type_id,title,enabled) values($1,$2,$3,true) returning id",
@@ -74,6 +102,37 @@ async function seed() {
         await db.query("insert into sku_prices(offer_id,version,currency,rules,effective_from) values($1,1,'USD',$2,now())",
           [offer.id,{minimum,maximum,...(service==="inspection"?{unit_cents:price}:{package_cents:price}),business_days:3,demo:true}]);
       }
+    }
+    const inspectionTypeId=serviceTypeIds.get("inspection")!;
+    const compareTypeId=serviceTypeIds.get("compare")!;
+    for(const sub of [APPAREL_SUBCATEGORY_TEMPLATES.tops,APPAREL_SUBCATEGORY_TEMPLATES.bottoms,APPAREL_SUBCATEGORY_TEMPLATES.sports_bra]) {
+      const tpl=await one<{id:string}>(db,`insert into template_versions(template_key,category_id,service_type_id,version,content,content_hash,state,author_id,reviewer_id,published_at)
+        values($1,$2,$3,1,$4,$5,'PUBLISHED',$6,$7,now()) returning id`,
+        [sub.code,category.id,inspectionTypeId,sub.content,hash(JSON.stringify(sub.content)),inspector,reviewer]);
+      await db.query("insert into template_capabilities values($1,$2)",[tpl.id,capability.id]);
+      const skuCode=`apparel-sub-${sub.subcategory.replace(/_/g,"-")}-inspection-1`;
+      const offer=await one<{id:string}>(db,"insert into service_offers(sku_code,service_type_id,title,enabled) values($1,$2,$3,true) returning id",
+        [skuCode,inspectionTypeId,{en:sub.title.en,"zh-CN":sub.title.zh}]);
+      await db.query("insert into offer_templates values($1,$2,$3,$4)",[offer.id,category.id,inspectionTypeId,tpl.id]);
+      await db.query("insert into sku_prices(offer_id,version,currency,rules,effective_from) values($1,1,'USD',$2,now())",
+        [offer.id,{minimum:1,maximum:100,unit_cents:3500,business_days:3,demo:true}]);
+    }
+    for(const sub of [APPAREL_SUBCATEGORY_TEMPLATES.tops,APPAREL_SUBCATEGORY_TEMPLATES.bottoms]) {
+      const compareContent={
+        ...sub.content,
+        order_shots:["side_by_side_front","side_by_side_back","detail_overlay"],
+      };
+      const tplKey=`apparel-${sub.subcategory}-compare`;
+      const tpl=await one<{id:string}>(db,`insert into template_versions(template_key,category_id,service_type_id,version,content,content_hash,state,author_id,reviewer_id,published_at)
+        values($1,$2,$3,1,$4,$5,'PUBLISHED',$6,$7,now()) returning id`,
+        [tplKey,category.id,compareTypeId,compareContent,hash(JSON.stringify(compareContent)),inspector,reviewer]);
+      await db.query("insert into template_capabilities values($1,$2)",[tpl.id,capability.id]);
+      const skuCode=`apparel-sub-${sub.subcategory}-compare-2`;
+      const offer=await one<{id:string}>(db,"insert into service_offers(sku_code,service_type_id,title,enabled) values($1,$2,$3,true) returning id",
+        [skuCode,compareTypeId,{en:`${sub.title.en} · 2-Item Comparison`,"zh-CN":`${sub.title.zh} · 2件横向对比`}]);
+      await db.query("insert into offer_templates values($1,$2,$3,$4)",[offer.id,category.id,compareTypeId,tpl.id]);
+      await db.query("insert into sku_prices(offer_id,version,currency,rules,effective_from) values($1,1,'USD',$2,now())",
+        [offer.id,{minimum:2,maximum:2,package_cents:6500,business_days:3,demo:true}]);
     }
     await db.query("insert into shipping_rate_versions values($1,1,$2,now(),$3)",[uuid(),{first_weight_g:1000,first_cents:850,extra_step_g:500,extra_cents:200,handling_cents:300},admin]);
     await db.query("insert into app_config(key,value) values('storage.daily_cents','25'),('demo.seeded','true')");

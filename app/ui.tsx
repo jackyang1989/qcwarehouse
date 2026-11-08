@@ -318,7 +318,7 @@ export function useLoad(path:string|null) {
 export function Action({children,run,primary=false,disabled=false,sm=false}:{children:ReactNode;run:()=>Promise<unknown>;primary?:boolean;disabled?:boolean;sm?:boolean}) {
   const [busy,set]=useState(false),[error,err]=useState("");
   const cls=["button",primary?"primary":"",sm?"sm":""].filter(Boolean).join(" ");
-  return <span className="action-wrap"><button className={cls} type="button" disabled={busy||disabled} onClick={async()=>{
+  return <span className="action-wrap" suppressHydrationWarning><button className={cls} type="button" suppressHydrationWarning disabled={busy||disabled} onClick={async()=>{
     set(true);err("");try {await run();}catch(e){err(e instanceof Error?e.message:"Failed");}finally{set(false);}
   }}>{busy?"…":children}</button>{error&&<span className="notice error" role="alert">{error}</span>}</span>;
 }
@@ -412,14 +412,17 @@ export function ModalDrawer({
   </div>;
 }
 
+export type DefectAnnotation={x:number;y:number;w?:number;h?:number;label?:string};
+
 export function MediaLightbox({
-  ids,labels,initialIndex=0,onClose,
+  ids,labels,annotations,initialIndex=0,onClose,
 }:{
-  ids:string[];labels?:string[];initialIndex?:number;onClose:()=>void;
+  ids:string[];labels?:string[];annotations?:DefectAnnotation[];initialIndex?:number;onClose:()=>void;
 }) {
   const zh=useIsStaffLocale();
   const [idx,setIdx]=useState(()=>Math.min(Math.max(0,initialIndex),Math.max(0,ids.length-1)));
   const [zoomed,setZoomed]=useState(false);
+  const [showOverlay,setShowOverlay]=useState(true);
   useEffect(()=>{
     const onKey=(e:KeyboardEvent)=>{
       if(e.key==="Escape")onClose();
@@ -432,22 +435,59 @@ export function MediaLightbox({
   if(!ids.length)return null;
   const currentId=ids[idx]??ids[0];
   const currentLabel=labels?.[idx]??(zh?`证据照 ${idx+1}/${ids.length}`:`Photo ${idx+1} of ${ids.length}`);
+  const activeAnns=annotations??[];
   return <div className="lightbox-backdrop" role="dialog" aria-modal="true" onMouseDown={e=>{if(e.target===e.currentTarget)onClose();}}>
     <div className="lightbox-bar">
       <div><strong>{currentLabel}</strong> <span className="muted" style={{color:"#cbd5e1"}}>({idx+1} / {ids.length})</span></div>
       <div className="actions">
+        {activeAnns.length>0&&<button type="button" className="button sm" onClick={()=>setShowOverlay(v=>!v)}>
+          {showOverlay?(zh?`隐藏瑕疵标注 (${activeAnns.length})`:`Hide markers (${activeAnns.length})`):(zh?`显示瑕疵标注 (${activeAnns.length})`:`Show markers (${activeAnns.length})`)}
+        </button>}
         <button type="button" className="button sm" onClick={()=>setZoomed(z=>!z)}>{zoomed?(zh?"适应窗口 (1x)":"Fit (1x)"):(zh?"放大查看 (2x)":"Zoom (2x)")}</button>
         <a className="button sm" href={`/api/v1/media/${currentId}`} target="_blank" rel="noreferrer">{zh?"新窗口原图":"Open original"}</a>
         <button type="button" className="button sm primary" onClick={onClose}>{zh?"关闭":"Close"}</button>
       </div>
     </div>
     <div className="lightbox-stage" onMouseDown={e=>{if(e.target===e.currentTarget)onClose();}}>
-      <img
-        className={"lightbox-img"+(zoomed?" zoomed":"")}
-        src={`/api/v1/media/${currentId}`}
-        alt={currentLabel}
-        onClick={()=>setZoomed(z=>!z)}
-      />
+      <div style={{position:"relative",display:"inline-block"}}>
+        <img
+          className={"lightbox-img"+(zoomed?" zoomed":"")}
+          src={`/api/v1/media/${currentId}`}
+          alt={currentLabel}
+          onClick={()=>setZoomed(z=>!z)}
+        />
+        {showOverlay&&activeAnns.map((ann,aIdx)=><div
+          key={aIdx}
+          style={{
+            position:"absolute",
+            left:`${Math.max(2,Math.min(96,ann.x))}%`,
+            top:`${Math.max(2,Math.min(96,ann.y))}%`,
+            width:`${ann.w??14}%`,
+            height:`${ann.h??14}%`,
+            transform:"translate(-50%, -50%)",
+            border:"2.5px solid #ef4444",
+            borderRadius:6,
+            backgroundColor:"rgba(239,68,68,0.14)",
+            pointerEvents:"none",
+            boxShadow:"0 0 0 2px rgba(255,255,255,0.85)",
+          }}
+        >
+          <span style={{
+            position:"absolute",
+            top:-22,
+            left:0,
+            background:"#ef4444",
+            color:"#fff",
+            fontSize:11,
+            fontWeight:700,
+            padding:"1px 6px",
+            borderRadius:4,
+            whiteSpace:"nowrap",
+          }}>
+            #{aIdx+1} {ann.label||"Defect"}
+          </span>
+        </div>)}
+      </div>
     </div>
     <div className="lightbox-bar">
       <div className="actions">
@@ -456,24 +496,85 @@ export function MediaLightbox({
           <button type="button" className="button sm" onClick={()=>{setZoomed(false);setIdx(i=>(i+1<ids.length?i+1:0));}}>{zh?"下一张 →":"Next →"}</button>
         </>}
       </div>
-      <span style={{fontSize:12,color:"#cbd5e1"}}>{zh?"提示：点击图片可切换缩放，支持键盘 ← → 与 Esc":"Tip: Click image to toggle zoom; use ← → and Esc keys"}</span>
+      <span style={{fontSize:12,color:"#cbd5e1"}}>{zh?"提示：原图已无损保留；点击图片可切换缩放，支持键盘 ← → 与 Esc":"Tip: Original photo is preserved untouched; click image to zoom"}</span>
     </div>
   </div>;
 }
 
 export function MediaButton({
-  ids,labels,label,sm=true,
+  ids,labels,annotations,label,sm=true,
 }:{
-  ids:string[];labels?:string[];label?:ReactNode;sm?:boolean;
+  ids:string[];labels?:string[];annotations?:DefectAnnotation[];label?:ReactNode;sm?:boolean;
 }) {
   const zh=useIsStaffLocale();
   const [openIdx,setOpenIdx]=useState<number|null>(null);
   if(!ids?.length)return null;
-  const defaultLabel=ids.length===1?(zh?"查看照片":"View photo"):(zh?`查看照片 (${ids.length})`:`Photos (${ids.length})`);
+  const annSuffix=annotations?.length?(zh?` · ${annotations.length}处标注`:` · ${annotations.length} marker(s)`):"";
+  const defaultLabel=(ids.length===1?(zh?"查看照片":"View photo"):(zh?`查看照片 (${ids.length})`:`Photos (${ids.length})`))+annSuffix;
   return <>
     <button type="button" className={"button"+(sm?" sm":"")} onClick={()=>setOpenIdx(0)}>{label??defaultLabel}</button>
-    {openIdx!==null&&<MediaLightbox ids={ids} labels={labels} initialIndex={openIdx} onClose={()=>setOpenIdx(null)}/>}
+    {openIdx!==null&&<MediaLightbox ids={ids} labels={labels} annotations={annotations} initialIndex={openIdx} onClose={()=>setOpenIdx(null)}/>}
   </>;
+}
+
+export function DefectAnnotator({
+  mediaId,annotations,onChange,
+}:{
+  mediaId:string;annotations:DefectAnnotation[];onChange:(next:DefectAnnotation[])=>void;
+}) {
+  const [labelInput,setLabelInput]=useState("Seam / surface issue");
+  const [boxSize,setBoxSize]=useState(16);
+  return <div style={{marginTop:8,padding:10,border:"1px solid #cbd5e1",borderRadius:8,background:"#f8fafc"}}>
+    <div className="row" style={{justifyContent:"space-between",marginBottom:6,flexWrap:"wrap",gap:8}}>
+      <small><strong>无损瑕疵位置圈注（点击下方原图添加红框，原图文件保持 100% 原始字节不修改）</strong></small>
+      <div className="actions">
+        <input
+          type="text"
+          value={labelInput}
+          onChange={e=>setLabelInput(e.target.value)}
+          placeholder="英文瑕疵部位描述 (如 Collar stain)"
+          style={{width:210,padding:"3px 8px",fontSize:12}}
+        />
+        <select value={boxSize} onChange={e=>setBoxSize(Number(e.target.value))} style={{padding:"3px 6px",fontSize:12}}>
+          <option value={12}>小框 (12%)</option>
+          <option value={16}>中框 (16%)</option>
+          <option value={24}>大框 (24%)</option>
+        </select>
+        {annotations.length>0&&<button type="button" className="button sm" onClick={()=>onChange([])}>清空标注 ({annotations.length})</button>}
+      </div>
+    </div>
+    <div
+      style={{position:"relative",display:"inline-block",maxWidth:360,cursor:"crosshair",border:"1px solid #94a3b8",borderRadius:6,overflow:"hidden"}}
+      onClick={e=>{
+        const rect=e.currentTarget.getBoundingClientRect();
+        if(!rect.width||!rect.height) return;
+        const x=Math.round(((e.clientX-rect.left)/rect.width)*1000)/10;
+        const y=Math.round(((e.clientY-rect.top)/rect.height)*1000)/10;
+        onChange([...annotations,{x,y,w:boxSize,h:boxSize,label:labelInput.trim()||"Observed issue"}]);
+      }}
+    >
+      <img src={`/api/v1/media/${mediaId}`} alt="Defect annotation canvas" style={{display:"block",maxWidth:"100%",height:"auto"}}/>
+      {annotations.map((ann,idx)=><div
+        key={idx}
+        style={{
+          position:"absolute",
+          left:`${ann.x}%`,
+          top:`${ann.y}%`,
+          width:`${ann.w??16}%`,
+          height:`${ann.h??16}%`,
+          transform:"translate(-50%, -50%)",
+          border:"2px solid #ef4444",
+          borderRadius:4,
+          backgroundColor:"rgba(239,68,68,0.18)",
+          pointerEvents:"none",
+        }}
+      >
+        <span style={{position:"absolute",top:-18,left:0,background:"#ef4444",color:"#fff",fontSize:10,padding:"0 4px",borderRadius:3,whiteSpace:"nowrap"}}>
+          #{idx+1} {ann.label||"Issue"}
+        </span>
+      </div>)}
+    </div>
+  </div>;
 }
 
 export type StaffObjectTarget={kind:"tracking"|"package"|"item"|"batch";ref:string};

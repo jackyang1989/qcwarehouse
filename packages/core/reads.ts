@@ -5,7 +5,7 @@ import { receiving } from "./auth";
 import { customerEmailDeliveryStatus } from "./email";
 import { orderDTO } from "./orders";
 import { orderShipments } from "./fulfillment-reads";
-import { waybill } from "./intake";
+import { getIntakeContext, waybill } from "./intake";
 import { hasStaffAccess, staffAccess } from "./staff-access";
 import { effectiveDispatchCharge } from "./dispatch";
 
@@ -200,7 +200,9 @@ export async function markNotificationRead(db:DB,actor:Actor,id:string) {
 export async function warehousePackage(db:DB,actor:Actor,value:string,byCode=false) {
   role(actor,...staffAccess.intake);
   const parcel=await one(db,`select p.id,p.code,p.state,p.revision,p.received_quantity,p.received_at,p.weight_g,
-    p.condition_note,p.org_id,sl.code location_code,
+    p.condition_note,p.org_id,sl.code location_code,sl.zone location_zone,
+    coalesce(substring(p.condition_note from '^\\[outer:([a-z_]+)\\]'),'intact') outer_condition,
+    array(select m.id from media_assets m where m.package_id=p.id and m.kind='intake_outer' and m.status='ready' order by m.captured_at) outer_media_ids,
     (select crp.receiving_code from customer_receiving_profiles crp where crp.org_id=p.org_id limit 1) receiving_code,
     t.tracking_norm,t.transport_state,t.sync_state,
     (select s.events_json from tracking_snapshots s where s.tracker_id=t.id and s.locale='zh-CN'
@@ -211,18 +213,44 @@ export async function warehousePackage(db:DB,actor:Actor,value:string,byCode=fal
     left join storage_locations sl on sl.id=p.location_id
     left join tracking_records t on t.package_id=p.id and t.direction='inbound' and t.closed_at is null
     where ${byCode?"p.code":"p.id"}=$1`,[value]);
-  const items=(await db.query(`select w.id,w.code,w.parent_item_id,w.intake_batch_id,w.identity_state,w.condition_state,w.custody_state,l.code location
+  const items=(await db.query(`select w.id,w.code,w.revision,w.parent_item_id,w.intake_batch_id,w.identity_state,w.condition_state,w.custody_state,
+    l.code location,l.zone location_zone,o.public_no order_number,e.position expected_position,e.declared_fields,
+    exists(select 1 from reference_samples r where r.item_id=w.id and r.state='active') is_reference_sample,
+    (select case
+      when t.state='IN_PROGRESS' then 'in_inspection'
+      when t.state in ('SUBMITTED','QA_APPROVED') then 'inspected'
+      else 'pending'
+    end
+    from order_line_item_links a2 join inspection_tasks t on (t.assignment_id=a2.id or t.order_line_id=a2.order_line_id)
+    where a2.item_id=w.id and a2.unlinked_at is null and t.state<>'VOID'
+    order by case when t.state='IN_PROGRESS' then 0 when t.state in ('SUBMITTED','QA_APPROVED') then 1 else 2 end limit 1) inspection_stage
     from warehouse_items w left join storage_locations l on l.id=w.location_id
+    left join order_line_item_links a on a.item_id=w.id and a.unlinked_at is null
+    left join expected_items e on e.id=a.expected_item_id
+    left join order_lines ol on ol.id=a.order_line_id
+    left join orders o on o.id=ol.order_id
     where w.package_id=$1 order by w.received_at,w.code`,[parcel.id])).rows;
-  return {parcel,items};
+  const intakeContext=await getIntakeContext(db,actor,{package_id:parcel.id});
+  return {parcel:{...parcel,intake_context:intakeContext},items,intake_context:intakeContext};
 }
 export async function warehouseItem(db:DB,actor:Actor,code:string) {
   role(actor,...staffAccess.intake);
   const item=await one(db,`select w.id,w.code,w.org_id,w.revision,w.parent_item_id,w.intake_batch_id,
     w.identity_state,w.condition_state,w.custody_state,
-    p.code package_code,sl.code location,o.id order_id,o.public_no order_number,o.state order_state,
-    a.order_line_id,a.expected_item_id,e.position expected_position,e.declared_fields,
+    p.code package_code,
+    (select tr.tracking_norm from tracking_records tr where tr.package_id=p.id and tr.direction='inbound' and tr.closed_at is null limit 1) source_tracking_no,
+    sl.code location,sl.zone location_zone,o.id order_id,o.public_no order_number,o.state order_state,
+    a.order_line_id,a.expected_item_id,e.position expected_position,e.declared_fields,l.attributes line_attributes,
     exists(select 1 from disposition_requests d where d.item_id=w.id and d.state not in ('completed','cancelled')) reserved,
+    exists(select 1 from reference_samples r where r.item_id=w.id and r.state='active') is_reference_sample,
+    (select case
+      when t.state='IN_PROGRESS' then 'in_inspection'
+      when t.state in ('SUBMITTED','QA_APPROVED') then 'inspected'
+      else 'pending'
+    end
+    from order_line_item_links a2 join inspection_tasks t on (t.assignment_id=a2.id or t.order_line_id=a2.order_line_id)
+    where a2.item_id=w.id and a2.unlinked_at is null and t.state<>'VOID'
+    order by case when t.state='IN_PROGRESS' then 0 when t.state in ('SUBMITTED','QA_APPROVED') then 1 else 2 end limit 1) inspection_stage,
     (select coalesce(jsonb_agg(jsonb_build_object('id',c.id,'code',c.code,'custody_state',c.custody_state) order by c.code),'[]'::jsonb)
      from warehouse_items c where c.parent_item_id=w.id) components
     from warehouse_items w join packages p on p.id=w.package_id
@@ -233,18 +261,47 @@ export async function warehouseItem(db:DB,actor:Actor,code:string) {
     where w.code=$1`,[code]);
   const movable=["received","stored"].includes(item.custody_state);
   const eligible=item.org_id&&!item.parent_item_id&&!item.order_number&&!item.reserved&&movable&&item.identity_state!=="quarantined";
-  const positions=eligible?(await db.query(`select e.id,e.position,e.declared_fields,l.id order_line_id,o.public_no,s.title
+  const rawPositions=eligible?(await db.query(`select e.id,e.position,e.declared_fields,l.id order_line_id,l.attributes line_attributes,o.public_no,s.title,
+    (select array_agg(tr.tracking_norm order by tr.tracking_norm) from advice_orders ao join tracking_records tr on tr.advice_id=ao.advice_id and tr.direction='inbound' and tr.closed_at is null where ao.order_id=o.id) advised_tracking_nos
     from expected_items e join order_lines l on l.id=e.order_line_id
     join orders o on o.id=l.order_id join service_offers s on s.id=l.offer_id
     where l.org_id=$1 and o.state='awaiting_samples' and o.paid_at is not null and e.in_scope
     and not exists(select 1 from order_line_item_links a where a.expected_item_id=e.id and a.unlinked_at is null)
     order by o.public_no,l.id,e.position`,[item.org_id])).rows:[];
+  const positions=rawPositions.map(pos=>{
+    const df=(pos.declared_fields??{}) as Record<string,unknown>;
+    const attr=(pos.line_attributes??{}) as Record<string,unknown>;
+    return {
+      ...pos,
+      sample_code:String(df.sample_code??df.sku??df.style_code??attr.sample_code??`POS-${pos.position}`),
+      color:String(df.color??df.color_declared??df.colour??attr.color??attr.color_declared??""),
+      size:String(df.size_label??df.size??attr.size??""),
+      supplier_alias:String(df.supplier_alias??df.supplier??df.seller_name??attr.supplier_alias??""),
+      declared_tracking_no:String(df.tracking_no??df.waybill??(Array.isArray(pos.advised_tracking_nos)?pos.advised_tracking_nos.join(", "):"")),
+      garment_type:String(df.garment_type??attr.garment_type??""),
+    };
+  });
+  const df=(item.declared_fields??{}) as Record<string,unknown>;
+  const attr=(item.line_attributes??{}) as Record<string,unknown>;
+  const declaredSummary=item.declared_fields?{
+    sample_code:String(df.sample_code??df.sku??df.style_code??attr.sample_code??""),
+    color:String(df.color??df.color_declared??df.colour??attr.color??attr.color_declared??""),
+    size:String(df.size_label??df.size??attr.size??""),
+    supplier_alias:String(df.supplier_alias??df.supplier??df.seller_name??attr.supplier_alias??""),
+    declared_tracking_no:String(df.tracking_no??df.waybill??item.source_tracking_no??""),
+    garment_type:String(df.garment_type??attr.garment_type??""),
+  }:null;
   return {item:{id:item.id,code:item.code,revision:item.revision,parent_item_id:item.parent_item_id,
     intake_batch_id:item.intake_batch_id,identity_state:item.identity_state,condition_state:item.condition_state,
-    custody_state:item.custody_state,package_code:item.package_code,location:item.location,
+    custody_state:item.custody_state,inspection_stage:item.inspection_stage??"pending",
+    is_reference_sample:Boolean(item.is_reference_sample),
+    reference_zone_warning:Boolean(item.is_reference_sample && item.location_zone!=="reference"),
+    package_code:item.package_code,source_tracking_no:item.source_tracking_no??null,
+    location:item.location,location_zone:item.location_zone??null,
     order_id:item.order_id??null,order_number:item.order_number,order_state:item.order_state??null,
     order_line_id:item.order_line_id??null,expected_item_id:item.expected_item_id??null,
     expected_position:item.expected_position??null,declared_fields:item.declared_fields??null,
+    declared_summary:declaredSummary,
     can_unassign:Boolean(item.order_number && ["awaiting_samples","on_hold"].includes(item.order_state)),
     can_identify:Boolean(item.order_number && ["awaiting_samples","on_hold"].includes(item.order_state) && item.identity_state!=="quarantined"),
     components:item.components,ownership_verified:!!item.org_id,movable},positions};

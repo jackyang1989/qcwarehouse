@@ -51,7 +51,16 @@ export async function revokeReportShare(db:DB,actor:Actor,id:string) {
 }
 
 type Result={item:string;label:string;status:string;typed_value:unknown;unit:string|null;evidence_ids:string[]};
-type ShareSnapshot={order_no:string;report_no:string;sections:{title:string;results:Result[]}[]};
+type ShareSection={
+  title:string;
+  results:Result[];
+  shots?:{code:string;component:string;media_id:string}[];
+  comparison?:{
+    diffs:{point_code:string;label:string;unit:string|null;max_minus_min:number|null;display_diff:string}[];
+    order_shots:{code:string;media_id:string}[];
+  };
+};
+type ShareSnapshot={order_no:string;report_no:string;not_inspected?:string[];scope_notice?:string;sections:ShareSection[]};
 async function sharedVersion(db:DB,token:string) {
   guard(reportSharingEnabled(),"NOT_FOUND","Record not found.",404);
   return one<{org_id:string;version:number;snapshot:ShareSnapshot;published_at:Date}>(db,`select o.org_id,v.version,v.snapshot,v.published_at
@@ -62,16 +71,29 @@ async function sharedVersion(db:DB,token:string) {
 export async function readSharedReport(db:DB,token:string) {
   const {version,snapshot,published_at}=await sharedVersion(db,token);
   return {version,published_at,order_number:snapshot.order_no,report_number:snapshot.report_no,
-    sections:snapshot.sections.map(({title,results})=>({title,results:results.map(r=>({
-      item:r.item,label:r.label,status:r.status,unit:r.unit,
-      value:typeof r.typed_value==="number"||typeof r.typed_value==="boolean"?r.typed_value:null,
-      photo_count:r.evidence_ids.length,
-    }))}))};
+    ...(snapshot.not_inspected?{not_inspected:snapshot.not_inspected}:{}),
+    ...(snapshot.scope_notice?{scope_notice:snapshot.scope_notice}:{}),
+    sections:snapshot.sections.map(({title,results,shots,comparison})=>({
+      title,
+      results:results.map(r=>({
+        item:r.item,label:r.label,status:r.status,unit:r.unit,
+        value:typeof r.typed_value==="number"||typeof r.typed_value==="boolean"?r.typed_value:null,
+        photo_count:r.evidence_ids.length,
+      })),
+      ...(shots?.length?{shot_count:shots.length}:{}),
+      ...(comparison?{comparison:{diffs:comparison.diffs,order_shot_count:comparison.order_shots?.length??0}}:{}),
+    }))};
 }
 export async function readSharedPhoto(db:DB,token:string,section:number,result:number,photo:number) {
   const {org_id,snapshot}=await sharedVersion(db,token);
-  const id=snapshot.sections[section]?.results[result]?.evidence_ids[photo];
+  const sec=snapshot.sections[section];
+  const id=
+    result===999998
+      ?sec?.shots?.[photo]?.media_id
+      :result===999999
+        ?sec?.comparison?.order_shots?.[photo]?.media_id
+        :sec?.results[result]?.evidence_ids[photo];
   guard(id,"NOT_FOUND","Record not found.",404);
   return one<{data:Buffer;mime:string}>(db,`select f.data,f.mime from media_assets m join private_files f on f.key=m.object_key
-    where m.id=$1 and m.org_id=$2 and m.result_id is not null and m.kind='shot' and m.status='ready'`,[id,org_id]);
+    where m.id=$1 and m.org_id=$2 and (m.result_id is not null or m.shot_code is not null or m.point_code is not null) and m.kind='shot' and m.status='ready'`,[id,org_id]);
 }

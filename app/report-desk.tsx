@@ -53,17 +53,38 @@ export function StaffReport({id,actor}:{id:string;actor:Row}) {
       {data.snapshot.sections.map((section:Row,s:number)=><Panel key={section.task_id} title={section.title}>
         <Table headers={["实物","检查项","原发布值","当前值 / 英文说明","中文原记","状态","证据"]} rows={section.results.map((result:Row,r:number)=>{
           const original=data.base_snapshot?.sections[s]?.results[r];
-          const needsEn=hasChinese(result.reason)||(typeof result.typed_value==="string"&&hasChinese(result.typed_value));
+          const annHasZh=Array.isArray(result.annotations)&&result.annotations.some((a:Row)=>hasChinese(a.label));
+          const needsEn=hasChinese(result.reason)||(typeof result.typed_value==="string"&&hasChinese(result.typed_value))||annHasZh;
           return [
             result.item?<CodeButton code={result.item} onClick={()=>setDrawer({kind:"item",ref:result.item})}/>:"—",
             result.label,
             original?valueOf(original):"—",
-            <div>{valueOf(result)}{result.reason&&result.typed_value!==null&&result.typed_value!==undefined&&<div className="small muted">{result.reason}</div>}{needsEn&&<div><Tag tone="yellow">待译英文</Tag></div>}</div>,
+            <div>{valueOf(result)}{result.reason&&result.typed_value!==null&&result.typed_value!==undefined&&<div className="small muted">{result.reason}</div>}{Array.isArray(result.annotations)&&result.annotations.length>0&&<div className="small muted">非破坏性瑕疵框选：{result.annotations.length} 处</div>}{needsEn&&<div><Tag tone="yellow">待译英文</Tag></div>}</div>,
             result.reason_zh??(hasChinese(result.reason)?result.reason:"—"),
             result.status,
-            result.evidence_ids?.length?<MediaButton ids={result.evidence_ids} labels={result.evidence_ids.map((_:string,idx:number)=>`${result.item} · ${result.label} (#${idx+1})`)} label={`查看证据照 (${result.evidence_ids.length})`}/>:"—",
+            result.evidence_ids?.length?<MediaButton ids={result.evidence_ids} annotations={result.annotations??[]} labels={result.evidence_ids.map((_:string,idx:number)=>`${result.item} · ${result.label} (#${idx+1})`)} label={`查看证据照 (${result.evidence_ids.length})`}/>:"—",
           ];
         })}/>
+        {(section.shots?.length??0)>0&&<div className="card" style={{marginTop:10}}>
+          <strong>标准必拍机位照片 ({section.shots.length})</strong>
+          <div className="actions" style={{marginTop:6}}>
+            <MediaButton
+              ids={section.shots.map((sh:Row)=>sh.media_id)}
+              labels={section.shots.map((sh:Row)=>`${sh.item??""} · ${sh.label??sh.shot_code}`)}
+              label={`查看必拍机位照 (${section.shots.length})`}
+            />
+          </div>
+        </div>}
+        {(section.comparison?.order_shots?.length??0)>0&&<div className="card" style={{marginTop:10}}>
+          <strong>横向对比同框照片 ({section.comparison.order_shots.length})</strong>
+          <div className="actions" style={{marginTop:6}}>
+            <MediaButton
+              ids={section.comparison.order_shots.map((sh:Row)=>sh.media_id)}
+              labels={section.comparison.order_shots.map((sh:Row)=>`对比同框 · ${sh.shot_code}`)}
+              label={`查看同框对比照 (${section.comparison.order_shots.length})`}
+            />
+          </div>
+        </div>}
         {canReview&&section.results.map((result:Row,r:number)=>{
           const needsEn=hasChinese(result.reason);
           if(!needsEn&&!result.reason&&!result.reason_zh) return null;

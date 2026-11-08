@@ -133,15 +133,47 @@ export async function planBatch(db:DB,actor:Actor,ids:string[]) {
   await requireCustomerActive(db,actor);
   const org=organization(actor);
   await lock(db,"org:"+org);
-  const rows=(await db.query("select * from disposition_requests where id=any($1::uuid[]) and org_id=$2 and state='requested' order by id for update",[ids,org])).rows;
-  guard(rows.length===ids.length && ids.length>0 && ids.length<=100,"DISPOSITION_UNAVAILABLE","Some instructions cannot be combined.");
+  const uniqueIds=[...new Set(ids)];
+  guard(uniqueIds.length===ids.length && ids.length>0 && ids.length<=100,"DISPOSITION_UNAVAILABLE","Some instructions cannot be combined.");
+  const rows=(await db.query(
+    `select d.*,
+            coalesce(e.declared_fields->>'supplier_alias',e.declared_fields->>'supplier',l.attributes->>'supplier_alias','') supplier_alias
+     from disposition_requests d
+     join warehouse_items w on w.id=d.item_id and w.org_id=d.org_id
+     left join order_line_item_links a on a.item_id=w.id and a.unlinked_at is null
+     left join expected_items e on e.id=a.expected_item_id
+     left join order_lines l on l.id=a.order_line_id
+     where d.id=any($1::uuid[]) and d.org_id=$2 and d.state='requested'
+       and not exists(select 1 from dispatch_batch_items bi where bi.disposition_id=d.id and bi.released_at is null)
+     order by d.id for update of d,w`,
+    [ids,org]
+  )).rows;
+  guard(rows.length===ids.length,"DISPOSITION_UNAVAILABLE","Some instructions cannot be combined or are already in an active batch.");
   const first=rows[0];
-  const dest=(d:Destination)=>[d.recipient,d.phone,d.address,d.member_code??""].join("\n");
-  guard(first.destination && rows.every(r=>r.destination && r.action===first.action && dest(r.destination)===dest(first.destination)) &&
-    (first.action!=="return_to_seller" || ids.length===1),"BATCH_MISMATCH","Use matching shipping instructions. Seller returns are separate.");
+  const norm=(s:unknown)=>String(s??"").trim().replace(/\s+/g," ").toLowerCase();
+  const dest=(d:Destination)=>[norm(d.recipient),norm(d.phone),norm(d.address),norm(d.member_code??"")].join("\n");
+  guard(
+    first.destination && rows.every(r=>r.destination && r.action===first.action && dest(r.destination)===dest(first.destination)),
+    "BATCH_MISMATCH",
+    "Use matching shipping instructions and identical recipient, phone, and address."
+  );
+  if(first.action==="return_to_seller") {
+    const validReturnAuth=rows.every(r=>
+      r.return_info?.requested_from_seller===true &&
+      r.return_info?.customer_pays_shipping===true &&
+      (!r.return_info?.deadline || new Date(r.return_info.deadline)>new Date())
+    );
+    guard(validReturnAuth,"BATCH_MISMATCH","All seller return items must have active seller return authorization and unexpired deadlines.");
+    const nonEmptySuppliers=[...new Set(rows.map(r=>norm(r.supplier_alias)).filter(Boolean))];
+    guard(
+      nonEmptySuppliers.length<=1,
+      "BATCH_MISMATCH",
+      "Items from different declared suppliers cannot be merged into the same seller return batch."
+    );
+  }
   const b=await one<{id:string;revision:number}>(db,`insert into dispatch_batches(org_id,destination_snapshot,action,revision,state) values($1,$2,$3,1,'draft') returning id,revision`,[org,first.destination,first.action]);
   for(const r of rows) await db.query("insert into dispatch_batch_items(batch_id,item_id,disposition_id,org_id) values($1,$2,$3,$4)",[b.id,r.item_id,r.id,org]);
-  await audit(db,actor,"plan_dispatch","dispatch_batches",b.id);
+  await audit(db,actor,"plan_dispatch","dispatch_batches",b.id,{action:first.action,item_count:rows.length});
   return {batch_id:b.id,revision:b.revision};
 }
 async function lockBatch(db:DB,id:string) {

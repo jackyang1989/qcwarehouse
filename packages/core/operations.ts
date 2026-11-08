@@ -3,7 +3,7 @@ import type { DB } from "../db";
 import { audit, code, event, guard, hash, lock, one, organization, revision, role, uuid, type Actor } from "./common";
 import { integrationPreflight } from "./integrations";
 import { activatePaidOrder, priceSchema, readyOrder, templateSchema } from "./orders";
-import { assertItemNotFrozen, requireSpace } from "./storage";
+import { assertItemNotFrozen, assertZonePurpose, requireSpace } from "./storage";
 
 export async function computeOrderRefundStage(
   db:DB,
@@ -526,7 +526,14 @@ export async function reportIssue(db:DB,actor:Actor,subject:string,message:strin
   await audit(db,actor,"create_ticket","tickets",id);
   return ticket;
 }
-export async function moveItem(db:DB,actor:Actor,id:string,rev:number,location:string) {
+export async function moveItem(
+  db:DB,
+  actor:Actor,
+  id:string,
+  rev:number,
+  location:string,
+  options?:{scanned_item_code?:string;scanned_location_code?:string}
+) {
   role(actor,"receiver","warehouse_admin");
   const initial=await one(db,"select org_id from warehouse_items where id=$1",[id]);
   if(initial.org_id) await lock(db,"org:"+initial.org_id);
@@ -535,11 +542,40 @@ export async function moveItem(db:DB,actor:Actor,id:string,rev:number,location:s
   guard(["stored","received"].includes(w.custody_state),"ITEM_UNAVAILABLE","This item is not in storage.");
   await assertItemNotFrozen(db,[id],"ITEM_UNAVAILABLE");
   guard(w.location_id!==location,"LOCATION_UNCHANGED","Choose a different storage location.");
+  if(options?.scanned_item_code) {
+    guard(
+      options.scanned_item_code.trim().toUpperCase()===String(w.code).toUpperCase(),
+      "SCAN_CONFIRMATION_MISMATCH",
+      `Scanned item barcode (${options.scanned_item_code.trim()}) does not match target item ${w.code}.`,
+      409
+    );
+  }
+  const activeRef=(await db.query("select 1 from reference_samples where item_id=$1 and state='active' limit 1",[id])).rowCount;
+  const targetLoc=await assertZonePurpose(db,location,{
+    hasOwner:Boolean(w.org_id),
+    quarantined:w.identity_state==="quarantined" || w.condition_state==="restricted",
+    isReferenceSample:Boolean(activeRef),
+  });
+  if(options?.scanned_location_code) {
+    guard(
+      options.scanned_location_code.trim().toUpperCase()===String(targetLoc.code).toUpperCase(),
+      "SCAN_CONFIRMATION_MISMATCH",
+      `Scanned destination location barcode (${options.scanned_location_code.trim()}) does not match target location ${targetLoc.code}.`,
+      409
+    );
+  }
   await requireSpace(db,location,1);
   await db.query("update warehouse_items set location_id=$2,revision=revision+1 where id=$1",[id,location]);
   await db.query("insert into storage_events(item_id,from_location_id,to_location_id,action,operator_id) values($1,$2,$3,'move',$4)",[id,w.location_id,location,actor.id]);
-  await audit(db,actor,"move_item","warehouse_items",id,{location_id:location});
-  return {id,revision:rev+1};
+  await audit(db,actor,"move_item","warehouse_items",id,{
+    from_location_id:w.location_id,
+    location_id:location,
+    to_location_code:targetLoc.code,
+    to_zone:targetLoc.zone,
+    ...(options?.scanned_item_code?{scanned_item_code:options.scanned_item_code.trim().toUpperCase()}:{}),
+    ...(options?.scanned_location_code?{scanned_location_code:options.scanned_location_code.trim().toUpperCase()}:{}),
+  });
+  return {id,revision:rev+1,to_location_code:targetLoc.code,to_zone:targetLoc.zone};
 }
 export type ScopeAddition={order_line_id:string;count:number;declared_fields?:Record<string,unknown>[]};
 export async function scopeProposal(

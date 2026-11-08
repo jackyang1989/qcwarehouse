@@ -380,6 +380,8 @@ export async function authorizeMediaRead(db: DB, actor: Actor, id: string) {
     package_id: string | null;
     task_id: string | null;
     result_id: string | null;
+    shot_code: string | null;
+    point_code: string | null;
     kind: string;
     object_key: string;
     thumb_key: string | null;
@@ -399,13 +401,23 @@ export async function authorizeMediaRead(db: DB, actor: Actor, id: string) {
     if (m.kind === "attachment" && m.org_id === org && m.uploaded_by === actor.id) {
       return m;
     }
-    guard(m.org_id === org && m.result_id, "NOT_FOUND", "Photo not found.", 404);
+    guard(m.org_id === org && Boolean(m.result_id || m.shot_code || m.point_code), "NOT_FOUND", "Photo not found.", 404);
     await one(
       db,
       `select v.id from report_versions v join reports r on r.id=v.report_id join orders o on o.id=r.order_id
-       where o.org_id=$2 and v.state in ('published','superseded') and exists(
-         select 1 from jsonb_array_elements(v.snapshot->'sections') s, jsonb_array_elements(s->'results') x
-         where (x->'evidence_ids') ? $1
+       where o.org_id=$2 and v.state in ('published','superseded') and (
+         exists(
+           select 1 from jsonb_array_elements(v.snapshot->'sections') s, jsonb_array_elements(coalesce(s->'results','[]'::jsonb)) x
+           where (x->'evidence_ids') ? $1
+         )
+         or exists(
+           select 1 from jsonb_array_elements(v.snapshot->'sections') s, jsonb_array_elements(coalesce(s->'shots','[]'::jsonb)) sh
+           where sh->>'media_id' = $1 or sh->>'id' = $1
+         )
+         or exists(
+           select 1 from jsonb_array_elements(v.snapshot->'sections') s, jsonb_array_elements(coalesce(s->'comparison'->'order_shots','[]'::jsonb)) os
+           where os->>'media_id' = $1 or os->>'id' = $1
+         )
        ) limit 1`,
       [id, org]
     );

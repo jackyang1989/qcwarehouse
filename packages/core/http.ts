@@ -11,7 +11,7 @@ import { integrationPreflight, signInMethods } from "./integrations";
 import { failedJobs, retryFailedJob } from "./worker";
 import { customerEmailDeliveryStatus, receivePostmarkWebhook, retryEmailDelivery, staffEmailDeliveries } from "./email";
 import { catalog, issueManualQuote, orderDetail, quoteOrder, requestManualQuote, saveOrder, submitOrder } from "./orders";
-import { advise, assign, bindUnmatchedPackageOwner, checkIn, decideIntakeClaim, identifyItem, intakeItems, linkParcelToOrder, lookup, quarantineItem, quarantinePackage, requestIntakeClaim, savePhoto, unassignItem, waybill } from "./intake";
+import { advise, assign, bindUnmatchedPackageOwner, checkIn, decideIntakeClaim, getIntakeContext, identifyItem, intakeItems, linkParcelToOrder, lookup, quarantineItem, quarantinePackage, reportPackageQuantityDiscrepancy, requestIntakeClaim, savePhoto, unassignItem, waybill } from "./intake";
 import { amendReport, amendReportInput, approveReport, checkTaskCompleteness, createReportDispute, editReportRevision, findInspectionTaskByScan, readReport, recordResults, recordTaskShot, recordTaskStep, reportDesk, returnReport, revisionChanges, staffReport, startTask, submitReport, submitReportRevision, submitTask, taskDetail, translateReportCandidate } from "./inspection";
 import { acceptQuote, amendDispatchBatch, calculateShippingPreview, cancelDisposition, checkStorageReminders, closeCompletedOrder, confirmBatch, handover, instruct, packShipment, planBatch, publishShippingRate, quoteBatch, readDispatchBatch, receiveReturn, releaseReferenceSample, storageQuote } from "./dispatch";
 import { checkout, demoPay, orderPayment, orderRefundPayments, refundApprove, refundRequest, resolvePaymentDispute, stripeEvent, verifyStripe } from "./payments";
@@ -26,7 +26,7 @@ import { acceptScope, approveCapability, cancelOrder, computeOrderRefundStage, c
 import { createReportShare, listPublishedReports, listReportShares, readSharedPhoto, readSharedReport, reportSharingEnabled, revokeReportShare, shareInput, shareTokenPattern } from "./report-shares";
 import { auditFilters, readAudit } from "./audit-read";
 import { completeMediaUpload, createMediaReadUrl, createMediaUploadUrl, putMediaStaging, readMediaBinary, uploadUrlInputSchema } from "./media";
-import { labelPrintInputSchema, labelVerifyInputSchema, printLabels, readLabelPdf, scanWarehouseCode, verifyLabelReadback } from "./labels";
+import { decodeLabelImage, labelPrintInputSchema, labelVerifyInputSchema, printLabels, readLabelPdf, readLabelPreviewPng, scanWarehouseCode, verifyLabelReadback } from "./labels";
 
 type ContractOperation={
   operationId:string; "x-roles":string[];
@@ -520,6 +520,7 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
         section:z.number().int().nonnegative(),
         result:z.number().int().nonnegative(),
         reason_en:z.string().trim().min(2).max(2000),
+        annotations_en:z.array(z.string().trim().max(200)).optional(),
       })).min(1),
     }),(db,a,b)=>translateReportCandidate(db,a,idSchema.parse(reportCandidate[1]),b));
   }
@@ -567,17 +568,59 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
     const carrierCode=url.searchParams.get("carrier_code")?.trim()||null;
     return json(await transaction(db=>scanWarehouseCode(db,actorRequired(actor),code,carrierCode)));
   }
-  if(method==="POST" && path==="/staff/labels/print") {
+  if(method==="POST" && (path==="/staff/labels/print" || path==="/staff/labels")) {
     return extraWrite(req,path,actor,labelPrintInputSchema,
       (db,a,b)=>printLabels(db,a,b));
   }
-  if(method==="POST" && path==="/staff/labels/verify") {
+  if(method==="POST" && (path==="/staff/labels/verify" || path==="/staff/labels/verify-readback")) {
     return extraWrite(req,path,actor,labelVerifyInputSchema,
       (db,a,b)=>verifyLabelReadback(db,a,b));
   }
   const labelPdfRoute=path.match(/^\/staff\/labels\/([a-f0-9-]{36})\/file$/i);
   if(method==="GET" && labelPdfRoute) {
     return transaction(async db=>binary(await readLabelPdf(db,actorRequired(actor),idSchema.parse(labelPdfRoute[1]))));
+  }
+  const labelPreviewRoute=path.match(/^\/staff\/labels\/([a-f0-9-]{36})\/preview\.png$/i);
+  if(method==="GET" && labelPreviewRoute) {
+    return transaction(async db=>binary(await readLabelPreviewPng(db,actorRequired(actor),idSchema.parse(labelPreviewRoute[1]))));
+  }
+  if(method==="POST" && path==="/staff/scan/decode-image") {
+    csrf(req);
+    const a=actorRequired(actor);
+    role(a,"super_admin","warehouse_admin","receiver","inspector","reviewer");
+    const ct=req.headers.get("content-type")??"";
+    let bytes:Buffer;
+    if(ct.includes("multipart/form-data")) {
+      const form=await req.formData(),file=form.get("photo")??form.get("image");
+      guard(file instanceof File && file.size>0,"FILE_INVALID","Choose an image to decode.",422);
+      bytes=Buffer.from(await file.arrayBuffer());
+    } else {
+      const body=z.object({image_base64:z.string().min(16)}).parse(await input(req));
+      const clean=body.image_base64.replace(/^data:image\/[a-z0-9.+-]+;base64,/i,"");
+      bytes=Buffer.from(clean,"base64");
+    }
+    const decoded=await decodeLabelImage(bytes);
+    const resolved=decoded.decoded && decoded.code
+      ?await transaction(db=>scanWarehouseCode(db,a,decoded.code!,url.searchParams.get("carrier_code")?.trim()||null))
+      :null;
+    return json({...decoded,decoded_code:decoded.code,scan_result:resolved});
+  }
+  if(method==="GET" && path==="/staff/intake/context") {
+    const trackingNo=url.searchParams.get("tracking_no")?.trim()||undefined;
+    const packageId=url.searchParams.get("package_id")?idSchema.parse(url.searchParams.get("package_id")):undefined;
+    return json(await transaction(db=>getIntakeContext(db,actorRequired(actor),{tracking_no:trackingNo,package_id:packageId})));
+  }
+  const pkgDiscrepancy=path.match(/^\/staff\/packages\/([a-f0-9-]{36})\/discrepancy$/i);
+  if(method==="POST" && pkgDiscrepancy) {
+    return extraWrite(req,path,actor,z.object({
+      revision:revSchema,
+      order_id:idSchema.optional(),
+      discrepancy_type:z.enum(["shortage","overage","wrong_item","partial_shipment_in_transit"]),
+      expected_qty:z.number().int().nonnegative(),
+      actual_qty:z.number().int().nonnegative(),
+      note:z.string().trim().min(4).max(1000),
+      evidence_ids:z.array(idSchema).optional(),
+    }),(db,a,b)=>reportPackageQuantityDiscrepancy(db,a,idSchema.parse(pkgDiscrepancy[1]),b));
   }
   if(method==="POST" && path==="/staff/media") {
     csrf(req);
@@ -995,7 +1038,15 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
   if(method==="POST" && hold) return extraWrite(req,path,actor,z.object({reason:z.string().trim().min(2).max(1000)}),(db,a,b)=>
     hold[2].toLowerCase()==="hold"?holdOrder(db,a,idSchema.parse(hold[1]),b.reason):resumeOrder(db,a,idSchema.parse(hold[1]),b.reason));
   if(method==="POST" && path==="/staff/storage/move") return extraWrite(req,path,actor,z.object({
-    item_id:idSchema,revision:revSchema,location_id:idSchema}),(db,a,b)=>moveItem(db,a,b.item_id,b.revision,b.location_id));
+    item_id:idSchema,
+    revision:revSchema,
+    location_id:idSchema,
+    scanned_item_code:z.string().trim().min(2).max(64).optional(),
+    scanned_location_code:z.string().trim().min(2).max(64).optional(),
+  }),(db,a,b)=>moveItem(db,a,b.item_id,b.revision,b.location_id,{
+    scanned_item_code:b.scanned_item_code,
+    scanned_location_code:b.scanned_location_code,
+  }));
   const fake=path.match(/^\/checkout\/demo\/([a-f0-9-]{36})$/i);
   if(method==="POST" && fake && isDemo()) return extraWrite(req,path,actor,z.object({}),(db,a)=>demoPay(db,a,idSchema.parse(fake[1])));
   return null;

@@ -437,8 +437,19 @@ export async function taskDetail(db:DB,actor:Actor,id:string) {
   const stepTimings=(await db.query(`select id,step_code,operator_id,started_at,ended_at,seconds
     from step_timings where order_id=$1 order by started_at desc,id desc limit 50`,[t.order_id])).rows;
   const completeness=await evaluateCompleteness(db,t);
+  const parsedTpl=templateSchema.parse(t.content);
+  const attrs:Record<string,unknown>={
+    ...(typeof t.line_attributes==="object"&&t.line_attributes?t.line_attributes as Record<string,unknown>:{}),
+    ...(typeof t.declared_fields==="object"&&t.declared_fields?t.declared_fields as Record<string,unknown>:{}),
+  };
+  const filteredContent={
+    ...parsedTpl,
+    checks:parsedTpl.checks.filter(c=>conditionMatches(c.applies_if,attrs) && conditionMatches(c.required_if,attrs)),
+    shots:(parsedTpl.shots??[]).filter(s=>conditionMatches(s.required_if,attrs)),
+  };
   return {
     ...t,
+    content:filteredContent,
     components:await components(db,t),
     sibling_tasks:siblingTasks,
     shots,
@@ -515,7 +526,7 @@ export async function recordResults(db:DB,actor:Actor,id:string,rev:number,resul
       if(value.details?.severity!==undefined) {
         guard(["attention","material_issue","uncertain"].includes(String(value.details.severity)),"RESULT_INVALID","Invalid issue severity.",422);
       }
-      if(check.parts?.length) {
+      if(check.parts?.length && (value.details?.part_code!==undefined || value.details?.severity!==undefined)) {
         const partCode=typeof value.details?.part_code==="string"?value.details.part_code:"";
         const severity=typeof value.details?.severity==="string"?value.details.severity:"";
         guard(["attention","material_issue","uncertain"].includes(severity) && check.parts.includes(partCode),
@@ -579,7 +590,8 @@ export async function recordResults(db:DB,actor:Actor,id:string,rev:number,resul
       const [a1,a2]=attempts;
       const diff=roundMetric(Math.abs(Number(a1.typed_value)-Number(a2.typed_value)));
       if(diff<=threshold) {
-        await db.query("update inspection_results set is_final=(id=$2) where task_id=$1 and item_key=$3 and component=$4",[id,a1.id,itemKey,comp]);
+        await db.query("update inspection_results set is_final=false where task_id=$1 and item_key=$2 and component=$3 and is_final",[id,itemKey,comp]);
+        await db.query("update inspection_results set is_final=true where id=$1",[a1.id]);
         await db.query(`update media_assets set result_id=$1 where result_id=$2 and not exists(select 1 from media_assets m2 where m2.result_id=$1)`,[a1.id,a2.id]);
       } else {
         const nextDetails={...(a2.details??{}),retry_required:true,diff,threshold};
@@ -757,7 +769,11 @@ export async function submitReport(db:DB,actor:Actor,id:string,rev:number,ids:st
         :undefined;
       const derivedCircumference=typeof r.details?.derived_circumference==="number"?r.details.derived_circumference:undefined;
       const englishReason=(typeof r.details?.note_en==="string" && r.details.note_en.trim())?r.details.note_en.trim():r.reason;
+      const reasonZh=typeof r.reason==="string" && hasUntranslatedChinese(r.reason)?r.reason:(typeof r.details?.note_zh==="string"?r.details.note_zh:undefined);
       assertAllowedWording(englishReason,typeof r.typed_value==="string"?r.typed_value:null);
+      const annotations=Array.isArray(r.details?.annotations)
+        ?r.details.annotations.filter((a:unknown)=>a && typeof a==="object" && typeof (a as {x?:unknown}).x==="number" && typeof (a as {y?:unknown}).y==="number")
+        :undefined;
       return {
         item_key:r.item_key,
         component:r.component,
@@ -766,6 +782,7 @@ export async function submitReport(db:DB,actor:Actor,id:string,rev:number,ids:st
         unit:r.unit,
         method:r.method,
         reason:englishReason,
+        ...(reasonZh?{reason_zh:reasonZh}:{}),
         evidence_ids:r.evidence_ids,
         label:check?.label??r.item_key,
         item:single?.code??members.find(m=>m.id===r.component)?.code??r.component,
@@ -774,8 +791,22 @@ export async function submitReport(db:DB,actor:Actor,id:string,rev:number,ids:st
         ...(r.details?.severity?{severity:r.details.severity}:{}),
         ...(r.details?.part_code?{part_code:r.details.part_code}:{}),
         ...(r.details?.uncertain?{uncertain:true}:{}),
+        ...(annotations && annotations.length?{annotations}:{}),
       };
     });
+
+    const sectionShots=(await db.query<{code:string;component:string|null;media_id:string}>(
+      `select shot_code code,component,id media_id from media_assets
+       where task_id=$1 and status='ready' and shot_code is not null
+         and coalesce(component,'main') not in ('group','order')
+       order by component nulls first,shot_code,id`,
+      [t.id]
+    )).rows.map(s=>({
+      code:s.code,
+      component:s.component??"main",
+      item:single?.code??members.find(m=>m.id===s.component)?.code??s.component??"main",
+      media_id:s.media_id,
+    }));
 
     let comparison:{
       diffs:{point_code:string;label:string;unit:string|null;max_minus_min:number|null;display_diff:string}[];
@@ -814,6 +845,7 @@ export async function submitReport(db:DB,actor:Actor,id:string,rev:number,ids:st
         checked_count:t.group_id?members.length:1,
         issue_count:issueCount,
       },
+      ...(sectionShots.length?{shots:sectionShots}:{}),
       ...(comparison?{comparison}:{}),
       results:mappedResults,
     });
@@ -853,12 +885,16 @@ export async function approveReport(db:DB,actor:Actor,id:string,rev:number,check
   const v=await reviewTarget(db,actor,id,rev);
   guard(checklist.includes("reviewed_en")&&checklist.includes("evidence_checked"),
     "REPORT_UNAVAILABLE","Confirm the English text and inspect the evidence before approval.");
+  guard(!hasUntranslatedChinese(v.amend_reason),
+    "ENGLISH_TRANSLATION_REQUIRED",
+    "Amendment reason must be in English before approval.",422);
   for(const section of v.snapshot.sections??[]) {
     for(const res of section.results??[]) {
       assertAllowedWording(res.reason,typeof res.typed_value==="string"?res.typed_value:null);
-      guard(!hasUntranslatedChinese(res.reason) && (typeof res.typed_value!=="string" || !hasUntranslatedChinese(res.typed_value)),
+      const hasChineseAnnotation=Array.isArray(res.annotations) && res.annotations.some((a:{label?:string})=>hasUntranslatedChinese(a?.label));
+      guard(!hasUntranslatedChinese(res.reason) && (typeof res.typed_value!=="string" || !hasUntranslatedChinese(res.typed_value)) && !hasChineseAnnotation,
         "ENGLISH_TRANSLATION_REQUIRED",
-        "Customer-facing report observations and reasons must be reviewed in English before approval.",422);
+        "Customer-facing report observations, annotations, and reasons must be reviewed in English before approval.",422);
     }
   }
   await db.query("update report_versions set state='qa_approved',reviewed_by=$2,reviewed_at=now(),revision=revision+1 where id=$1",[id,actor.id]);
@@ -871,7 +907,7 @@ export async function translateReportCandidate(
   db:DB,
   actor:Actor,
   id:string,
-  input:{revision:number;translations:{section:number;result:number;reason_en:string}[]}
+  input:{revision:number;translations:{section:number;result:number;reason_en:string;annotations_en?:string[]}[]}
 ) {
   const v=await reviewTarget(db,actor,id,input.revision);
   for(const item of input.translations) {
@@ -885,6 +921,16 @@ export async function translateReportCandidate(
       result.reason_zh=result.reason;
     }
     result.reason=cleanEn;
+    if(Array.isArray(item.annotations_en) && Array.isArray(result.annotations)) {
+      result.annotations=result.annotations.map((ann:{label?:string;x:number;y:number;w?:number;h?:number},idx:number)=>{
+        const nextLabel=item.annotations_en?.[idx]?.trim();
+        if(nextLabel) {
+          guard(!hasUntranslatedChinese(nextLabel),"ENGLISH_TRANSLATION_REQUIRED","Annotation labels must be in English.",422);
+          return {...ann,label:nextLabel};
+        }
+        return ann;
+      });
+    }
   }
   await db.query("update report_versions set snapshot=$2,revision=revision+1 where id=$1",[id,v.snapshot]);
   await audit(db,actor,"translate_report_candidate","report_versions",id,{count:input.translations.length});
@@ -1055,12 +1101,20 @@ export async function createReportDispute(
 type ReportResult={
   item:string;label:string;status:string;typed_value:unknown;unit:string|null;reason:string|null;method:string;
   evidence_ids:string[];derived_circumference?:number;within_tolerance?:boolean;
+  severity?:string;part_code?:string;uncertain?:boolean;
+  annotations?:{x:number;y:number;w?:number;h?:number;label?:string}[];
 };
 type Snapshot={
   order_no:string;report_no:string;quote_id:string;
+  not_inspected?:string[];
+  scope_notice?:string;
   sections:{
     title:string;service:string;
-    comparison?:{diffs:{point_code:string;label:string;unit:string|null;max_minus_min:number|null;display_diff:string}[]};
+    shots?:{code:string;component?:string;item?:string;media_id:string}[];
+    comparison?:{
+      diffs:{point_code:string;label:string;unit:string|null;max_minus_min:number|null;display_diff:string}[];
+      order_shots?:{code:string;media_id:string}[];
+    };
     results:ReportResult[];
   }[];
 };
@@ -1079,15 +1133,18 @@ async function renderPDF(db:DB,org:string,snapshot:Snapshot,version:number,amend
     }
   }
   const images=new Map<string,Awaited<ReturnType<typeof doc.embedJpg>>>();
-  async function evidence(id:string) {
+  async function evidence(id:string,caption?:string) {
     let image=images.get(id);
     if(!image) {
-      const file=await one<{data:Buffer}>(db,`select f.data from media_assets m join private_files f on f.key=m.object_key
-        where m.id=$1 and m.org_id=$2 and m.kind='shot' and m.status='ready' and m.result_id is not null`,[id,org]);
+      const file=(await db.query<{data:Buffer}>(`select f.data from media_assets m join private_files f on f.key=m.object_key
+        where m.id=$1 and m.org_id=$2 and m.kind='shot' and m.status='ready'
+          and (m.result_id is not null or m.shot_code is not null or m.point_code is not null)`,[id,org])).rows[0];
+      if(!file) return;
       const preview=await sharp(file.data).resize({width:640,height:480,fit:"inside",withoutEnlargement:true}).jpeg({quality:76}).toBuffer();
       image=await doc.embedJpg(preview);
       images.set(id,image);
     }
+    if(caption) print(`  Photo: ${caption}`,9,false);
     const scale=Math.min(220/image.width,144/image.height,1);
     const {width,height}=image.scale(scale);
     if(y-height<64) {page=newPage();y=790;}
@@ -1097,14 +1154,28 @@ async function renderPDF(db:DB,org:string,snapshot:Snapshot,version:number,amend
   print("QC WAREHOUSE | INSPECTION REPORT",19,true);
   print(`${snapshot.report_no}   Version ${version}   Order ${snapshot.order_no}`,12);
   if(amendReason)print("Amendment: "+amendReason);
-  print("Results relate to the inspected items and scope shown below.");y-=12;
+  print(snapshot.scope_notice||"Results relate to the inspected items and scope shown below.");y-=12;
   for(const s of snapshot.sections) {
     print(s.title,13,true);
+    if(s.shots?.length) {
+      print("Standard Camera Angle Shots:",11,true);
+      for(const shot of s.shots) {
+        await evidence(shot.media_id,`${shot.item??shot.component??"Sample"} - ${shot.code}`);
+      }
+    }
     for(const r of s.results) {
       const circ=typeof r.derived_circumference==="number"?` (Circumference: ${r.derived_circumference} cm)`:"";
       const tol=typeof r.within_tolerance==="boolean"?` [${r.within_tolerance?"Within stated tolerance":"Outside stated tolerance"}]`:"";
-      print(`${r.item} | ${r.label} | ${r.status} ${r.typed_value??""} ${r.unit??""}${circ}${tol} ${r.reason??""}`);
-      for(const id of r.evidence_ids) await evidence(id);
+      const sev=r.severity?` [Severity: ${r.severity}]`:"";
+      const part=r.part_code?` [Part: ${r.part_code}]`:"";
+      const unc=r.uncertain?" [Uncertain - requires verification]":"";
+      print(`${r.item} | ${r.label} | ${r.status} ${r.typed_value??""} ${r.unit??""}${circ}${tol}${sev}${part}${unc} ${r.reason??""}`);
+      if(r.annotations?.length) {
+        for(const ann of r.annotations) {
+          print(`  Defect Marker: (${Math.round(ann.x)}%, ${Math.round(ann.y)}%)${ann.label?` - ${ann.label}`:""}`,9,false);
+        }
+      }
+      for(const id of r.evidence_ids) await evidence(id,`${r.item} - ${r.label}`);
     }
     if(s.comparison?.diffs?.length) {
       print("Comparison differences (max - min):",11,true);
@@ -1112,7 +1183,18 @@ async function renderPDF(db:DB,org:string,snapshot:Snapshot,version:number,amend
         print(`  ${d.label}: ${d.display_diff}${d.max_minus_min!==null && d.unit?" "+d.unit:""}`);
       }
     }
+    if(s.comparison?.order_shots?.length) {
+      print("Side-by-Side Comparison Photos:",11,true);
+      for(const shot of s.comparison.order_shots) {
+        await evidence(shot.media_id,`Comparison - ${shot.code}`);
+      }
+    }
     y-=10;
+  }
+  const notInspected=snapshot.not_inspected?.length?snapshot.not_inspected:DEFAULT_NOT_INSPECTED;
+  print("Scope & Exclusions (Not Inspected):",11,true);
+  for(const line of notInspected) {
+    print(`  - ${line}`,9,false);
   }
   const totalPages=pages.length;
   pages.forEach((p,idx)=>{
@@ -1123,6 +1205,126 @@ async function renderPDF(db:DB,org:string,snapshot:Snapshot,version:number,amend
   });
   return Buffer.from(await doc.save());
 }
+
+export const APPAREL_SUBCATEGORY_TEMPLATES = {
+  tops: {
+    code: "apparel-tops-inspection",
+    subcategory: "tops",
+    title: { en: "Tops & Knitwear Inspection", zh: "上衣/针织衫专项质检" },
+    content: {
+      measurement_policy: { attempts: 2, extra_attempt_on_difference: true, threshold_by_unit: { cm: 0.5, g: 1 } },
+      measure_conditions: "Garment laid flat on standard inspection table without stretching; relaxed for 15 minutes; steel tape calibrated to 0.1 cm.",
+      diagram: "/diagrams/tops.svg",
+      parts: [
+        { code: "collar", label: "Collar / Neckband (领口)" },
+        { code: "shoulder_left", label: "Left Shoulder Seam (左肩缝)" },
+        { code: "shoulder_right", label: "Right Shoulder Seam (右肩缝)" },
+        { code: "chest_front", label: "Front Chest Panel (前胸幅)" },
+        { code: "back_panel", label: "Back Panel (后背幅)" },
+        { code: "sleeve_left", label: "Left Sleeve & Cuff (左袖/袖口)" },
+        { code: "sleeve_right", label: "Right Sleeve & Cuff (右袖/袖口)" },
+        { code: "side_seam", label: "Side Seam (侧缝)" },
+        { code: "hem", label: "Bottom Hem (下摆)" },
+        { code: "care_label", label: "Main / Care Label (主唛/洗水唛)" },
+      ],
+      shots: [
+        { code: "front_full", name: "Front Full Flat Lay", zh: "正面平铺全景", required: true },
+        { code: "back_full", name: "Back Full Flat Lay", zh: "背面平铺全景", required: true },
+        { code: "collar_label", name: "Collar & Size/Brand Label", zh: "领口与主唛微距", required: true },
+        { code: "care_label_shot", name: "Care & Composition Label", zh: "洗水唛与成分标", required: true },
+        { code: "inside_seams", name: "Interior Seam & Overlock", zh: "内里缝线与包边", required: true },
+        { code: "chest_tape_shot", name: "Chest Width Tape Photo", zh: "胸宽拉尺实拍", required: true },
+      ],
+      checks: [
+        { key: "body_length_cm", label: "Front Body Length HPS", zh: "前衣长 (肩顶至下摆)", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, diagram: "/diagrams/tops.svg", required: true, evidence: false, method: "Measure from High Point Shoulder (HPS) vertically down to bottom hem." },
+        { key: "chest_flat_cm", label: "1/2 Chest Width Flat", zh: "平铺半胸围", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, derived: { circumference_cm: "2x" }, diagram: "/diagrams/tops.svg", required: true, evidence: false, method: "Measure straight across chest 2.5cm below armhole seam." },
+        { key: "shoulder_width_cm", label: "Shoulder Width", zh: "肩宽", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, diagram: "/diagrams/tops.svg", required: true, evidence: false, method: "Measure straight from left shoulder point to right shoulder point." },
+        { key: "sleeve_length_cm", label: "Sleeve Length", zh: "袖长", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, diagram: "/diagrams/tops.svg", required: true, evidence: false, method: "Measure from shoulder seam apex along outer sleeve fold to cuff edge." },
+        { key: "hem_flat_cm", label: "1/2 Bottom Hem Width", zh: "平铺下摆宽", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, derived: { circumference_cm: "2x" }, diagram: "/diagrams/tops.svg", required: true, evidence: false, method: "Measure straight across bottom sweep from left edge to right edge." },
+        { key: "neck_opening_cm", label: "Neck Opening Width", zh: "领口宽", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, diagram: "/diagrams/tops.svg", required: true, evidence: false, method: "Measure inside seam-to-seam across collar opening." },
+        { key: "unit_weight_g", label: "Garment Unit Weight", zh: "单件克重", kind: "measurement", type: "number", unit: "g", precision: 0.1, retry_threshold: 1.0, required: true, evidence: false, method: "Weigh single garment unpacked on calibrated digital scale." },
+        { key: "workmanship_seams", label: "Seam & Stitching Workmanship", zh: "车缝与线头外观", kind: "observation", type: "text", required: true, evidence: false, parts: ["collar", "shoulder_left", "shoulder_right", "sleeve_left", "sleeve_right", "side_seam", "hem"], method: "Inspect collar, cuffs, armholes, side seams, and hem for skipped stitches, puckering, or loose threads." },
+        { key: "fabric_surface", label: "Fabric Surface & Stains", zh: "面料外观与污渍", kind: "observation", type: "text", required: true, evidence: false, parts: ["chest_front", "back_panel", "sleeve_left", "sleeve_right"], method: "Check front/back panels under D65 light for oil stains, holes, snags, or shading." },
+        { key: "label_marking_check", label: "Label & Size Marking Accuracy", zh: "唛头与尺码核对", kind: "observation", type: "text", required: true, evidence: false, parts: ["collar", "care_label"], method: "Verify main label, size tag, and care label match order declaration." },
+      ],
+    },
+  },
+  bottoms: {
+    code: "apparel-bottoms-inspection",
+    subcategory: "bottoms",
+    title: { en: "Bottoms, Pants & Leggings Inspection", zh: "裤装/紧身裤专项质检" },
+    content: {
+      measurement_policy: { attempts: 2, extra_attempt_on_difference: true, threshold_by_unit: { cm: 0.5, g: 1 } },
+      measure_conditions: "Garment laid flat on standard inspection table without stretching; relaxed for 15 minutes; steel tape calibrated to 0.1 cm.",
+      diagram: "/diagrams/bottoms.svg",
+      parts: [
+        { code: "waistband", label: "Waistband (腰头)" },
+        { code: "crotch_gusset", label: "Crotch / Gusset Seam (裆部/三角裤裆)" },
+        { code: "hip_panel", label: "Hip / Seat Panel (臀围区)" },
+        { code: "thigh_left", label: "Left Thigh & Inseam (左大腿/内长缝)" },
+        { code: "thigh_right", label: "Right Thigh & Inseam (右大腿/内长缝)" },
+        { code: "outseam", label: "Outer Side Seam (外侧缝)" },
+        { code: "leg_opening", label: "Leg Opening / Ankle Cuff (脚口)" },
+        { code: "care_label", label: "Size / Care Label (尺码/洗水唛)" },
+      ],
+      shots: [
+        { code: "front_full", name: "Front Full Flat Lay", zh: "裤装正面平铺全景", required: true },
+        { code: "back_full", name: "Back Full Flat Lay", zh: "裤装背面平铺全景", required: true },
+        { code: "waistband_label", name: "Waistband & Inner Print/Label", zh: "腰头与尺码唛微距", required: true },
+        { code: "crotch_gusset_shot", name: "Crotch Gusset Flatlock Seam", zh: "裆部四针六线缝合微距", required: true },
+        { code: "waist_inseam_tape", name: "Waist & Inseam Tape Photo", zh: "腰围与内长拉尺实拍", required: true },
+      ],
+      checks: [
+        { key: "waist_flat_cm", label: "1/2 Waist Width Relaxed", zh: "平铺半腰围", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, derived: { circumference_cm: "2x" }, diagram: "/diagrams/bottoms.svg", required: true, evidence: false, method: "Align front and back top edges of waistband; measure straight across." },
+        { key: "hip_flat_cm", label: "1/2 Hip Width Flat", zh: "平铺半臀围", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, derived: { circumference_cm: "2x" }, diagram: "/diagrams/bottoms.svg", required: true, evidence: false, method: "Measure straight across hip at 18cm below top of waistband (or 5cm above crotch)." },
+        { key: "front_rise_cm", label: "Front Rise incl. Waistband", zh: "前浪长", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, diagram: "/diagrams/bottoms.svg", required: true, evidence: false, method: "Measure from top center of front waistband along seam to crotch intersection." },
+        { key: "back_rise_cm", label: "Back Rise incl. Waistband", zh: "后浪长", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, diagram: "/diagrams/bottoms.svg", required: true, evidence: false, method: "Measure from top center of back waistband along seam to crotch intersection." },
+        { key: "inseam_cm", label: "Inseam Length", zh: "内长/裤内长", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, diagram: "/diagrams/bottoms.svg", required: true, evidence: false, method: "Measure from crotch seam intersection along inner leg seam to bottom ankle opening." },
+        { key: "outseam_cm", label: "Outseam Total Length", zh: "外裤长", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, diagram: "/diagrams/bottoms.svg", required: true, evidence: false, method: "Measure from top outer edge of waistband along side to leg opening." },
+        { key: "leg_opening_flat_cm", label: "1/2 Leg Opening Width", zh: "平铺半脚口宽", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, derived: { circumference_cm: "2x" }, diagram: "/diagrams/bottoms.svg", required: true, evidence: false, method: "Measure straight across bottom ankle/leg opening." },
+        { key: "unit_weight_g", label: "Garment Unit Weight", zh: "单件克重", kind: "measurement", type: "number", unit: "g", precision: 0.1, retry_threshold: 1.0, required: true, evidence: false, method: "Weigh single pants/leggings unpacked on calibrated digital scale." },
+        { key: "crotch_flatlock_check", label: "Crotch Gusset & Flatlock Seam", zh: "裆部拼缝与四针六线", kind: "observation", type: "text", required: true, evidence: false, parts: ["waistband", "crotch_gusset", "thigh_left", "thigh_right", "outseam", "leg_opening"], method: "Inspect crotch gusset and flatlock seams under gentle hand tension for grinning or skipped stitches." },
+        { key: "fabric_surface", label: "Fabric Surface & Elasticity Feel", zh: "面料外观与对称度", kind: "observation", type: "text", required: true, evidence: false, parts: ["hip_panel", "thigh_left", "thigh_right", "leg_opening"], method: "Inspect for snags, dye streaks, oil marks, or uneven leg symmetry." },
+      ],
+    },
+  },
+  sports_bra: {
+    code: "apparel-sports-bra-inspection",
+    subcategory: "sports_bra",
+    title: { en: "Sports Bra & Intimate Activewear Inspection", zh: "运动内衣专项质检" },
+    content: {
+      measurement_policy: { attempts: 2, extra_attempt_on_difference: true, threshold_by_unit: { cm: 0.5, g: 1 } },
+      measure_conditions: "Garment laid flat on standard inspection table with removable cups flat inside; steel tape calibrated to 0.1 cm.",
+      diagram: "/diagrams/sports_bra.svg",
+      parts: [
+        { code: "strap_left", label: "Left Shoulder Strap (左肩带)" },
+        { code: "strap_right", label: "Right Shoulder Strap (右肩带)" },
+        { code: "neckline_binding", label: "Neckline / Armhole Binding (领圈/袖笼包边)" },
+        { code: "cup_lining", label: "Inner Cup Lining & Pad Opening (胸垫内胆与插口)" },
+        { code: "removable_pads", label: "Removable Bra Pads Pair (可拆卸胸垫对)" },
+        { code: "underbust_band", label: "Underbust Elastic Band (下扒松紧带)" },
+        { code: "back_strap_cross", label: "Back Cross / Clasp Area (后背交叉带/背扣)" },
+      ],
+      shots: [
+        { code: "front_full", name: "Front Full Flat Lay", zh: "运动内衣正面平铺", required: true },
+        { code: "back_full", name: "Back Full Flat Lay", zh: "运动内衣背面平铺", required: true },
+        { code: "inner_lining_pads", name: "Inner Cup Lining & Pads Removed", zh: "内胆及胸垫取出同框照", required: true },
+        { code: "underbust_tape", name: "Underbust Band Tape Photo", zh: "下扒宽拉尺实拍", required: true },
+      ],
+      checks: [
+        { key: "bust_flat_cm", label: "1/2 Bust Width Flat", zh: "平铺半胸围", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, derived: { circumference_cm: "2x" }, diagram: "/diagrams/sports_bra.svg", required: true, evidence: false, method: "Measure straight across fullest part of chest 2cm below armhole." },
+        { key: "underbust_flat_cm", label: "1/2 Underbust Band Relaxed", zh: "平铺半下扒宽", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, derived: { circumference_cm: "2x" }, diagram: "/diagrams/sports_bra.svg", required: true, evidence: false, method: "Measure straight across bottom edge of elastic underbust band relaxed." },
+        { key: "strap_to_hem_cm", label: "Total Length HPS to Underbust", zh: "肩带顶点至下扒总长", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, diagram: "/diagrams/sports_bra.svg", required: true, evidence: false, method: "Measure vertically from top of shoulder strap to bottom edge of underbust band." },
+        { key: "center_front_height_cm", label: "Center Front Height", zh: "前中高度", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.5, diagram: "/diagrams/sports_bra.svg", required: true, evidence: false, method: "Measure vertically from center front neckline down to bottom edge of band." },
+        { key: "band_height_cm", label: "Underbust Elastic Band Height", zh: "下扒松紧带高度", kind: "measurement", type: "number", unit: "cm", precision: 0.1, retry_threshold: 0.3, diagram: "/diagrams/sports_bra.svg", required: true, evidence: false, method: "Measure vertical height of bottom elastic band." },
+        { key: "unit_weight_g", label: "Garment Unit Weight incl. Pads", zh: "含胸垫单件克重", kind: "measurement", type: "number", unit: "g", precision: 0.1, retry_threshold: 1.0, required: true, evidence: false, method: "Weigh sports bra with both pads inserted on digital scale." },
+        { key: "pad_symmetry_check", label: "Removable Pads Symmetry & Smoothness", zh: "胸垫对称度与平整度", kind: "observation", type: "text", required: true, evidence: false, parts: ["cup_lining", "removable_pads"], method: "Remove pads to inspect for creases, delamination, size mismatch, or rough pocket openings." },
+        { key: "strap_bar_tack_check", label: "Strap Reinforcement & Binding Seams", zh: "肩带打枣加固与包边车缝", kind: "observation", type: "text", required: true, evidence: false, parts: ["strap_left", "strap_right", "neckline_binding", "underbust_band", "back_strap_cross"], method: "Check strap joints, elastic band recovery, and binding seams for skipped stitches." },
+      ],
+    },
+  },
+} as const;
+
 export async function publishReport(db:DB,id:string) {
   const first=await one(db,`select o.org_id from report_versions v join reports r on r.id=v.report_id join orders o on o.id=r.order_id where v.id=$1`,[id]);
   await lock(db,"org:"+first.org_id);

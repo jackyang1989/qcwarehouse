@@ -563,6 +563,19 @@ paths:
                 advice_id:
                   type: string
                   format: uuid
+                outer_condition:
+                  type: string
+                  enum:
+                  - intact
+                  - crushed
+                  - torn
+                  - wet
+                condition_note:
+                  type: string
+                  maxLength: 500
+                location_id:
+                  type: string
+                  format: uuid
               additionalProperties: false
   /staff/packages/{id}/items:
     post:

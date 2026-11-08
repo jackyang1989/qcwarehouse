@@ -32,6 +32,11 @@ export const templateSchema=z.object({
     z.string().min(1).max(40),
     z.object({id:z.string().min(1).max(40),code:z.string().min(1).max(80)}),
   ])).optional(),
+  diagram:z.string().max(200).nullable().optional(),
+  parts:z.array(z.union([
+    z.string().min(1).max(60),
+    z.object({code:z.string().min(1).max(60),label:z.string().min(1).max(120)}),
+  ])).optional(),
   measure_conditions:z.string().max(1000).optional(),
   measurement_policy:z.object({
     attempts:z.number().int().min(1).max(3).default(2),

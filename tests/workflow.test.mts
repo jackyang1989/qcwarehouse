@@ -5386,4 +5386,416 @@ test("parcel post-linking, staff object quick-summary RBAC, item_code incident f
   assert.ok(maskedRow && String(maskedRow.email).includes("***"));
 });
 
+test("warehouse expert audit remediations (AUD-001 to AUD-015) and 12 warehouse regression scenarios",async()=>{
+  const receiving=await staffLogin("receiving");
+  const inspector=await staffLogin("inspector");
+  const reviewer=await staffLogin("reviewer");
+  const {c:cust1,registration:reg1,terms}=await signCustomer();
+  const {c:cust2,registration:reg2}=await signCustomer();
+  const {c:cust3,registration:reg3}=await signCustomer();
+  const termsId=terms.find((t:{kind:string})=>t.kind==="terms").id;
+
+  const {locations}=await receiving.fetch("/staff/desk");
+  const locR01=locations.find((l:{code:string})=>l.code==="R-01")!;
+  const locU01=locations.find((l:{code:string})=>l.code==="U-01")!;
+  const locS01=locations.find((l:{code:string})=>l.code==="S-01")!;
+  const locA01=locations.find((l:{code:string})=>l.code==="A-04-02-01")!;
+  assert.ok(locR01 && locU01 && locS01 && locA01);
+
+  // --- AUD-003, AUD-012, AUD-014: Real QR & Code-128 barcode generation, PNG preview, pixel decode, location labels, and batch verify ---
+  const locLabelPrint=await receiving.fetch("/staff/labels/print",{
+    location_ids:[locR01.id],
+    label_size:"shelf_100x60",
+  });
+  assert.equal(locLabelPrint.label_size,"shelf_100x60");
+  assert.ok(locLabelPrint.preview_png_url);
+  const {image:pngBytes}=await receiving.fetch(`/staff/labels/${locLabelPrint.print_id}/preview.png`);
+  assert.equal(pngBytes.subarray(0,4).toString("hex"),"89504e47");
+
+  const decodedLoc=await receiving.fetch("/staff/scan/decode-image",{
+    image_base64:pngBytes.toString("base64"),
+  });
+  assert.equal(decodedLoc.decoded,true);
+  assert.equal(decodedLoc.code,"R-01");
+  assert.equal(decodedLoc.scan_result.kind,"location");
+  assert.equal(decodedLoc.scan_result.code,"R-01");
+
+  // --- Scenario 2 & AUD-004 & AUD-001: 10 distinct items in a single parcel + outer carton condition + unambiguous sample codes + batch verify ---
+  const catalog=(await cust1.fetch("/catalog")).offers;
+  const topsOffer=catalog.find((o:{sku_code:string})=>o.sku_code==="apparel-sub-tops-inspection-1")
+    ??catalog.find((o:{sku_code:string})=>o.sku_code==="apparel-inspection-1");
+  assert.ok(topsOffer);
+
+  const tenItemsDecl=Array.from({length:10},(_,idx)=>({
+    sample_code:`TOP-${idx+1}`,
+    color_declared:idx%2===0?"Black":"White",
+    size_label:["S","M","L","XL","XXL"][idx%5],
+    supplier_alias:idx<5?"SupplierAlpha":"SupplierBeta",
+    garment_type:"tops",
+  }));
+  const {draft:orderTen}=await createAndPay(cust1,[{
+    category_id:topsOffer.category_id,
+    offer_id:topsOffer.offer_id,
+    quantity:10,
+    items:tenItemsDecl,
+  }],terms);
+
+  const wbTen="SF"+randomUUID().replace(/-/g,"").slice(0,10).toUpperCase();
+  const advTen=await cust1.fetch("/me/parcels",{
+    address_id:reg1.warehouse_address.id,
+    tracking_no:wbTen,
+    carrier_code:"sf",
+    order_ids:[orderTen.id],
+  },"POST",201);
+
+  const pkgTen=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:wbTen,
+    advice_id:advTen.id,
+    carrier_code:"sf",
+    weight_g:3200,
+    outer_condition:"crushed",
+    condition_note:"Outer box corner slightly crushed, inner polybags intact",
+    outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+  const pkgTenView0=await receiving.fetch(`/staff/packages/${pkgTen.id}`);
+  assert.equal(pkgTenView0.parcel.outer_condition,"crushed");
+  assert.equal(pkgTenView0.intake_context.total_declared_qty,10);
+
+  const alphabet="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const makeSampleCode=(seed:number)=>{
+    let n=seed*2654435761>>>0;
+    let s="S-";
+    for(let i=0;i<6;i++) {
+      s+=alphabet[n%alphabet.length];
+      n=Math.floor(n/alphabet.length);
+    }
+    return s;
+  };
+  const tenCodes=Array.from({length:10},(_,i)=>makeSampleCode(i+101));
+  const unpackedTen=await receiving.fetch(`/staff/packages/${pkgTen.id}/items`,{
+    revision:pkgTen.revision,
+    items:tenCodes.map(c=>({code:c,location_id:locR01.id})),
+  },"POST",201);
+  assert.equal(unpackedTen.item_ids.length,10);
+
+  // AUD-004: Reject duplicate sample code reuse
+  const dupCodeErr=await receiving.fetch(`/staff/packages/${pkgTen.id}/items`,{
+    revision:unpackedTen.revision,
+    items:[{code:tenCodes[0],location_id:locR01.id}],
+  },"POST",409);
+  assert.equal(dupCodeErr.error.code,"SAMPLE_CODE_ALREADY_EXISTS");
+
+  // AUD-014: Batch continuous barcode readback verification for all 10 items
+  const batchVer=await receiving.fetch("/staff/labels/verify",{
+    expected_codes:tenCodes,
+    scanned_codes:[...tenCodes].reverse(),
+  });
+  assert.equal(batchVer.verified,true);
+  assert.equal(batchVer.verified_count,10);
+
+  // AUD-005: Verify candidate positions return full multi-attribute details (sample_code, color, size, supplier_alias, garment_type)
+  const firstTenLookup=await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:tenCodes[0]!}));
+  const candTen=firstTenLookup.positions.filter((p:{public_no:string})=>p.public_no===orderTen.public_no);
+  assert.equal(candTen.length,10);
+  assert.equal(candTen[0].sample_code,"TOP-1");
+  assert.equal(candTen[0].color,"Black");
+  assert.equal(candTen[0].size,"S");
+  assert.equal(candTen[0].supplier_alias,"SupplierAlpha");
+  assert.equal(candTen[0].garment_type,"tops");
+
+  // --- Scenario 3 & Scenario 6 & AUD-002: 1 order across 3 parcels arriving in batches + quantity discrepancy ---
+  const {draft:orderMultiParcel}=await createAndPay(cust1,[{
+    category_id:topsOffer.category_id,
+    offer_id:topsOffer.offer_id,
+    quantity:3,
+  }],terms);
+  const wbP1="YT"+randomUUID().replace(/-/g,"").slice(0,10).toUpperCase();
+  const wbP2="YT"+randomUUID().replace(/-/g,"").slice(0,10).toUpperCase();
+  const wbP3="YT"+randomUUID().replace(/-/g,"").slice(0,10).toUpperCase();
+  const advP1=await cust1.fetch("/me/parcels",{address_id:reg1.warehouse_address.id,tracking_no:wbP1,carrier_code:"yto",order_ids:[orderMultiParcel.id]},"POST",201);
+  await cust1.fetch("/me/parcels",{address_id:reg1.warehouse_address.id,tracking_no:wbP2,carrier_code:"yto",order_ids:[orderMultiParcel.id]},"POST",201);
+  await cust1.fetch("/me/parcels",{address_id:reg1.warehouse_address.id,tracking_no:wbP3,carrier_code:"yto",order_ids:[orderMultiParcel.id]},"POST",201);
+
+  const pkgP1=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:wbP1,advice_id:advP1.id,carrier_code:"yto",outer_condition:"intact",outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+  const unpP1=await receiving.fetch(`/staff/packages/${pkgP1.id}/items`,{
+    revision:pkgP1.revision,items:[{code:makeSampleCode(301),location_id:locR01.id}],
+  },"POST",201);
+  const ctxP1=await receiving.fetch("/staff/intake/context?"+new URLSearchParams({package_id:pkgP1.id}));
+  assert.equal(ctxP1.total_declared_qty,3);
+  assert.equal(ctxP1.cumulative_received_qty,1);
+  assert.equal(ctxP1.in_transit_advices_count,2);
+
+  // Record partial shipment in transit (keeps order in awaiting_samples)
+  const partialRes=await receiving.fetch(`/staff/packages/${pkgP1.id}/discrepancy`,{
+    revision:unpP1.revision,
+    order_id:orderMultiParcel.id,
+    discrepancy_type:"partial_shipment_in_transit",
+    expected_qty:3,
+    actual_qty:1,
+    note:"Parcel 1 of 3 arrived with 1 item; 2 parcels still in transit",
+  });
+  assert.equal(partialRes.order_held,false);
+
+  // Now record an actual shortage discrepancy (Scenario 6: holds order and opens QTY- ticket)
+  const shortageRes=await receiving.fetch(`/staff/packages/${pkgP1.id}/discrepancy`,{
+    revision:partialRes.revision,
+    order_id:orderMultiParcel.id,
+    discrepancy_type:"shortage",
+    expected_qty:3,
+    actual_qty:1,
+    note:"Seller confirmed remaining 2 items were out of stock",
+  });
+  assert.equal(shortageRes.order_held,true);
+  assert.ok(String(shortageRes.ticket_no).startsWith("QTY-"));
+
+  // --- Scenario 4 & Scenario 5 & AUD-006: 3 customers arriving simultaneously + unmatched zone guard + double-scan move ---
+  const wbUnmGuard="ZTO"+randomUUID().replace(/-/g,"").slice(0,10).toUpperCase();
+  // Unmatched parcel rejected if staff tries to place it in post_inspection zone A-04-02-01
+  const zoneErr=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:wbUnmGuard,
+    carrier_code:"zto",
+    location_id:locA01.id,
+    outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",409);
+  assert.equal(zoneErr.error.code,"ZONE_PURPOSE_MISMATCH");
+
+  // Unmatched parcel succeeds when placed in unmatched zone U-01
+  const pkgUnmOk=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:wbUnmGuard,
+    carrier_code:"zto",
+    location_id:locU01.id,
+    outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+  assert.equal(pkgUnmOk.state,"unmatched");
+
+  // 3 customers simultaneous arrival without cross-contamination
+  for(const [idx,[cust,reg]] of [[cust1,reg1],[cust2,reg2],[cust3,reg3]].entries() as any) {
+    const wb="SF"+randomUUID().replace(/-/g,"").slice(0,10).toUpperCase();
+    const adv=await cust.fetch("/me/parcels",{address_id:reg.warehouse_address.id,tracking_no:wb,carrier_code:"sf",order_ids:[]},"POST",201);
+    const p=await receiving.fetch("/staff/intake/check-in",{tracking_no:wb,advice_id:adv.id,carrier_code:"sf",outer_media_ids:[await receiving.photo("intake_outer")]},"POST",201);
+    const pv=await receiving.fetch(`/staff/packages/${p.id}`);
+    assert.equal(pv.parcel.receiving_code,reg.receiving_code,`Customer ${idx+1} receiving code isolated`);
+  }
+
+  // AUD-006: Move item enforces scanned_item_code and scanned_location_code when provided
+  const moveScanErr=await receiving.fetch("/staff/storage/move",{
+    item_id:unpackedTen.item_ids[0],
+    revision:1,
+    location_id:locA01.id,
+    scanned_item_code:"S-WRONGCODE",
+    scanned_location_code:locA01.code,
+  },"POST",409);
+  assert.equal(moveScanErr.error.code,"SCAN_CONFIRMATION_MISMATCH");
+
+  const moveScanOk=await receiving.fetch("/staff/storage/move",{
+    item_id:unpackedTen.item_ids[0],
+    revision:1,
+    location_id:locA01.id,
+    scanned_item_code:tenCodes[0],
+    scanned_location_code:locA01.code,
+  });
+  assert.equal(moveScanOk.to_location_code,locA01.code);
+
+  // --- Scenario 1, 7, 8 & AUD-007, AUD-008, AUD-009, AUD-013, AUD-015: Subcategory inspection, 3rd measurement retry, defect annotation, Chinese translation gate, and report/PDF snapshot ---
+  const bottomsOffer=catalog.find((o:{sku_code:string})=>o.sku_code==="apparel-sub-bottoms-inspection-1")!;
+  assert.ok(bottomsOffer);
+  const {draft:orderBottoms}=await createAndPay(cust2,[{
+    category_id:bottomsOffer.category_id,
+    offer_id:bottomsOffer.offer_id,
+    quantity:1,
+    items:[{sample_code:"PANT-01",color_declared:"Charcoal",size_label:"L",supplier_alias:"PantsFactory",garment_type:"bottoms"}],
+  }],terms);
+  const wbBot="JD"+randomUUID().replace(/-/g,"").slice(0,10).toUpperCase();
+  const advBot=await cust2.fetch("/me/parcels",{address_id:reg2.warehouse_address.id,tracking_no:wbBot,carrier_code:"jd",order_ids:[orderBottoms.id]},"POST",201);
+  const pkgBot=await receiving.fetch("/staff/intake/check-in",{tracking_no:wbBot,advice_id:advBot.id,carrier_code:"jd",outer_media_ids:[await receiving.photo("intake_outer")]},"POST",201);
+  const botCode=makeSampleCode(501);
+  const unpBot=await receiving.fetch(`/staff/packages/${pkgBot.id}/items`,{revision:pkgBot.revision,items:[{code:botCode,location_id:locR01.id}]},"POST",201);
+  const botItemId=unpBot.item_ids[0];
+  const botLookup=await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:botCode}));
+  const botPos=botLookup.positions.find((p:{public_no:string})=>p.public_no===orderBottoms.public_no)!;
+  await receiving.fetch(`/staff/items/${botItemId}/assign`,{
+    revision:1,order_line_id:botPos.order_line_id,expected_item_id:botPos.id,evidence_ids:[await receiving.photo("label_photo")],
+  });
+
+  const botTasks=(await inspector.fetch("/staff/desk")).tasks.filter((t:{order_id:string})=>t.order_id===orderBottoms.id);
+  assert.equal(botTasks.length,1);
+  const botTask=botTasks[0];
+  const startedBot=await inspector.fetch(`/staff/inspection-tasks/${botTask.id}/start`,{revision:botTask.revision});
+
+  // AUD-007: Item shows inspection_stage === "in_inspection" while task is IN_PROGRESS
+  const botDuringInsp=await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:botCode}));
+  assert.equal(botDuringInsp.item.inspection_stage,"in_inspection");
+
+  // AUD-008: Verify bottoms template has diagram /diagrams/bottoms.svg and pants-specific checks (waist_flat_cm, inseam_cm) and NOT chest_flat_cm
+  const botDetail=await inspector.fetch(`/staff/inspection-tasks/${botTask.id}`);
+  assert.equal(botDetail.content.diagram,"/diagrams/bottoms.svg");
+  const checkKeys=botDetail.content.checks.map((c:{key:string})=>c.key);
+  assert.ok(checkKeys.includes("waist_flat_cm") && checkKeys.includes("inseam_cm"));
+  assert.ok(!checkKeys.includes("chest_flat_cm"));
+
+  // Scenario 7: 2 measurements differing by > 0.5cm trigger retry_required, 3rd measurement resolves
+  const waistCheck=botDetail.content.checks.find((c:{key:string})=>c.key==="waist_flat_cm")!;
+  let rev=startedBot.revision;
+  const r1=await inspector.fetch(`/staff/inspection-tasks/${botTask.id}/results`,{
+    revision:rev,
+    results:[
+      {item_key:"waist_flat_cm",component:"main",attempt:1,status:"RECORDED",typed_value:40.0,unit:"cm",is_final:false,method:waistCheck.method},
+      {item_key:"waist_flat_cm",component:"main",attempt:2,status:"RECORDED",typed_value:41.2,unit:"cm",is_final:true,method:waistCheck.method},
+    ],
+  },"PUT");
+  rev=r1.revision;
+  const afterTwo=await inspector.fetch(`/staff/inspection-tasks/${botTask.id}`);
+  const waistAttempt2=afterTwo.results.find((r:{item_key:string;attempt:number})=>r.item_key==="waist_flat_cm"&&r.attempt===2);
+  assert.equal(waistAttempt2.details.retry_required,true);
+
+  // Record 3rd attempt and remaining checks + Scenario 8 & AUD-015 non-destructive defect annotation + Chinese reason
+  const defectPhotoId=await inspector.photo("shot");
+  const otherResults=botDetail.content.checks.flatMap((c:{key:string;type:string;unit?:string;method:string})=>{
+    if(c.key==="waist_flat_cm") {
+      return [{item_key:"waist_flat_cm",component:"main",attempt:3,status:"RECORDED",typed_value:40.2,unit:"cm",is_final:true,method:c.method}];
+    }
+    if(c.key==="crotch_flatlock_check") {
+      return [{
+        item_key:c.key,
+        component:"main",
+        attempt:1,
+        status:"OBSERVED_ISSUE",
+        is_final:true,
+        method:c.method,
+        reason:"裤脚内侧缝线跳针 1.5cm",
+        details:{
+          severity:"material_issue",
+          part_code:"leg_opening",
+          annotations:[{x:42.5,y:68.0,w:16,h:16,label:"Skipped stitch at cuff hem"}],
+        },
+        evidence_ids:[defectPhotoId],
+      }];
+    }
+    if(c.type==="number") {
+      return [
+        {item_key:c.key,component:"main",attempt:1,status:"RECORDED",typed_value:50,unit:c.unit??"cm",is_final:false,method:c.method},
+        {item_key:c.key,component:"main",attempt:2,status:"RECORDED",typed_value:50,unit:c.unit??"cm",is_final:true,method:c.method},
+      ];
+    }
+    return [{
+      item_key:c.key,
+      component:"main",
+      attempt:1,
+      status:"NOT_OBSERVED",
+      is_final:true,
+      method:c.method,
+    }];
+  });
+  const r2=await inspector.fetch(`/staff/inspection-tasks/${botTask.id}/results`,{revision:rev,results:otherResults},"PUT");
+  rev=r2.revision;
+
+  // Upload all required component shots
+  const shotPhotoIds:string[]=[];
+  for(const s of botDetail.content.shots) {
+    const sid=await inspector.photo("shot");
+    shotPhotoIds.push(sid);
+    const sr=await inspector.fetch(`/staff/inspection-tasks/${botTask.id}/shots`,{
+      revision:rev,component:"main",shot_code:s.code,media_id:sid,
+    });
+    rev=sr.revision;
+  }
+  await inspector.fetch(`/staff/inspection-tasks/${botTask.id}/submit`,{revision:rev});
+
+  // AUD-007: Item now shows inspection_stage === "inspected"
+  const botAfterInsp=await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:botCode}));
+  assert.equal(botAfterInsp.item.inspection_stage,"inspected");
+
+  const botTaskFresh=await inspector.fetch(`/staff/inspection-tasks/${botTask.id}`);
+  const subRep=await inspector.fetch(`/staff/orders/${orderBottoms.id}/report/submit`,{
+    revision:botTaskFresh.order_revision,
+    task_ids:[botTask.id],
+  });
+
+  // AUD-013: Reviewer approval blocked while untranslated Chinese remains in reason
+  const zhBlockErr=await reviewer.fetch(`/staff/reports/${subRep.id}/approve`,{
+    revision:1,
+    checklist:["reviewed_en","evidence_checked"],
+  },"POST",422);
+  assert.equal(zhBlockErr.error.code,"ENGLISH_TRANSLATION_REQUIRED");
+
+  // Reviewer translates Chinese note to English via PATCH /staff/reports/:id/candidate
+  const repView0=await reviewer.fetch(`/staff/reports/${subRep.id}`);
+  const sec0=repView0.snapshot.sections[0];
+  const seamIdx=sec0.results.findIndex((r:{item_key:string})=>r.item_key==="crotch_flatlock_check");
+  assert.ok(seamIdx>=0);
+  assert.equal(sec0.results[seamIdx].reason_zh,"裤脚内侧缝线跳针 1.5cm");
+  const trRes=await reviewer.fetch(`/staff/reports/${subRep.id}/candidate`,{
+    revision:repView0.revision,
+    translations:[{section:0,result:seamIdx,reason_en:"1.5cm skipped stitch observed along inner cuff hem"}],
+  },"PATCH");
+
+  // Approve and publish report
+  await reviewer.fetch(`/staff/reports/${subRep.id}/approve`,{
+    revision:trRes.revision,
+    checklist:["reviewed_en","evidence_checked"],
+  },"POST",202);
+  for(let i=0;i<50;i++){if(!await workOnce())break;}
+
+  // AUD-009 & AUD-015: Customer online report and PDF contain shots, annotations, reason_en, and media auth works for owner & blocks cross-tenant
+  const custRep=await cust2.fetch(`/orders/${orderBottoms.id}/report`);
+  const custSec=custRep.snapshot.sections[0];
+  assert.ok(Array.isArray(custSec.shots) && custSec.shots.length===botDetail.content.shots.length);
+  const custSeam=custSec.results.find((r:{item_key:string})=>r.item_key==="crotch_flatlock_check");
+  assert.equal(custSeam.reason,"1.5cm skipped stitch observed along inner cuff hem");
+  assert.equal(custSeam.annotations.length,1);
+  assert.equal(custSeam.annotations[0].label,"Skipped stitch at cuff hem");
+
+  // Customer 2 can read their mandatory camera angle shot; Customer 1 gets 404
+  const ownerShotUrl=await cust2.fetch(`/media/${shotPhotoIds[0]}`);
+  assert.ok(ownerShotUrl.image.length>0);
+  await cust1.fetch(`/media/${shotPhotoIds[0]}`,undefined,"GET",404);
+
+  // --- Scenario 11 & Scenario 12 & AUD-010: Same-customer same-seller return consolidation vs cross-seller / cross-customer rejection ---
+  // Assign 3 items from orderTen: item 0 & item 1 (both SupplierAlpha), item 5 (SupplierBeta)
+  const item0Id=unpackedTen.item_ids[0];
+  const item1Id=unpackedTen.item_ids[1];
+  const item5Id=unpackedTen.item_ids[5];
+
+  const pos0=candTen.find((p:{position:number})=>p.position===1)!;
+  const pos1=candTen.find((p:{position:number})=>p.position===2)!;
+  const pos5=candTen.find((p:{position:number})=>p.position===6)!;
+
+  const revItem0=(await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:tenCodes[0]!}))).item.revision;
+  await receiving.fetch(`/staff/items/${item0Id}/assign`,{revision:revItem0,order_line_id:pos0.order_line_id,expected_item_id:pos0.id,evidence_ids:[await receiving.photo("label_photo")]});
+  await receiving.fetch(`/staff/items/${item1Id}/assign`,{revision:1,order_line_id:pos1.order_line_id,expected_item_id:pos1.id,evidence_ids:[await receiving.photo("label_photo")]});
+  await receiving.fetch(`/staff/items/${item5Id}/assign`,{revision:1,order_line_id:pos5.order_line_id,expected_item_id:pos5.id,evidence_ids:[await receiving.photo("label_photo")]});
+
+  // Cancel orderTen so items become eligible for post-order disposition immediately
+  const orderTenDetail=await cust1.fetch(`/orders/${orderTen.id}`);
+  await cust1.fetch(`/orders/${orderTen.id}/cancel`,{revision:orderTenDetail.revision});
+
+  const sameReturnDest={recipient:"SupplierAlpha Returns",phone:"13811112222",address:"Room 301, Apparel Park, Hangzhou"};
+  const d0=await cust1.fetch(`/orders/${orderTen.id}/dispositions`,{
+    item_id:item0Id,action:"return_to_seller",destination:sameReturnDest,
+    return_info:{requested_from_seller:true,customer_pays_shipping:true},terms_version_id:termsId,
+  },"POST",201);
+  const d1=await cust1.fetch(`/orders/${orderTen.id}/dispositions`,{
+    item_id:item1Id,action:"return_to_seller",destination:sameReturnDest,
+    return_info:{requested_from_seller:true,customer_pays_shipping:true},terms_version_id:termsId,
+  },"POST",201);
+  const d5=await cust1.fetch(`/orders/${orderTen.id}/dispositions`,{
+    item_id:item5Id,action:"return_to_seller",destination:sameReturnDest,
+    return_info:{requested_from_seller:true,customer_pays_shipping:true},terms_version_id:termsId,
+  },"POST",201);
+
+  // Different seller (SupplierAlpha vs SupplierBeta) cannot be consolidated even if return address is identical
+  const diffSellerErr=await cust1.fetch("/dispatch-batches",{
+    disposition_ids:[d0.id,d5.id],
+  },"POST",409);
+  assert.equal(diffSellerErr.error.code,"BATCH_MISMATCH");
+
+  // Same customer, same seller (SupplierAlpha), same return destination -> consolidates into 1 return batch!
+  const consolidatedReturnBatch=await cust1.fetch("/dispatch-batches",{
+    disposition_ids:[d0.id,d1.id],
+  },"POST",201);
+  assert.ok(consolidatedReturnBatch.batch_id);
+});
+
 test("all core operations have a validated success response",assertCoreCoverage);

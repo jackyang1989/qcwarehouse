@@ -28,7 +28,7 @@ export async function assertItemNotFrozen(db:DB,itemIds:string[],errorCode="ITEM
 }
 
 async function lockedLocation(db:DB,id:string) {
-  const location=await one<{active:boolean;capacity:number|null}>(db,"select active,capacity from storage_locations where id=$1 for update",[id]);
+  const location=await one<{id:string;code:string;zone:string;active:boolean;capacity:number|null}>(db,"select id,code,zone,active,capacity from storage_locations where id=$1 for update",[id]);
   const count=await one<{n:number}>(db,`select count(*)::int n from warehouse_items w where w.location_id=$1 and ${occupied}`,[id]);
   return {...location,occupied:count.n};
 }
@@ -36,6 +36,38 @@ export async function requireSpace(db:DB,id:string,quantity:number) {
   const location=await lockedLocation(db,id);
   guard(location.active,"LOCATION_INACTIVE","This storage location is disabled.");
   guard(location.capacity===null||location.occupied+quantity<=location.capacity,"LOCATION_FULL","This storage location does not have enough free space.");
+  return location;
+}
+export async function assertZonePurpose(
+  db:DB,
+  locationId:string,
+  context:{
+    hasOwner:boolean;
+    quarantined?:boolean;
+    isReferenceSample?:boolean;
+    allowReferenceZone?:boolean;
+  }
+) {
+  const loc=await one<{id:string;code:string;zone:string;active:boolean}>(
+    db,
+    "select id,code,zone,active from storage_locations where id=$1",
+    [locationId]
+  );
+  guard(loc.active,"LOCATION_INACTIVE","This storage location is disabled.");
+  if(context.quarantined) {
+    guard(loc.zone==="quarantine","ZONE_PURPOSE_MISMATCH",`Quarantined items must be placed in a quarantine zone location (selected ${loc.code} is ${loc.zone}).`,409);
+    return loc;
+  }
+  if(!context.hasOwner) {
+    guard(["unmatched","receiving","quarantine"].includes(loc.zone),"ZONE_PURPOSE_MISMATCH",`Unclaimed items without verified ownership must be placed in unmatched, receiving, or quarantine locations (selected ${loc.code} is ${loc.zone}).`,409);
+    return loc;
+  }
+  guard(loc.zone!=="quarantine","ZONE_PURPOSE_MISMATCH",`Regular items cannot be placed in quarantine location ${loc.code}; use the quarantine workflow.`,409);
+  guard(loc.zone!=="unmatched","ZONE_PURPOSE_MISMATCH",`Verified customer items cannot be placed in unmatched location ${loc.code}.`,409);
+  if(loc.zone==="reference" && !context.allowReferenceZone) {
+    guard(Boolean(context.isReferenceSample),"ZONE_PURPOSE_MISMATCH",`Only active Golden Samples (reference samples) may be stored in reference zone location ${loc.code}.`,409);
+  }
+  return loc;
 }
 export async function locationMaster(db:DB,actor:Actor) {
   role(actor,...staffAccess.locations);
@@ -70,8 +102,10 @@ export async function setLocationActive(db:DB,actor:Actor,id:string,active:boole
 }
 export async function storageMovementDesk(db:DB,actor:Actor) {
   role(actor,...staffAccess.intake);
-  const {rows:locations}=await db.query("select id,code,zone from storage_locations where active order by code");
-  const {rows:moves}=await db.query(`select e.id,w.code,origin.code origin,destination.code destination,u.display_name operator,e.created_at
+  const {rows:locations}=await db.query(`select l.id,l.code,l.zone,l.capacity,l.notes,
+    (select count(*)::int from warehouse_items w where w.location_id=l.id and ${occupied}) occupied
+    from storage_locations l where l.active order by l.code`);
+  const {rows:moves}=await db.query(`select e.id,w.code,origin.code origin,origin.zone origin_zone,destination.code destination,destination.zone destination_zone,u.display_name operator,e.created_at
     from storage_events e join warehouse_items w on w.id=e.item_id join users u on u.id=e.operator_id
     left join storage_locations origin on origin.id=e.from_location_id
     left join storage_locations destination on destination.id=e.to_location_id

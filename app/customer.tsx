@@ -1813,12 +1813,12 @@ export function ReportView({number,version}:{number:string;version?:number}) {
   const l=useLoad("/orders/by-number/"+number),id=l.data?.id;
   const base=id?"/orders/"+id+"/report":null;
   const r=useLoad(base&&version?base+"/versions/"+version:base);
-  const [lightbox,setLightbox]=useState<{ids:string[];labels:string[];index:number}|null>(null);
+  const [lightbox,setLightbox]=useState<{ids:string[];labels:string[];annotations?:Row[];index:number}|null>(null);
   const [disputeTicket,setDisputeTicket]=useState<string>();
   const reportPath="/orders/"+number+"/report";
   const report=r.data;
-  function showPhoto(ids:string[],labels:string[],index:number) {
-    setLightbox({ids,labels,index});
+  function showPhoto(ids:string[],labels:string[],index:number,annotations?:Row[]) {
+    setLightbox({ids,labels,annotations,index});
   }
   const allCheckpoints:Row[]=report?.snapshot?.sections?.flatMap((s:Row)=>s.results??[])??[];
   return <>
@@ -1877,25 +1877,57 @@ export function ReportView({number,version}:{number:string;version?:number}) {
         {disputeTicket&&<p className="notice" role="status">Report dispute case <strong className="code">{disputeTicket}</strong> is open and linked to version {report.version}.</p>}
       </Panel>}
     </>}
-    {lightbox&&<MediaLightbox ids={lightbox.ids} labels={lightbox.labels} initialIndex={lightbox.index} onClose={()=>setLightbox(null)}/>}
+    {lightbox&&<MediaLightbox ids={lightbox.ids} labels={lightbox.labels} annotations={lightbox.annotations as any} initialIndex={lightbox.index} onClose={()=>setLightbox(null)}/>}
   </>;
 }
-function ReportSection({section,results,grouped,showPhoto}:{section:Row;results:Row[];grouped:boolean;showPhoto:(ids:string[],labels:string[],index:number)=>void}) {
+function ReportSection({section,results,grouped,showPhoto}:{section:Row;results:Row[];grouped:boolean;showPhoto:(ids:string[],labels:string[],index:number,annotations?:Row[])=>void}) {
   const result=(x:Row)=>{
     const base=[x.typed_value!=null?String(x.typed_value):label(x.status.toLowerCase()),x.unit,x.reason].filter(Boolean).join(" · ");
     const circ=typeof x.derived_circumference==="number"?` (Circumference: ${x.derived_circumference} cm)`:"";
     const tol=typeof x.within_tolerance==="boolean"?` · ${x.within_tolerance?"Within stated tolerance":"Outside stated tolerance"}`:"";
-    return base+circ+tol;
+    const ann=Array.isArray(x.annotations)&&x.annotations.length>0?` · [Annotated regions: ${x.annotations.map((a:Row)=>a.label||"Defect").join(", ")}]`:"";
+    return base+circ+tol+ann;
   };
   const evidence=(x:Row)=>{
     const ids:string[]=x.evidence_ids??[];
     const labels=ids.map((_,idx)=>`${x.label} · ${x.item} (${idx+1}/${ids.length})`);
+    const anns=Array.isArray(x.annotations)?x.annotations:[];
     return ids.map((m:string,idx:number)=><button className="evidence-open" type="button" key={m}
-      aria-label={`View ${x.label} evidence for ${x.item}`} onClick={()=>showPhoto(ids,labels,idx)}>
+      aria-label={`View ${x.label} evidence for ${x.item}`} onClick={()=>showPhoto(ids,labels,idx,anns)}>
       <img className="thumb" src={"/api/v1/media/"+m} alt="" loading="lazy"/></button>);
   };
-  if(!grouped) return <Table headers={["Item","Check","Result","Method","Evidence"]}
-    rows={results.map(x=>[x.item,x.label,result(x),x.method,evidence(x)])}/>;
+  const shotsBlock=(section.shots?.length??0)>0&&<div className="card" style={{marginTop:12}}>
+    <strong>Standard Camera Angle Photos ({section.shots.length})</strong>
+    <div className="actions" style={{marginTop:8,flexWrap:"wrap"}}>
+      {section.shots.map((sh:Row,idx:number)=>{
+        const allIds=section.shots.map((s:Row)=>s.media_id);
+        const allLabels=section.shots.map((s:Row)=>`${s.item??""} · ${s.label??s.shot_code}`);
+        return <button key={sh.media_id+"-"+idx} type="button" className="evidence-open" onClick={()=>showPhoto(allIds,allLabels,idx)}>
+          <img className="thumb" src={"/api/v1/media/"+sh.media_id} alt={sh.label??sh.shot_code} loading="lazy"/>
+          <small className="code" style={{display:"block"}}>{sh.item?`${sh.item} · `:""}{sh.label??sh.shot_code}</small>
+        </button>;
+      })}
+    </div>
+  </div>;
+  const orderShotsBlock=(section.comparison?.order_shots?.length??0)>0&&<div className="card" style={{marginTop:12}}>
+    <strong>Side-by-Side Comparison Photos ({section.comparison.order_shots.length})</strong>
+    <div className="actions" style={{marginTop:8,flexWrap:"wrap"}}>
+      {section.comparison.order_shots.map((sh:Row,idx:number)=>{
+        const allIds=section.comparison.order_shots.map((s:Row)=>s.media_id);
+        const allLabels=section.comparison.order_shots.map((s:Row)=>`Side-by-Side · ${s.shot_code}`);
+        return <button key={sh.media_id+"-"+idx} type="button" className="evidence-open" onClick={()=>showPhoto(allIds,allLabels,idx)}>
+          <img className="thumb" src={"/api/v1/media/"+sh.media_id} alt={sh.shot_code} loading="lazy"/>
+          <small className="code" style={{display:"block"}}>{sh.shot_code}</small>
+        </button>;
+      })}
+    </div>
+  </div>;
+  if(!grouped) return <>
+    <Table headers={["Item","Check","Result","Method","Evidence"]}
+      rows={results.map(x=>[x.item,x.label,result(x),x.method,evidence(x)])}/>
+    {shotsBlock}
+    {orderShotsBlock}
+  </>;
   const items=[...new Set(results.map(x=>String(x.item)))];
   const checks=new Map<string,Row>();
   for(const x of results) checks.set(x.item_key,x);
@@ -1913,6 +1945,8 @@ function ReportSection({section,results,grouped,showPhoto}:{section:Row;results:
         <span className="code">{diffLabel}</span>,
       ];
     })}/>
+    {shotsBlock}
+    {orderShotsBlock}
   </div>;
 }
 export function TrackView({kind,id,embedded=false}:{kind:"parcels"|"shipments";id:string;embedded?:boolean}) {

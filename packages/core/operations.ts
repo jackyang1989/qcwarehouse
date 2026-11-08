@@ -480,6 +480,9 @@ export async function updateCategoryStatus(db:DB,actor:Actor,id:string,input:{
   }
   const updated=await one(db,`update categories set status=$2,admission_snapshot=$3,revision=revision+1
     where id=$1 returning id,slug,labels,status,revision,admission_snapshot`,[id,input.status,nextAdmission]);
+  if(updated.slug==="apparel" && input.status==="ACTIVE") {
+    await db.query("select ensure_apparel_subcategory_catalog()");
+  }
   await audit(db,actor,"update_category_status","categories",id,{code:cat.slug,active:input.status==="ACTIVE"});
   return updated;
 }
@@ -532,7 +535,7 @@ export async function moveItem(
   id:string,
   rev:number,
   location:string,
-  options?:{scanned_item_code?:string;scanned_location_code?:string}
+  options?:{scanned_item_code?:string;scanned_location_code?:string;seal_code?:string}
 ) {
   role(actor,"receiver","warehouse_admin");
   const initial=await one(db,"select org_id from warehouse_items where id=$1",[id]);
@@ -550,11 +553,18 @@ export async function moveItem(
       409
     );
   }
-  const activeRef=(await db.query("select 1 from reference_samples where item_id=$1 and state='active' limit 1",[id])).rowCount;
+  const refRow=(await db.query<{id:string;state:string;authorization_snapshot:Record<string,unknown>|null}>(
+    "select id,state,authorization_snapshot from reference_samples where item_id=$1 and state in ('active','pending_safe_storage') order by revision desc limit 1",
+    [id]
+  )).rows[0]??null;
+  const dispRow=(await db.query<{id:string;created_by:string;authorization_snapshot:Record<string,unknown>|null}>(
+    "select id,created_by,authorization_snapshot from disposition_requests where item_id=$1 and action='reserve_reference' and state='requested' order by revision desc limit 1",
+    [id]
+  )).rows[0]??null;
   const targetLoc=await assertZonePurpose(db,location,{
     hasOwner:Boolean(w.org_id),
     quarantined:w.identity_state==="quarantined" || w.condition_state==="restricted",
-    isReferenceSample:Boolean(activeRef),
+    isReferenceSample:Boolean(refRow || dispRow),
   });
   if(options?.scanned_location_code) {
     guard(
@@ -567,6 +577,92 @@ export async function moveItem(
   await requireSpace(db,location,1);
   await db.query("update warehouse_items set location_id=$2,revision=revision+1 where id=$1",[id,location]);
   await db.query("insert into storage_events(item_id,from_location_id,to_location_id,action,operator_id) values($1,$2,$3,'move',$4)",[id,w.location_id,location,actor.id]);
+
+  let referenceActivated=false;
+  let sealCode:string|null=null;
+  if(targetLoc.zone==="reference" && (refRow?.state==="pending_safe_storage" || dispRow)) {
+    const expectedSeal=String(refRow?.authorization_snapshot?.seal_code ?? dispRow?.authorization_snapshot?.seal_code ?? "").trim();
+    if(options?.seal_code?.trim() && expectedSeal && options.seal_code.trim().toUpperCase()!==expectedSeal.toUpperCase()) {
+      guard(
+        false,
+        "SEAL_CODE_MISMATCH",
+        `Scanned tamper-evident seal code (${options.seal_code.trim()}) does not match assigned Golden Sample seal (${expectedSeal}).`,
+        409
+      );
+    }
+    sealCode=(
+      options?.seal_code?.trim() ||
+      expectedSeal ||
+      `GS-${new Date().toISOString().slice(0,10).replace(/-/g,"")}-${id.slice(0,6).toUpperCase()}`
+    );
+    const metaPatch=JSON.stringify({
+      seal_code:sealCode,
+      sealed_at:new Date().toISOString(),
+      sealed_by:actor.id,
+      safe_location_code:targetLoc.code,
+    });
+    if(refRow) {
+      await db.query(
+        `update reference_samples
+         set state='active',
+             authorization_snapshot=coalesce(authorization_snapshot,'{}'::jsonb)||$2::jsonb
+         where id=$1`,
+        [refRow.id,metaPatch]
+      );
+    }
+    if(dispRow) {
+      await db.query(
+        `update disposition_requests
+         set state='completed',
+             revision=revision+1,
+             authorization_snapshot=coalesce(authorization_snapshot,'{}'::jsonb)||$2::jsonb
+         where id=$1`,
+        [dispRow.id,metaPatch]
+      );
+    }
+    referenceActivated=true;
+    const linkedOrder=(await db.query<{order_id:string}>(
+      `select l.order_id from order_line_item_links a join order_lines l on l.id=a.order_line_id
+       where a.item_id=$1 and a.unlinked_at is null limit 1`,
+      [id]
+    )).rows[0]?.order_id ?? (typeof dispRow?.authorization_snapshot?.order_id==="string"?dispRow.authorization_snapshot.order_id:null);
+    if(linkedOrder) {
+      const open=(await db.query(
+        `select 1 from order_lines l join order_line_item_links a on a.order_line_id=l.id and a.unlinked_at is null
+         left join disposition_requests d on d.item_id=a.item_id and d.state='completed'
+         where l.order_id=$1 and d.id is null`,
+        [linkedOrder]
+      )).rowCount;
+      if(!open) {
+        await db.query("update orders set state='closed',revision=revision+1 where id=$1 and state='action_pending'",[linkedOrder]);
+      }
+    }
+    const notifyUserId=dispRow?.created_by ?? (
+      w.org_id?(await db.query<{user_id:string}>("select user_id from org_memberships where org_id=$1 order by created_at limit 1",[w.org_id])).rows[0]?.user_id:null
+    );
+    if(notifyUserId) {
+      await db.query(
+        `insert into notifications(id,user_id,order_id,template,locale,payload,dedupe_key)
+         values($1,$2,$3,'reference.sealed','en',$4::jsonb,$5)
+         on conflict(dedupe_key) do nothing`,
+        [
+          uuid(),
+          notifyUserId,
+          linkedOrder??null,
+          JSON.stringify({
+            item_id:id,
+            item_code:w.code,
+            seal_code:sealCode,
+            location_code:targetLoc.code,
+            reference_id:refRow?.id??null,
+          }),
+          `reference.sealed:${refRow?.id??id}:${sealCode}`,
+        ]
+      );
+    }
+    await event(db,"reference.sealed",{item_id:id,item_code:w.code,seal_code:sealCode,location_code:targetLoc.code});
+  }
+
   await audit(db,actor,"move_item","warehouse_items",id,{
     from_location_id:w.location_id,
     location_id:location,
@@ -574,8 +670,15 @@ export async function moveItem(
     to_zone:targetLoc.zone,
     ...(options?.scanned_item_code?{scanned_item_code:options.scanned_item_code.trim().toUpperCase()}:{}),
     ...(options?.scanned_location_code?{scanned_location_code:options.scanned_location_code.trim().toUpperCase()}:{}),
+    ...(sealCode?{seal_code:sealCode,reference_activated:referenceActivated}:{}),
   });
-  return {id,revision:rev+1,to_location_code:targetLoc.code,to_zone:targetLoc.zone};
+  return {
+    id,
+    revision:rev+1,
+    to_location_code:targetLoc.code,
+    to_zone:targetLoc.zone,
+    ...(referenceActivated?{reference_activated:true,reference_state:"active",seal_code:sealCode}:{}),
+  };
 }
 export type ScopeAddition={order_line_id:string;count:number;declared_fields?:Record<string,unknown>[]};
 export async function scopeProposal(

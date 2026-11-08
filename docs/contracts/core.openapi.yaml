@@ -732,6 +732,14 @@ paths:
                     type: string
                     format: uuid
                   minItems: 1
+                force_tracking_mismatch:
+                  type: boolean
+                force_size_mismatch:
+                  type: boolean
+                override_reason:
+                  type: string
+                  minLength: 2
+                  maxLength: 500
               additionalProperties: false
   /staff/inspection-tasks/{id}/start:
     post:
@@ -1113,6 +1121,9 @@ paths:
                   type: integer
                   minimum: 1
                   maximum: 365
+                condition_note:
+                  type: string
+                  maxLength: 500
                 destination:
                   type: object
                   properties:
@@ -1146,6 +1157,18 @@ paths:
                     deadline:
                       type: string
                       format: date-time
+                    seller_id:
+                      type: string
+                      minLength: 1
+                    seller_name:
+                      type: string
+                      minLength: 1
+                    seller_phone:
+                      type: string
+                      minLength: 1
+                    rma_no:
+                      type: string
+                      minLength: 1
                   additionalProperties: false
               additionalProperties: false
               allOf:
@@ -1877,6 +1900,9 @@ paths:
                   type: integer
                   minimum: 1
                   maximum: 365
+                condition_note:
+                  type: string
+                  maxLength: 500
                 destination:
                   type: object
                   properties:
@@ -1910,6 +1936,18 @@ paths:
                     deadline:
                       type: string
                       format: date-time
+                    seller_id:
+                      type: string
+                      minLength: 1
+                    seller_name:
+                      type: string
+                      minLength: 1
+                    seller_phone:
+                      type: string
+                      minLength: 1
+                    rma_no:
+                      type: string
+                      minLength: 1
                   additionalProperties: false
               additionalProperties: false
               allOf:
@@ -2008,6 +2046,14 @@ paths:
                         expires_at:
                           type: string
                           format: date-time
+                        seal_code:
+                          type:
+                          - string
+                          - 'null'
+                        safe_location_code:
+                          type:
+                          - string
+                          - 'null'
                       additionalProperties: false
                     minItems: 0
                 additionalProperties: false

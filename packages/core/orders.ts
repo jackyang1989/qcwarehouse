@@ -27,6 +27,7 @@ export const templateShotSchema = z.object({
   required_if:z.record(z.string(),z.unknown()).optional(),
 });
 export const templateSchema=z.object({
+  subcategory:z.string().max(60).optional(),
   checks:z.array(checkSchema).min(1).max(60),
   components:z.array(z.union([
     z.string().min(1).max(40),

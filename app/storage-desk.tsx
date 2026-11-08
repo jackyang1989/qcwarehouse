@@ -481,11 +481,51 @@ export function StorageMove({path="/wh/storage"}:{path?:string}) {
       <StocktakeWorkspace/>
     </>;
   }
+  const refLocations=(data?.locations??[]).filter((row:Row)=>row.zone==="reference");
+  const pendingRefTasks:Row[]=data?.pending_reference_tasks??[];
   return <>
     <div className="page-head row"><div><p className="eyebrow">WAREHOUSE / STORAGE</p><h1>样品库位移转</h1>
-      <p className="muted">逐件扫码，记录原位置、目标位置和操作人。</p></div>
+      <p className="muted">逐件扫码，记录原位置、目标位置和操作人；客户申请转为确认样的商品在此完成铅封并存入确认样专区（REF_SAFE）。</p></div>
       <div className="head-actions"><Link className="button sm" href="/wh/samples">样品建档</Link><Link className="button sm" href="/admin/storage/locations">管理库位</Link></div></div>
     {error&&<><ErrorBlock error={error}/><button type="button" onClick={reload}>重试</button></>}
+    {pendingRefTasks.length>0&&<Panel
+      title={`确认样（Golden Sample）待铅封入专柜任务 (${pendingRefTasks.length})`}
+      subtitle="客户已发起设为确认样申请（当前暂未改变正式保管身份）。请现场核对样品、加施防拆铅封并扫码存入确认样专区（reference），完成后系统自动激活确认样并通知客户。"
+    >
+      {pendingRefTasks.map((task:Row)=><div className="card" key={task.reference_id} style={{marginBottom:10}}>
+        <div className="row between flexwrap" style={{marginBottom:8}}>
+          <div>
+            <strong className="code">{task.item_code}</strong> · 当前位置 <span className="code">{task.current_location_code??"未上架"}</span>（{zones[task.current_zone]??task.current_zone??"—"}） · 预分配铅封号 <span className="code">{task.seal_code??"待录入"}</span>
+            {task.condition_note&&<div className="small muted">封存说明：{task.condition_note}</div>}
+          </div>
+          <Tag tone="yellow">待铅封存入确认样专区</Tag>
+        </div>
+        {refLocations.length>0?<Form key={`ref-${task.reference_id}-${task.item_revision}`} label="扫码铅封并存入确认样专区" run={async f=>{
+          const locId=text(f,"target_location_id");
+          const targetLoc=refLocations.find((l:Row)=>l.id===locId);
+          if(!targetLoc) throw new Error("请选择已启用的确认样专区库位。");
+          const scannedItem=text(f,"scanned_item_code")||task.item_code;
+          const sealCode=text(f,"seal_code")||task.seal_code;
+          await request("/staff/storage/move","POST",{
+            item_id:task.item_id,
+            revision:task.item_revision,
+            location_id:targetLoc.id,
+            scanned_item_code:scannedItem,
+            scanned_location_code:targetLoc.code,
+            seal_code:sealCode,
+          });
+          setReceipt(`确认样 ${task.item_code} 已加施铅封 ${sealCode} 并存入 ${targetLoc.code}，确认样身份已正式激活并通知客户。`);
+          reload();
+          if(code===task.item_code) found.reload();
+        }}>
+          <div className="fields three">
+            <Field label="扫描样品条码确认" name="scanned_item_code" value={task.item_code}/>
+            <Field label="防拆铅封编号 (Seal Code)" name="seal_code" value={task.seal_code??""}/>
+            <Select label="目标确认样专柜库位 (REF_SAFE)" name="target_location_id" value={refLocations[0]?.id} choices={refLocations.map((l:Row)=>({id:l.id,label:`${l.code} · ${zones[l.zone]??l.zone}`}))}/>
+          </div>
+        </Form>:<p className="bad small">当前尚未启用用途为“确认样区 (reference)”的库位，请先在库位管理中启用确认样专柜（如 A-04-02-03）。</p>}
+      </div>)}
+    </Panel>}
     <div className="ops-columns">
       <Panel title="01 / 扫描实物码">
         <div onChange={()=>{setCode("");setReceipt("");}}>
@@ -499,6 +539,7 @@ export function StorageMove({path="/wh/storage"}:{path?:string}) {
           <div><dt>实物编号</dt><dd className="code">{item.code}</dd></div>
           <div><dt>原位置（系统记录）</dt><dd className="code">{item.location??"尚未登记"}</dd></div>
           <div><dt>实收包裹</dt><dd className="code">{item.package_code}</dd></div>
+          {item.reference_sample_state==="pending_safe_storage"&&<div><dt>确认样待办</dt><dd><Tag tone="yellow">待铅封存入确认样区 · {item.reference_seal_code??""}</Tag></dd></div>}
         </dl>}
       </Panel>
       <Panel title="02 / 目标库位与确认">
@@ -509,16 +550,19 @@ export function StorageMove({path="/wh/storage"}:{path?:string}) {
           if(!target)throw new Error("请输入不同于原位置的已启用库位码。");
           if(!checked(f,"confirmed"))throw new Error("请核对实际位置。");
           const scannedItem=text(f,"scanned_item_code")||item.code;
+          const sealCode=text(f,"seal_code");
           await request("/staff/storage/move","POST",{
             item_id:item.id,
             revision:item.revision,
             location_id:target.id,
             scanned_item_code:scannedItem,
             scanned_location_code:target.code,
+            ...(sealCode?{seal_code:sealCode}:{}),
           });
-          setReceipt(item.code+" 已移至 "+target.code+"（已完成实物与货架双码校验）。");found.reload();reload();
+          setReceipt(item.code+" 已移至 "+target.code+(target.zone==="reference"&&item.reference_sample_state==="pending_safe_storage"?"（已完成确认样铅封激活并通知客户）。":"（已完成实物与货架双码校验）。"));found.reload();reload();
         }}>
           <Field label="扫描确认实物标签码" name="scanned_item_code" value={item.code}/>
+          {item.reference_sample_state==="pending_safe_storage"&&<Field label="防拆铅封编号 (转入确认样区必填)" name="seal_code" value={item.reference_seal_code??""} required={false}/>}
           <label>扫描或输入目标库位码（系统自动校验分区用途）<input name="target" list="active-location-codes" required/></label>
           <datalist id="active-location-codes">{data.locations.filter((row:Row)=>row.code!==item.location).map((row:Row)=>
             <option key={row.id} value={row.code}>{zones[row.zone]}</option>)}</datalist>

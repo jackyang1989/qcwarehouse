@@ -650,6 +650,7 @@ export async function recordTaskShot(
   const shotDef=template.shots?.find(s=>s.code===input.shot_code);
   const validComponent=isOrderShot || (Boolean(shotDef) && members.some(m=>m.id===input.component) && (!shotDef?.component || Boolean(t.group_id) || shotDef.component===input.component));
   guard(validComponent,"RESULT_INVALID","Shot code and component must match the template.",422);
+  const storedComponent=isOrderShot?"group":input.component;
 
   await attachEvidence(db,actor,[input.media_id],"shot",{org:t.org_id,task:id});
   const conflict=(await db.query(
@@ -659,13 +660,13 @@ export async function recordTaskShot(
        or (component is not null and component<>$2)
        or (shot_code is not null and shot_code<>$3)
      )`,
-    [input.media_id,input.component,input.shot_code]
+    [input.media_id,storedComponent,input.shot_code]
   )).rowCount;
   guard(!conflict,"EVIDENCE_MISMATCH","This photo is already bound to another component, shot, or result.");
 
   await db.query(
     `update media_assets set component=$2,shot_code=$3 where id=$1 and task_id=$4`,
-    [input.media_id,input.component,input.shot_code,id]
+    [input.media_id,storedComponent,input.shot_code,id]
   );
   await db.query("update inspection_tasks set revision=revision+1 where id=$1",[id]);
   await audit(db,actor,"record_task_shot","inspection_tasks",id,{component:input.component,shot_code:input.shot_code,media_id:input.media_id});
@@ -755,9 +756,19 @@ export async function submitReport(db:DB,actor:Actor,id:string,rev:number,ids:st
   for(const t of tasks) {
     const template=templateSchema.parse(t.content);
     const tolerances=extractTolerances(t.line_options,t.line_attributes);
-    const rows=(await db.query(`select r.item_key,r.component,r.status,r.typed_value,r.unit,r.method,r.reason,r.details,
+    const rows=(await db.query(`select r.item_key,r.component,r.attempt,r.status,r.typed_value,r.unit,r.method,r.reason,r.details,
+      r.recorded_by,u.display_name recorded_by_name,r.recorded_at,
       array(select m.id from media_assets m where m.result_id=r.id and m.status='ready' order by m.id) evidence_ids
-      from inspection_results r where r.task_id=$1 and r.is_final order by r.component,r.item_key`,[t.id])).rows;
+      from inspection_results r
+      left join users u on u.id=r.recorded_by
+      where r.task_id=$1 and r.is_final
+      order by r.component,r.item_key`,[t.id])).rows;
+    const allAttempts=(await db.query(`select r.item_key,r.component,r.attempt,r.status,r.typed_value,r.unit,r.method,
+      r.recorded_by,u.display_name recorded_by_name,r.recorded_at
+      from inspection_results r
+      left join users u on u.id=r.recorded_by
+      where r.task_id=$1
+      order by r.component,r.item_key,r.attempt`,[t.id])).rows;
     const members=await components(db,t);
     const single=t.assignment_id?await one<{code:string}>(db,`select w.code from warehouse_items w join order_line_item_links a on a.item_id=w.id where a.id=$1`,[t.assignment_id]):null;
     const mappedResults=rows.map(r=>{
@@ -770,19 +781,47 @@ export async function submitReport(db:DB,actor:Actor,id:string,rev:number,ids:st
       const derivedCircumference=typeof r.details?.derived_circumference==="number"?r.details.derived_circumference:undefined;
       const englishReason=(typeof r.details?.note_en==="string" && r.details.note_en.trim())?r.details.note_en.trim():r.reason;
       const reasonZh=typeof r.reason==="string" && hasUntranslatedChinese(r.reason)?r.reason:(typeof r.details?.note_zh==="string"?r.details.note_zh:undefined);
-      assertAllowedWording(englishReason,typeof r.typed_value==="string"?r.typed_value:null);
+      const typedValueZh=typeof r.typed_value==="string" && hasUntranslatedChinese(r.typed_value)
+        ?r.typed_value
+        :(typeof r.details?.typed_value_zh==="string"?r.details.typed_value_zh:undefined);
+      const effectiveTypedValue=(typeof r.details?.typed_value_en==="string" && r.details.typed_value_en.trim())
+        ?r.details.typed_value_en.trim()
+        :r.typed_value;
+      assertAllowedWording(englishReason,typeof effectiveTypedValue==="string"?effectiveTypedValue:null);
       const annotations=Array.isArray(r.details?.annotations)
-        ?r.details.annotations.filter((a:unknown)=>a && typeof a==="object" && typeof (a as {x?:unknown}).x==="number" && typeof (a as {y?:unknown}).y==="number")
+        ?r.details.annotations
+            .filter((a:unknown)=>a && typeof a==="object" && typeof (a as {x?:unknown}).x==="number" && typeof (a as {y?:unknown}).y==="number")
+            .map((a:{x:number;y:number;w?:number;h?:number;label?:string;label_zh?:string})=>({
+              ...a,
+              ...(typeof a.label==="string" && hasUntranslatedChinese(a.label) && !a.label_zh?{label_zh:a.label}:{}),
+            }))
         :undefined;
+      const resultAttempts=allAttempts
+        .filter(a=>a.component===r.component && a.item_key===r.item_key)
+        .map(a=>({
+          attempt:a.attempt,
+          status:a.status,
+          typed_value:a.typed_value,
+          unit:a.unit,
+          method:a.method,
+          recorded_by:a.recorded_by,
+          recorded_by_name:a.recorded_by_name??null,
+          recorded_at:a.recorded_at?new Date(a.recorded_at).toISOString():null,
+        }));
       return {
         item_key:r.item_key,
         component:r.component,
         status:r.status,
-        typed_value:r.typed_value,
+        typed_value:effectiveTypedValue,
+        ...(typedValueZh?{typed_value_zh:typedValueZh}:{}),
         unit:r.unit,
         method:r.method,
         reason:englishReason,
         ...(reasonZh?{reason_zh:reasonZh}:{}),
+        recorded_by:r.recorded_by??null,
+        recorded_by_name:r.recorded_by_name??null,
+        recorded_at:r.recorded_at?new Date(r.recorded_at).toISOString():null,
+        ...(resultAttempts.length?{attempts:resultAttempts}:{}),
         evidence_ids:r.evidence_ids,
         label:check?.label??r.item_key,
         item:single?.code??members.find(m=>m.id===r.component)?.code??r.component,
@@ -795,12 +834,14 @@ export async function submitReport(db:DB,actor:Actor,id:string,rev:number,ids:st
       };
     });
 
+    const orderShotCodes=t.group_id?(template.order_shots??[]):[];
     const sectionShots=(await db.query<{code:string;component:string|null;media_id:string}>(
       `select shot_code code,component,id media_id from media_assets
        where task_id=$1 and status='ready' and shot_code is not null
          and coalesce(component,'main') not in ('group','order')
+         and not (shot_code = any($2::text[]))
        order by component nulls first,shot_code,id`,
-      [t.id]
+      [t.id,orderShotCodes]
     )).rows.map(s=>({
       code:s.code,
       component:s.component??"main",
@@ -825,9 +866,10 @@ export async function submitReport(db:DB,actor:Actor,id:string,rev:number,ids:st
       });
       const orderShots=(await db.query<{code:string;media_id:string}>(
         `select shot_code code,id media_id from media_assets
-         where task_id=$1 and status='ready' and shot_code is not null and coalesce(component,'group') in ('group','order','main')
+         where task_id=$1 and status='ready' and shot_code is not null
+           and (coalesce(component,'group') in ('group','order') or shot_code = any($2::text[]))
          order by shot_code,id`,
-        [t.id]
+        [t.id,orderShotCodes]
       )).rows;
       comparison={diffs,order_shots:orderShots};
     }
@@ -840,6 +882,8 @@ export async function submitReport(db:DB,actor:Actor,id:string,rev:number,ids:st
       title:t.title.en,
       service:t.service,
       inspector_id:t.assignee_id,
+      measure_conditions:template.measure_conditions??"Garment laid flat on standard inspection table without stretching; steel tape calibrated to 0.1 cm.",
+      ...(template.measurement_policy?{measurement_policy:template.measurement_policy}:{}),
       summary:{
         expected_count:t.group_id?members.length:1,
         checked_count:t.group_id?members.length:1,
@@ -907,26 +951,41 @@ export async function translateReportCandidate(
   db:DB,
   actor:Actor,
   id:string,
-  input:{revision:number;translations:{section:number;result:number;reason_en:string;annotations_en?:string[]}[]}
+  input:{revision:number;translations:{section:number;result:number;typed_value_en?:string;reason_en?:string;annotations_en?:string[]}[]}
 ) {
   const v=await reviewTarget(db,actor,id,input.revision);
   for(const item of input.translations) {
     const section=v.snapshot.sections?.[item.section];
     const result=section?.results?.[item.result];
     guard(result,"RESULT_INVALID","Select a valid checkpoint in this report candidate.",422);
-    const cleanEn=item.reason_en.trim();
-    guard(cleanEn.length>=2 && !hasUntranslatedChinese(cleanEn),"ENGLISH_TRANSLATION_REQUIRED","Provide a complete English translation.",422);
-    assertAllowedWording(cleanEn);
-    if(result.reason && !result.reason_zh) {
-      result.reason_zh=result.reason;
+    const hasTyped=typeof item.typed_value_en==="string" && item.typed_value_en.trim().length>0;
+    const hasReason=typeof item.reason_en==="string" && item.reason_en.trim().length>0;
+    const hasAnn=Array.isArray(item.annotations_en) && item.annotations_en.some(a=>typeof a==="string" && a.trim().length>0);
+    guard(hasTyped || hasReason || hasAnn,"ENGLISH_TRANSLATION_REQUIRED","Provide at least one English translation field.",422);
+    if(hasTyped) {
+      const cleanTyped=item.typed_value_en!.trim();
+      guard(!hasUntranslatedChinese(cleanTyped),"ENGLISH_TRANSLATION_REQUIRED","Translated observation value must be in English.",422);
+      assertAllowedWording(null,cleanTyped);
+      if(typeof result.typed_value==="string" && !result.typed_value_zh) {
+        result.typed_value_zh=result.typed_value;
+      }
+      result.typed_value=cleanTyped;
     }
-    result.reason=cleanEn;
+    if(hasReason) {
+      const cleanEn=item.reason_en!.trim();
+      guard(cleanEn.length>=2 && !hasUntranslatedChinese(cleanEn),"ENGLISH_TRANSLATION_REQUIRED","Provide a complete English translation.",422);
+      assertAllowedWording(cleanEn);
+      if(result.reason && !result.reason_zh) {
+        result.reason_zh=result.reason;
+      }
+      result.reason=cleanEn;
+    }
     if(Array.isArray(item.annotations_en) && Array.isArray(result.annotations)) {
-      result.annotations=result.annotations.map((ann:{label?:string;x:number;y:number;w?:number;h?:number},idx:number)=>{
+      result.annotations=result.annotations.map((ann:{label?:string;label_zh?:string;x:number;y:number;w?:number;h?:number},idx:number)=>{
         const nextLabel=item.annotations_en?.[idx]?.trim();
         if(nextLabel) {
           guard(!hasUntranslatedChinese(nextLabel),"ENGLISH_TRANSLATION_REQUIRED","Annotation labels must be in English.",422);
-          return {...ann,label:nextLabel};
+          return {...ann,label_zh:ann.label_zh??ann.label,label:nextLabel};
         }
         return ann;
       });
@@ -1099,10 +1158,12 @@ export async function createReportDispute(
 }
 
 type ReportResult={
-  item:string;label:string;status:string;typed_value:unknown;unit:string|null;reason:string|null;method:string;
+  item:string;label:string;status:string;typed_value:unknown;typed_value_zh?:string;unit:string|null;reason:string|null;reason_zh?:string;method:string;
+  recorded_by?:string|null;recorded_by_name?:string|null;recorded_at?:string|null;
+  attempts?:{attempt:number;status:string;typed_value:unknown;unit:string|null;method:string;recorded_by?:string|null;recorded_by_name?:string|null;recorded_at?:string|null}[];
   evidence_ids:string[];derived_circumference?:number;within_tolerance?:boolean;
   severity?:string;part_code?:string;uncertain?:boolean;
-  annotations?:{x:number;y:number;w?:number;h?:number;label?:string}[];
+  annotations?:{x:number;y:number;w?:number;h?:number;label?:string;label_zh?:string}[];
 };
 type Snapshot={
   order_no:string;report_no:string;quote_id:string;
@@ -1110,6 +1171,7 @@ type Snapshot={
   scope_notice?:string;
   sections:{
     title:string;service:string;
+    measure_conditions?:string;
     shots?:{code:string;component?:string;item?:string;media_id:string}[];
     comparison?:{
       diffs:{point_code:string;label:string;unit:string|null;max_minus_min:number|null;display_diff:string}[];
@@ -1124,7 +1186,12 @@ async function renderPDF(db:DB,org:string,snapshot:Snapshot,version:number,amend
   const pages:ReturnType<typeof doc.addPage>[]=[];
   const newPage=()=>{const p=doc.addPage([595,842]);pages.push(p);return p;};
   let page=newPage(),y=790;
-  const latin=(s:string)=>s.normalize("NFKD").replace(/[^\x20-\x7e]/g,"?");
+  const latin=(s:string)=>s
+    .replace(/[\u2013\u2014]/g,"-")
+    .replace(/[\u2018\u2019]/g,"'")
+    .replace(/[\u201c\u201d]/g,'"')
+    .replace(/\u2026/g,"...")
+    .replace(/[^\x20-\x7e\u00a0-\u00ff]/g,"?");
   function print(s:string,size=10,strong=false) {
     const f=strong?bold:font;
     for(const line of latin(s).match(/.{1,94}/g)??[""]) {
@@ -1133,22 +1200,69 @@ async function renderPDF(db:DB,org:string,snapshot:Snapshot,version:number,amend
     }
   }
   const images=new Map<string,Awaited<ReturnType<typeof doc.embedJpg>>>();
-  async function evidence(id:string,caption?:string) {
-    let image=images.get(id);
+  async function evidence(
+    id:string,
+    caption?:string,
+    annotations?:{x:number;y:number;w?:number;h?:number;label?:string}[]
+  ) {
+    const cacheKey=annotations?.length?`${id}:${JSON.stringify(annotations)}`:id;
+    let image=images.get(cacheKey);
     if(!image) {
       const file=(await db.query<{data:Buffer}>(`select f.data from media_assets m join private_files f on f.key=m.object_key
         where m.id=$1 and m.org_id=$2 and m.kind='shot' and m.status='ready'
           and (m.result_id is not null or m.shot_code is not null or m.point_code is not null)`,[id,org])).rows[0];
       if(!file) return;
-      const preview=await sharp(file.data).resize({width:640,height:480,fit:"inside",withoutEnlargement:true}).jpeg({quality:76}).toBuffer();
+      const resized=await sharp(file.data).resize({width:640,height:480,fit:"inside",withoutEnlargement:true}).jpeg({quality:80}).toBuffer({resolveWithObject:true});
+      let preview=resized.data;
+      if(annotations?.length) {
+        const iw=Math.max(64,resized.info.width||320);
+        const ih=Math.max(64,resized.info.height||240);
+        const rects=annotations.map((ann,idx)=>{
+          const xPct=Math.max(0,Math.min(95,Number(ann.x)||0));
+          const yPct=Math.max(0,Math.min(95,Number(ann.y)||0));
+          const wPct=Math.max(6,Math.min(100-xPct,Number(ann.w)||16));
+          const hPct=Math.max(6,Math.min(100-yPct,Number(ann.h)||16));
+          const rx=Math.round((xPct/100)*iw);
+          const ry=Math.round((yPct/100)*ih);
+          const rw=Math.max(16,Math.round((wPct/100)*iw));
+          const rh=Math.max(16,Math.round((hPct/100)*ih));
+          const lbl=latin(ann.label||`Defect #${idx+1}`).replace(/[<>&"']/g,"");
+          const ty=ry>16?ry-4:Math.min(ih-4,ry+rh+12);
+          return `<rect x="${rx}" y="${ry}" width="${rw}" height="${rh}" fill="rgba(220,38,38,0.16)" stroke="#dc2626" stroke-width="3" rx="2"/>`+
+                 `<text x="${rx}" y="${ty}" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#dc2626">${lbl}</text>`;
+        }).join("");
+        const overlaySvg=Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${iw}" height="${ih}" viewBox="0 0 ${iw} ${ih}">${rects}</svg>`);
+        preview=await sharp(preview).composite([{input:overlaySvg,top:0,left:0}]).jpeg({quality:82}).toBuffer();
+      }
       image=await doc.embedJpg(preview);
-      images.set(id,image);
+      images.set(cacheKey,image);
     }
     if(caption) print(`  Photo: ${caption}`,9,false);
     const scale=Math.min(220/image.width,144/image.height,1);
     const {width,height}=image.scale(scale);
     if(y-height<64) {page=newPage();y=790;}
-    page.drawImage(image,{x:45,y:y-height,width,height});
+    const imgX=45,imgY=y-height;
+    page.drawImage(image,{x:imgX,y:imgY,width,height});
+    if(annotations?.length) {
+      for(const ann of annotations) {
+        const xPct=Math.max(0,Math.min(95,Number(ann.x)||0));
+        const yPct=Math.max(0,Math.min(95,Number(ann.y)||0));
+        const wPct=Math.max(6,Math.min(100-xPct,Number(ann.w)||16));
+        const hPct=Math.max(6,Math.min(100-yPct,Number(ann.h)||16));
+        const boxW=(wPct/100)*width;
+        const boxH=(hPct/100)*height;
+        const boxX=imgX+(xPct/100)*width;
+        const boxY=imgY+height-((yPct+hPct)/100)*height;
+        page.drawRectangle({
+          x:boxX,
+          y:boxY,
+          width:boxW,
+          height:boxH,
+          borderColor:rgb(0.86,0.15,0.15),
+          borderWidth:1.5,
+        });
+      }
+    }
     y-=height+10;
   }
   print("QC WAREHOUSE | INSPECTION REPORT",19,true);
@@ -1157,6 +1271,9 @@ async function renderPDF(db:DB,org:string,snapshot:Snapshot,version:number,amend
   print(snapshot.scope_notice||"Results relate to the inspected items and scope shown below.");y-=12;
   for(const s of snapshot.sections) {
     print(s.title,13,true);
+    if(s.measure_conditions) {
+      print(`Measurement Conditions: ${s.measure_conditions}`,9,false);
+    }
     if(s.shots?.length) {
       print("Standard Camera Angle Shots:",11,true);
       for(const shot of s.shots) {
@@ -1169,13 +1286,26 @@ async function renderPDF(db:DB,org:string,snapshot:Snapshot,version:number,amend
       const sev=r.severity?` [Severity: ${r.severity}]`:"";
       const part=r.part_code?` [Part: ${r.part_code}]`:"";
       const unc=r.uncertain?" [Uncertain - requires verification]":"";
-      print(`${r.item} | ${r.label} | ${r.status} ${r.typed_value??""} ${r.unit??""}${circ}${tol}${sev}${part}${unc} ${r.reason??""}`);
+      const mth=r.method?` [Method: ${r.method}]`:"";
+      print(`${r.item} | ${r.label} | ${r.status} ${r.typed_value??""} ${r.unit??""}${circ}${tol}${sev}${part}${unc}${mth} ${r.reason??""}`);
+      const traceParts=[
+        r.method?`Method: ${r.method}`:"",
+        (r.recorded_by_name||r.recorded_by)?`Inspector: ${r.recorded_by_name??r.recorded_by}`:"",
+        r.recorded_at?`Recorded: ${String(r.recorded_at).slice(0,19).replace("T"," ")} UTC`:"",
+      ].filter(Boolean);
+      if(traceParts.length) {
+        print(`  Traceability: ${traceParts.join(" | ")}`,8.5,false);
+      }
+      if(r.attempts && r.attempts.length>0 && (r.attempts.length>1 || typeof r.typed_value==="number")) {
+        const readings=r.attempts.map(a=>`Attempt #${a.attempt}: ${a.typed_value??"-"} ${a.unit??""}`.trim()).join(" ; ");
+        print(`  Measurement Readings: ${readings} -> Final: ${r.typed_value??"-"} ${r.unit??""}`.trim(),8.5,false);
+      }
       if(r.annotations?.length) {
         for(const ann of r.annotations) {
           print(`  Defect Marker: (${Math.round(ann.x)}%, ${Math.round(ann.y)}%)${ann.label?` - ${ann.label}`:""}`,9,false);
         }
       }
-      for(const id of r.evidence_ids) await evidence(id,`${r.item} - ${r.label}`);
+      for(const id of r.evidence_ids) await evidence(id,`${r.item} - ${r.label}`,r.annotations);
     }
     if(s.comparison?.diffs?.length) {
       print("Comparison differences (max - min):",11,true);

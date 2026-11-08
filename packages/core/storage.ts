@@ -110,7 +110,30 @@ export async function storageMovementDesk(db:DB,actor:Actor) {
     left join storage_locations origin on origin.id=e.from_location_id
     left join storage_locations destination on destination.id=e.to_location_id
     where e.action='move' order by e.created_at desc,e.id desc limit 50`);
-  return {locations,moves};
+  const {rows:pending_reference_tasks}=await db.query(`select
+      r.id reference_id,
+      r.item_id,
+      r.revision reference_revision,
+      r.state reference_state,
+      r.condition_note,
+      r.expires_at,
+      r.authorization_snapshot,
+      r.authorization_snapshot->>'seal_code' seal_code,
+      w.code item_code,
+      w.revision item_revision,
+      w.custody_state,
+      l.id current_location_id,
+      l.code current_location_code,
+      l.zone current_zone,
+      d.id disposition_id,
+      d.state disposition_state
+    from reference_samples r
+    join warehouse_items w on w.id=r.item_id
+    left join storage_locations l on l.id=w.location_id
+    left join disposition_requests d on d.item_id=r.item_id and d.action='reserve_reference' and d.state='requested'
+    where r.state='pending_safe_storage'
+    order by r.id desc limit 50`);
+  return {locations,moves,pending_reference_tasks};
 }
 
 export async function listStocktakes(db:DB,actor:Actor) {

@@ -210,7 +210,15 @@ export async function intakeItems(db:DB,actor:Actor,id:string,input:{revision:nu
   await audit(db,actor,"intake_items","packages",id,{count:ids.length,intake_batch_id:batchId});
   return {item_ids:ids,revision:pkg.revision+1};
 }
-export async function assign(db:DB,actor:Actor,itemId:string,input:{revision:number;order_line_id:string;expected_item_id:string;evidence_ids:string[]}) {
+export async function assign(db:DB,actor:Actor,itemId:string,input:{
+  revision:number;
+  order_line_id:string;
+  expected_item_id:string;
+  evidence_ids:string[];
+  force_tracking_mismatch?:boolean;
+  force_size_mismatch?:boolean;
+  override_reason?:string;
+}) {
   role(actor,"receiver","warehouse_admin");
   const line=await one(db,"select * from order_lines where id=$1",[input.order_line_id]);
   await lock(db,"org:"+line.org_id);
@@ -221,14 +229,54 @@ export async function assign(db:DB,actor:Actor,itemId:string,input:{revision:num
     "ITEM_QUARANTINED","Quarantined or restricted items cannot be assigned to an inspection order.");
   guard(order.paid_at && order.state==="awaiting_samples" && !item.parent_item_id && ["received","stored"].includes(item.custody_state),
     "ASSIGNMENT_UNAVAILABLE","This item or order is not ready for assignment.");
-  await one(db,"select id from expected_items where id=$1 and order_line_id=$2 and in_scope",[input.expected_item_id,line.id]);
+  const exp=await one<{id:string;declared_fields:Record<string,unknown>|null}>(
+    db,
+    "select id,declared_fields from expected_items where id=$1 and order_line_id=$2 and in_scope",
+    [input.expected_item_id,line.id]
+  );
   guard(!(await db.query("select 1 from disposition_requests where item_id=$1 and state not in ('completed','cancelled')",[itemId])).rowCount,
     "ITEM_RESERVED","Item has an active disposition.");
+  const pkgTrackRow=item.package_id
+    ?(await db.query<{tracking_norm:string}>("select tracking_norm from tracking_records where package_id=$1 and direction='inbound' order by generation desc limit 1",[item.package_id])).rows[0]
+    :undefined;
+  const actualTrack=pkgTrackRow?.tracking_norm?waybill(pkgTrackRow.tracking_norm):"";
+  const df=(exp.declared_fields??{}) as Record<string,unknown>;
+  const rawDeclaredTrack=String(df.declared_tracking_no??df.tracking_no??df.waybill??df.source_tracking_no??"").trim();
+  const declaredTrack=rawDeclaredTrack?waybill(rawDeclaredTrack):"";
+  const orderAdvisedTracks=(await db.query<{tracking_norm:string}>(
+    `select distinct tr.tracking_norm
+     from advice_orders ao
+     join tracking_records tr on tr.advice_id=ao.advice_id and tr.direction='inbound' and tr.closed_at is null
+     where ao.order_id=$1`,
+    [order.id]
+  )).rows.map(r=>waybill(r.tracking_norm));
+  const hasItemMismatch=Boolean(declaredTrack && actualTrack && declaredTrack!==actualTrack);
+  const hasOrderAdviceMismatch=Boolean(!declaredTrack && actualTrack && orderAdvisedTracks.length>0 && !orderAdvisedTracks.includes(actualTrack));
+  let trackingMismatchOverridden=false;
+  if(hasItemMismatch || hasOrderAdviceMismatch) {
+    const expectedDisplay=declaredTrack || orderAdvisedTracks.join(", ");
+    const cleanReason=input.override_reason?.trim()??"";
+    guard(
+      input.force_tracking_mismatch===true && cleanReason.length>=4 && input.evidence_ids.length>=1,
+      "TRACKING_MISMATCH_CONFIRMATION_REQUIRED",
+      `Physical parcel tracking (${actualTrack}) does not match declared order/item tracking (${expectedDisplay}). Controlled override requires force_tracking_mismatch=true, override_reason (>=4 chars), and photo evidence.`,
+      409
+    );
+    trackingMismatchOverridden=true;
+  }
   await attachEvidence(db,actor,input.evidence_ids,"label_photo",{org:line.org_id,package:item.package_id});
   const result=await one<{id:string}>(db,`insert into order_line_item_links(org_id,order_line_id,expected_item_id,item_id,linked_at)
     values($1,$2,$3,$4,now()) returning id`,[line.org_id,line.id,input.expected_item_id,itemId]);
   await db.query("update warehouse_items set identity_state='identified',custody_state='stored',revision=revision+1 where id=$1",[itemId]);
-  await audit(db,actor,"assign_item","warehouse_items",itemId,{assignment_id:result.id});
+  await audit(db,actor,"assign_item","warehouse_items",itemId,{
+    assignment_id:result.id,
+    ...(trackingMismatchOverridden?{
+      tracking_mismatch_override:true,
+      declared_tracking_no:declaredTrack||orderAdvisedTracks.join(","),
+      actual_tracking_no:actualTrack,
+      override_reason:input.override_reason!.trim(),
+    }:{}),
+  });
   await readyOrder(db,line.order_id);
   return {assignment_id:result.id,revision:item.revision+1};
 }
@@ -292,7 +340,31 @@ export async function identifyItem(
     const orderForLink=await one(db,"select * from orders where id=$1 for update",[line.order_id]);
     guard(orderForLink.paid_at && ["awaiting_samples","on_hold"].includes(orderForLink.state),
       "ASSIGNMENT_UNAVAILABLE","This order is not accepting sample assignments.");
-    await one(db,"select id from expected_items where id=$1 and order_line_id=$2 and in_scope",[input.expected_item_id,line.id]);
+    const expRow=await one<{id:string;declared_fields:Record<string,unknown>|null}>(
+      db,
+      "select id,declared_fields from expected_items where id=$1 and order_line_id=$2 and in_scope",
+      [input.expected_item_id,line.id]
+    );
+    const pkgTrackRow=item.package_id
+      ?(await db.query<{tracking_norm:string}>("select tracking_norm from tracking_records where package_id=$1 and direction='inbound' order by generation desc limit 1",[item.package_id])).rows[0]
+      :undefined;
+    const actualTrack=pkgTrackRow?.tracking_norm?waybill(pkgTrackRow.tracking_norm):"";
+    const expDf=(expRow.declared_fields??{}) as Record<string,unknown>;
+    const rawDeclared=String(expDf.declared_tracking_no??expDf.tracking_no??expDf.waybill??expDf.source_tracking_no??"").trim();
+    const declaredTrack=rawDeclared?waybill(rawDeclared):"";
+    const orderAdvised=(await db.query<{tracking_norm:string}>(
+      `select distinct tr.tracking_norm from advice_orders ao
+       join tracking_records tr on tr.advice_id=ao.advice_id and tr.direction='inbound' and tr.closed_at is null
+       where ao.order_id=$1`,
+      [orderForLink.id]
+    )).rows.map(r=>waybill(r.tracking_norm));
+    guard(
+      !(declaredTrack && actualTrack && declaredTrack!==actualTrack) &&
+      !(!declaredTrack && actualTrack && orderAdvised.length>0 && !orderAdvised.includes(actualTrack)),
+      "TRACKING_MISMATCH_CONFIRMATION_REQUIRED",
+      "Use controlled item assignment with override reason and photo evidence when parcel tracking differs from declared tracking.",
+      409
+    );
     link=await one<{id:string;order_line_id:string;expected_item_id:string}>(
       db,
       `insert into order_line_item_links(org_id,order_line_id,expected_item_id,item_id,linked_at)
@@ -757,7 +829,7 @@ export async function getIntakeContext(
         color:String(df.color??df.color_declared??df.colour??attr.color??attr.color_declared??""),
         size:String(df.size_label??df.size??attr.size??""),
         supplier_alias:String(df.supplier_alias??df.supplier??df.seller_name??attr.supplier_alias??""),
-        declared_tracking_no:String(df.tracking_no??df.waybill??""),
+        declared_tracking_no:String(df.declared_tracking_no??df.tracking_no??df.waybill??df.source_tracking_no??(advisedParcels.map(p=>p.tracking_norm).filter(Boolean).join(", ")||"")),
         garment_type:String(df.garment_type??attr.garment_type??""),
         declared_fields:df,
         linked_item_id:row.linked_item_id,
@@ -774,6 +846,7 @@ export async function getIntakeContext(
     const inTransitParcelsCount=advisedParcels.filter(p=>!p.package_id).length;
 
     orders.push({
+      id:ord.id,
       order_id:ord.id,
       public_no:ord.public_no,
       state:ord.state,
@@ -785,7 +858,13 @@ export async function getIntakeContext(
       remaining_unlinked_qty:Math.max(0,totalDeclaredQty-cumulativeLinkedQty),
       in_transit_parcels_count:inTransitParcelsCount,
       advised_parcels:advisedParcels,
-      declared_items:declaredItems,
+      declared_items:declaredItems.map(d=>({
+        ...d,
+        order_id:ord.id,
+        order_public_no:ord.public_no,
+        public_no:ord.public_no,
+        bound_item_code:d.linked_item_code,
+      })),
     });
   }
 
@@ -793,7 +872,10 @@ export async function getIntakeContext(
   const aggOrders=relevantOrders.length>0?relevantOrders:orders;
   const totalDeclaredQty=aggOrders.reduce((s,o)=>s+Number(o.total_declared_qty||0),0);
   const cumulativeReceivedQty=aggOrders.reduce((s,o)=>s+Number(o.cumulative_received_qty||0),0);
+  const remainingUnreceivedQty=Math.max(0,totalDeclaredQty-cumulativeReceivedQty);
+  const remainingUnlinkedQty=aggOrders.reduce((s,o)=>s+Number(o.remaining_unlinked_qty||0),0);
   const inTransitAdvicesCount=aggOrders.reduce((s,o)=>s+Number(o.in_transit_parcels_count||0),0);
+  const flatDeclaredItems=aggOrders.flatMap(o=>o.declared_items);
 
   return {
     tracking_no:trackingNorm,
@@ -804,7 +886,10 @@ export async function getIntakeContext(
     package_summary:packageSummary,
     total_declared_qty:totalDeclaredQty,
     cumulative_received_qty:cumulativeReceivedQty,
+    remaining_unreceived_qty:remainingUnreceivedQty,
+    remaining_unlinked_qty:remainingUnlinkedQty,
     in_transit_advices_count:inTransitAdvicesCount,
+    declared_items:flatDeclaredItems,
     orders,
   };
 }
@@ -837,9 +922,23 @@ export async function reportPackageQuantityDiscrepancy(
   const nextNote=pkg.condition_note?`${pkg.condition_note} | ${tag}`:tag;
   await db.query("update packages set condition_note=$2,revision=revision+1 where id=$1",[packageId,nextNote]);
 
+  let resolvedOrderId=input.order_id;
+  if(!resolvedOrderId && pkg.advice_id) {
+    resolvedOrderId=(await db.query<{order_id:string}>("select order_id from advice_orders where advice_id=$1 order by order_id limit 1",[pkg.advice_id])).rows[0]?.order_id;
+  }
+  if(!resolvedOrderId && pkg.org_id) {
+    resolvedOrderId=(await db.query<{order_id:string}>(
+      `select l.order_id from warehouse_items w
+       join order_line_item_links a on a.item_id=w.id and a.unlinked_at is null
+       join order_lines l on l.id=a.order_line_id
+       where w.package_id=$1 limit 1`,
+      [packageId]
+    )).rows[0]?.order_id;
+  }
+
   if(input.discrepancy_type==="partial_shipment_in_transit") {
     await audit(db,actor,"record_partial_shipment","packages",packageId,{
-      order_id:input.order_id??null,
+      order_id:resolvedOrderId??null,
       expected_qty:input.expected_qty,
       actual_qty:input.actual_qty,
       note:cleanNote,
@@ -855,8 +954,8 @@ export async function reportPackageQuantityDiscrepancy(
   }
 
   let orderHeld=false;
-  if(input.order_id && pkg.org_id) {
-    const order=await one(db,"select * from orders where id=$1 and org_id=$2 for update",[input.order_id,pkg.org_id]);
+  if(resolvedOrderId && pkg.org_id) {
+    const order=await one(db,"select * from orders where id=$1 and org_id=$2 for update",[resolvedOrderId,pkg.org_id]);
     await db.query(
       `insert into order_blocks(id,order_id,reason,object_key,opened_at)
        values($1,$2,'quantity_discrepancy',$3,now())
@@ -880,12 +979,12 @@ export async function reportPackageQuantityDiscrepancy(
       ticketId,
       publicNo,
       pkg.org_id??null,
-      input.order_id??null,
+      resolvedOrderId??null,
       `Parcel ${pkg.code} quantity discrepancy (${input.discrepancy_type}: expected ${input.expected_qty}, received ${input.actual_qty})`,
       {
         package_id:packageId,
         package_code:pkg.code,
-        order_id:input.order_id??null,
+        order_id:resolvedOrderId??null,
         discrepancy_type:input.discrepancy_type,
         expected_qty:input.expected_qty,
         actual_qty:input.actual_qty,

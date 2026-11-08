@@ -94,67 +94,101 @@ export function encodeCode128B(text: string): number[] {
 
 /**
  * Decode a Code-128B module/run-length sequence from a single horizontal scanline of boolean dark pixels.
+ * Uses sliding-window Start-B / Stop pattern detection so dark background borders or adjacent graphics do not break decoding.
  */
 function decodeCode128Scanline(darkLine: boolean[]): string | null {
-  // Extract alternating run lengths starting from first dark pixel
-  let firstDark = -1;
-  let lastDark = -1;
-  for (let i = 0; i < darkLine.length; i++) {
-    if (darkLine[i]) {
-      if (firstDark === -1) firstDark = i;
-      lastDark = i;
-    }
-  }
-  if (firstDark === -1 || lastDark - firstDark < 30) return null;
-
-  const runs: number[] = [];
-  let current = true;
-  let count = 0;
-  for (let i = firstDark; i <= lastDark; i++) {
-    if (darkLine[i] === current) {
+  const rawRuns: { dark: boolean; len: number }[] = [];
+  let i = 0;
+  while (i < darkLine.length) {
+    const d = darkLine[i];
+    let count = 0;
+    while (i < darkLine.length && darkLine[i] === d) {
       count++;
-    } else {
-      runs.push(count);
-      current = darkLine[i];
-      count = 1;
+      i++;
     }
+    rawRuns.push({ dark: d, len: count });
   }
-  runs.push(count);
+  if (rawRuns.length < 19) return null;
 
-  // Code-128 has 6n + 7 runs (Start B + data + checksum each have 6 runs; Stop has 7 runs)
-  if (runs.length < 19 || (runs.length - 7) % 6 !== 0) return null;
+  const tryRuns = (runs: { dark: boolean; len: number }[]): string | null => {
+    for (let startIdx = 0; startIdx <= runs.length - 19; startIdx++) {
+      if (!runs[startIdx].dark) continue;
+      const sSlice = [
+        runs[startIdx].len,
+        runs[startIdx + 1].len,
+        runs[startIdx + 2].len,
+        runs[startIdx + 3].len,
+        runs[startIdx + 4].len,
+        runs[startIdx + 5].len,
+      ];
+      const sTotal = sSlice[0] + sSlice[1] + sSlice[2] + sSlice[3] + sSlice[4] + sSlice[5];
+      const sUnit = sTotal / 11;
+      if (sUnit < 0.45) continue;
+      // Verify quiet zone before Start-B when not at the very edge
+      if (startIdx > 0 && runs[startIdx - 1].len < sUnit * 3.5) continue;
+      const sPat = sSlice.map(r => Math.max(1, Math.min(4, Math.round(r / sUnit)))).join("");
+      if (sPat !== CODE128_PATTERNS[104]) continue;
 
-  const symbolCount = (runs.length - 7) / 6;
-  const codes: number[] = [];
-  for (let s = 0; s < symbolCount; s++) {
-    const slice = runs.slice(s * 6, s * 6 + 6);
-    const total = slice.reduce((a, b) => a + b, 0);
-    const unit = total / 11;
-    if (unit <= 0) return null;
-    const pat = slice.map(r => Math.max(1, Math.min(4, Math.round(r / unit)))).join("");
-    const code = PATTERN_TO_CODE128.get(pat);
-    if (code === undefined) return null;
-    codes.push(code);
-  }
-  const stopSlice = runs.slice(symbolCount * 6, symbolCount * 6 + 7);
-  const stopTotal = stopSlice.reduce((a, b) => a + b, 0);
-  const stopUnit = stopTotal / 13;
-  const stopPat = stopSlice.map(r => Math.max(1, Math.min(4, Math.round(r / stopUnit)))).join("");
-  if (stopPat !== CODE128_PATTERNS[106]) return null;
+      const codes: number[] = [104];
+      let pos = startIdx + 6;
+      while (pos + 6 <= runs.length) {
+        if (pos + 7 <= runs.length) {
+          const stopSlice = [
+            runs[pos].len,
+            runs[pos + 1].len,
+            runs[pos + 2].len,
+            runs[pos + 3].len,
+            runs[pos + 4].len,
+            runs[pos + 5].len,
+            runs[pos + 6].len,
+          ];
+          const stopTotal = stopSlice.reduce((a, b) => a + b, 0);
+          const stopUnit = stopTotal / 13;
+          if (stopUnit >= 0.45 && Math.abs(stopUnit - sUnit) <= Math.max(1.2, sUnit * 0.65)) {
+            const stopPat = stopSlice.map(r => Math.max(1, Math.min(4, Math.round(r / stopUnit)))).join("");
+            if (stopPat === CODE128_PATTERNS[106] && codes.length >= 3) {
+              const dataCodes = codes.slice(1, -1);
+              const expectedChecksum = codes[codes.length - 1];
+              let sum = 104;
+              let out = "";
+              let valid = true;
+              for (let k = 0; k < dataCodes.length; k++) {
+                const c = dataCodes[k];
+                if (c < 0 || c > 94) {
+                  valid = false;
+                  break;
+                }
+                sum += c * (k + 1);
+                out += String.fromCharCode(c + 32);
+              }
+              if (valid && sum % 103 === expectedChecksum) {
+                return out;
+              }
+            }
+          }
+        }
+        const symSlice = [
+          runs[pos].len,
+          runs[pos + 1].len,
+          runs[pos + 2].len,
+          runs[pos + 3].len,
+          runs[pos + 4].len,
+          runs[pos + 5].len,
+        ];
+        const symTotal = symSlice.reduce((a, b) => a + b, 0);
+        const symUnit = symTotal / 11;
+        if (symUnit <= 0 || Math.abs(symUnit - sUnit) > Math.max(1.5, sUnit * 0.75)) break;
+        const symPat = symSlice.map(r => Math.max(1, Math.min(4, Math.round(r / symUnit)))).join("");
+        const code = PATTERN_TO_CODE128.get(symPat);
+        if (code === undefined) break;
+        codes.push(code);
+        pos += 6;
+      }
+    }
+    return null;
+  };
 
-  if (codes[0] !== 104 || codes.length < 3) return null;
-  const dataCodes = codes.slice(1, -1);
-  const expectedChecksum = codes[codes.length - 1];
-  let sum = 104;
-  let out = "";
-  for (let i = 0; i < dataCodes.length; i++) {
-    const c = dataCodes[i];
-    if (c < 0 || c > 94) return null;
-    sum += c * (i + 1);
-    out += String.fromCharCode(c + 32);
-  }
-  if (sum % 103 !== expectedChecksum) return null;
-  return out;
+  return tryRuns(rawRuns) ?? tryRuns(rawRuns.slice().reverse());
 }
 
 // ISO/IEC 18004 QR Code (Version 1: 21x21 up to 17 bytes ECC-L; Version 2: 25x25 up to 32 bytes ECC-L)
@@ -205,17 +239,32 @@ function rsEncode(data: Uint8Array, ecCount: number): Uint8Array {
   return msg.slice(data.length);
 }
 
+function escapeXml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+const QR_VERSION_SPECS: Record<number, { size: number; totalDataBytes: number; ecBytes: number; maxPayload: number; alignCenter: number | null }> = {
+  1: { size: 21, totalDataBytes: 19, ecBytes: 7, maxPayload: 17, alignCenter: null },
+  2: { size: 25, totalDataBytes: 34, ecBytes: 10, maxPayload: 32, alignCenter: 18 },
+  3: { size: 29, totalDataBytes: 55, ecBytes: 15, maxPayload: 53, alignCenter: 22 },
+  4: { size: 33, totalDataBytes: 80, ecBytes: 20, maxPayload: 78, alignCenter: 26 },
+};
+
 /**
- * Generate a standard ISO/IEC 18004 QR Code matrix (true = dark module) for Version 1 (21x21) or Version 2 (25x25),
+ * Generate a standard ISO/IEC 18004 QR Code matrix (true = dark module) for Version 1..4 (up to 78 bytes),
  * ECC Level L, Byte Mode (0100), Mask Pattern 0 ((r + c) % 2 === 0).
  */
 export function encodeQrMatrix(text: string): boolean[][] {
   const bytes = Buffer.from(text.trim(), "utf8");
-  guard(bytes.length >= 1 && bytes.length <= 32, "QR_PAYLOAD_INVALID", "QR payload must be 1..32 bytes.", 422);
-  const version = bytes.length <= 17 ? 1 : 2;
-  const size = version === 1 ? 21 : 25;
-  const totalDataBytes = version === 1 ? 19 : 34;
-  const ecBytes = version === 1 ? 7 : 10;
+  guard(bytes.length >= 1 && bytes.length <= 78, "QR_PAYLOAD_INVALID", "QR payload must be 1..78 bytes.", 422);
+  const version = bytes.length <= 17 ? 1 : bytes.length <= 32 ? 2 : bytes.length <= 53 ? 3 : 4;
+  const spec = QR_VERSION_SPECS[version];
+  const { size, totalDataBytes, ecBytes, alignCenter } = spec;
 
   // Build bit stream: Byte mode (0100) + 8-bit length + bytes + terminator + pad to byte + 0xEC/0x11
   const bits: number[] = [];
@@ -273,12 +322,12 @@ export function encodeQrMatrix(text: string): boolean[][] {
   placeFinder(0, size - 7);
   placeFinder(size - 7, 0);
 
-  // Alignment pattern for Version 2 at (18, 18)
-  if (version === 2) {
+  // Alignment pattern for Versions 2..4 at (alignCenter, alignCenter)
+  if (alignCenter !== null) {
     for (let r = -2; r <= 2; r++) {
       for (let c = -2; c <= 2; c++) {
         const dark = Math.max(Math.abs(r), Math.abs(c)) !== 1;
-        setModule(18 + r, 18 + c, dark);
+        setModule(alignCenter + r, alignCenter + c, dark);
       }
     }
   }
@@ -351,12 +400,13 @@ export function encodeQrMatrix(text: string): boolean[][] {
 }
 
 /**
- * Decode an ISO/IEC 18004 Version 1 / Version 2 QR matrix (Byte mode, Mask 0) back into UTF-8 text.
+ * Decode an ISO/IEC 18004 Version 1..4 QR matrix (Byte mode, Mask 0) back into UTF-8 text.
  */
 export function decodeQrMatrix(matrix: boolean[][]): string | null {
   const size = matrix.length;
-  if (size !== 21 && size !== 25) return null;
-  const version = size === 21 ? 1 : 2;
+  const version = size === 21 ? 1 : size === 25 ? 2 : size === 29 ? 3 : size === 33 ? 4 : 0;
+  if (!version) return null;
+  const spec = QR_VERSION_SPECS[version];
   const reserved: boolean[][] = Array.from({ length: size }, () => Array(size).fill(false));
   const markFinder = (row: number, col: number) => {
     for (let r = -1; r <= 7; r++) {
@@ -370,9 +420,9 @@ export function decodeQrMatrix(matrix: boolean[][]): string | null {
   markFinder(0, 0);
   markFinder(0, size - 7);
   markFinder(size - 7, 0);
-  if (version === 2) {
+  if (spec.alignCenter !== null) {
     for (let r = -2; r <= 2; r++) {
-      for (let c = -2; c <= 2; c++) reserved[18 + r][18 + c] = true;
+      for (let c = -2; c <= 2; c++) reserved[spec.alignCenter + r][spec.alignCenter + c] = true;
     }
   }
   for (let i = 8; i < size - 8; i++) {
@@ -415,10 +465,12 @@ export function decodeQrMatrix(matrix: boolean[][]): string | null {
   const mode = readBits(0, 4);
   if (mode !== 0b0100) return null;
   const byteLen = readBits(4, 8);
-  if (byteLen < 1 || byteLen > 32) return null;
+  if (byteLen < 1 || byteLen > spec.maxPayload) return null;
   const out = Buffer.alloc(byteLen);
   for (let i = 0; i < byteLen; i++) {
-    out[i] = readBits(12 + i * 8, 8);
+    const byteVal = readBits(12 + i * 8, 8);
+    if (byteVal < 32 || byteVal > 126) return null;
+    out[i] = byteVal;
   }
   return out.toString("utf8");
 }
@@ -432,39 +484,51 @@ export async function renderLabelPng(
   targetType: "package" | "item" | "location",
   size: LabelSize = "standard_80x50"
 ): Promise<Buffer> {
-  const dims =
+  const baseDims =
     size === "compact_50x30"
       ? { width: 400, height: 240 }
       : size === "shelf_100x60"
         ? { width: 600, height: 360 }
-        : { width: 480, height: 280 };
+        : { width: 480, height: 300 };
 
-  const qr = encodeQrMatrix(code);
+  const cleanCode = code.trim();
+  guard(cleanCode.length >= 1 && cleanCode.length <= 48, "LABEL_CODE_INVALID", "Warehouse label code must be 1..48 characters.", 422);
+  const qr = encodeQrMatrix(cleanCode);
   const qrSize = qr.length;
-  const barcode = encodeCode128B(code);
+  const barcode = encodeCode128B(cleanCode);
   const typeLabel =
     targetType === "package" ? "PACKAGE" : targetType === "location" ? "LOCATION" : "SAMPLE";
 
-  const qrBox = Math.floor(dims.height * 0.56);
-  const qrCell = Math.max(2, Math.floor(qrBox / (qrSize + 4)));
-  const qrOriginX = 20;
-  const qrOriginY = 18;
+  // Ensure narrowest bar module is >= 2px AND full 10X quiet zones fit with >= 16px margin on both sides
+  const minRequiredWidth = barcode.length * 2 + 32;
+  const scaleFactor = minRequiredWidth > baseDims.width ? minRequiredWidth / baseDims.width : 1;
+  const dims = {
+    width: Math.ceil(baseDims.width * scaleFactor),
+    height: Math.ceil(baseDims.height * scaleFactor),
+  };
+
+  const qrBox = Math.floor(dims.height * 0.58);
+  const qrCell = Math.max(3, Math.floor(qrBox / (qrSize + 8)));
+  const qrOriginX = 16;
+  const qrOriginY = 14;
 
   const barY = Math.floor(dims.height * 0.68);
   const barHeight = Math.floor(dims.height * 0.24);
-  const barWidthUnit = Math.max(2, Math.floor((dims.width - 40) / barcode.length));
-  const barOriginX = Math.floor((dims.width - barcode.length * barWidthUnit) / 2);
+  const barWidthUnit = Math.max(2, Math.floor((dims.width - 32) / barcode.length));
+  const barOriginX = Math.max(16, Math.floor((dims.width - barcode.length * barWidthUnit) / 2));
 
   const rects: string[] = [];
+  // Draw QR modules with 4-module quiet zone around all 4 sides
   for (let r = 0; r < qrSize; r++) {
     for (let c = 0; c < qrSize; c++) {
       if (qr[r][c]) {
         rects.push(
-          `<rect x="${qrOriginX + (c + 2) * qrCell}" y="${qrOriginY + (r + 2) * qrCell}" width="${qrCell}" height="${qrCell}" fill="#000"/>`
+          `<rect x="${qrOriginX + (c + 4) * qrCell}" y="${qrOriginY + (r + 4) * qrCell}" width="${qrCell}" height="${qrCell}" fill="#000"/>`
         );
       }
     }
   }
+  // Draw Code-128B modules (encodeCode128B already includes 10-module quiet zones on both ends)
   for (let i = 0; i < barcode.length; i++) {
     if (barcode[i] === 1) {
       rects.push(
@@ -473,45 +537,233 @@ export async function renderLabelPng(
     }
   }
 
-  const textX = qrOriginX + (qrSize + 5) * qrCell + 10;
+  const textX = qrOriginX + (qrSize + 8) * qrCell + 10;
+  const escapedCode = escapeXml(cleanCode);
+  const escapedType = escapeXml(typeLabel);
+  const maxCodeFontSize = size === "compact_50x30" ? 20 : 26;
+  const availableTextWidth = Math.max(120, dims.width - textX - 16);
+  const codeFontSize = Math.max(12, Math.min(maxCodeFontSize, Math.floor((availableTextWidth / Math.max(8, cleanCode.length)) * 1.65)));
+
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${dims.width}" height="${dims.height}" viewBox="0 0 ${dims.width} ${dims.height}">
     <rect width="100%" height="100%" fill="#ffffff"/>
     ${rects.join("")}
-    <text x="${textX}" y="${Math.floor(dims.height * 0.28)}" font-family="monospace, sans-serif" font-size="${size === "compact_50x30" ? 22 : 28}" font-weight="bold" fill="#000000">${code}</text>
-    <text x="${textX}" y="${Math.floor(dims.height * 0.44)}" font-family="sans-serif" font-size="15" font-weight="bold" fill="#334155">QC WAREHOUSE · ${typeLabel}</text>
+    <text x="${textX}" y="${Math.floor(dims.height * 0.28)}" font-family="monospace, sans-serif" font-size="${codeFontSize}" font-weight="bold" fill="#000000">${escapedCode}</text>
+    <text x="${textX}" y="${Math.floor(dims.height * 0.44)}" font-family="sans-serif" font-size="14" font-weight="bold" fill="#334155">QC WAREHOUSE - ${escapedType}</text>
     <text x="${textX}" y="${Math.floor(dims.height * 0.56)}" font-family="monospace" font-size="12" fill="#475569">ISO QR + CODE-128B</text>
   </svg>`;
 
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
+function scanLinesForCode128(
+  data: Buffer,
+  width: number,
+  height: number
+): string | null {
+  // Horizontal scanlines
+  const stepY = Math.max(1, Math.floor(height / 90));
+  for (let y = Math.floor(height * 0.04); y < height * 0.96; y += stepY) {
+    const rowOffset = y * width;
+    let minV = 255;
+    let maxV = 0;
+    for (let x = 0; x < width; x++) {
+      const v = data[rowOffset + x];
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    }
+    if (maxV - minV < 20) continue;
+    const mid = Math.floor((minV + maxV) / 2);
+    for (const th of [mid, 128, Math.floor(minV + (maxV - minV) * 0.42), Math.floor(minV + (maxV - minV) * 0.58)]) {
+      const darkLine: boolean[] = new Array(width);
+      for (let x = 0; x < width; x++) darkLine[x] = data[rowOffset + x] < th;
+      const decoded = decodeCode128Scanline(darkLine);
+      if (decoded) return decoded;
+    }
+  }
+  // Vertical scanlines (handles 90° and 270° rotated labels directly without resize distortion)
+  const stepX = Math.max(1, Math.floor(width / 90));
+  for (let x = Math.floor(width * 0.04); x < width * 0.96; x += stepX) {
+    let minV = 255;
+    let maxV = 0;
+    for (let y = 0; y < height; y++) {
+      const v = data[y * width + x];
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    }
+    if (maxV - minV < 20) continue;
+    const mid = Math.floor((minV + maxV) / 2);
+    for (const th of [mid, 128, Math.floor(minV + (maxV - minV) * 0.42), Math.floor(minV + (maxV - minV) * 0.58)]) {
+      const darkLine: boolean[] = new Array(height);
+      for (let y = 0; y < height; y++) darkLine[y] = data[y * width + x] < th;
+      const decoded = decodeCode128Scanline(darkLine);
+      if (decoded) return decoded;
+    }
+  }
+  return null;
+}
+
+function tryDecodeGrayscaleBuffer(
+  data: Buffer,
+  width: number,
+  height: number
+): { code: string; symbology: "CODE_128B" | "QR_CODE" } | null {
+  const code128 = scanLinesForCode128(data, width, height);
+  if (code128) {
+    return { code: code128, symbology: "CODE_128B" };
+  }
+
+  // 2. Try sampling the 2D QR Code matrix by locating its quiet-zone-bounded square block
+  let cardMinX = 0, cardMinY = 0, cardMaxX = width - 1, cardMaxY = height - 1;
+  const cornerDark =
+    data[0] < 90 &&
+    data[width - 1] < 90 &&
+    data[(height - 1) * width] < 90 &&
+    data[(height - 1) * width + width - 1] < 90;
+  if (cornerDark) {
+    let bx0 = width, by0 = height, bx1 = 0, by1 = 0;
+    for (let y = 0; y < height; y += 2) {
+      for (let x = 0; x < width; x += 2) {
+        if (data[y * width + x] > 160) {
+          if (x < bx0) bx0 = x;
+          if (x > bx1) bx1 = x;
+          if (y < by0) by0 = y;
+          if (y > by1) by1 = y;
+        }
+      }
+    }
+    if (bx1 > bx0 + 60 && by1 > by0 + 40) {
+      cardMinX = bx0;
+      cardMinY = by0;
+      cardMaxX = bx1;
+      cardMaxY = by1;
+    }
+  }
+
+  const cardH = cardMaxY - cardMinY + 1;
+  const bandMaxY = cardMinY + Math.floor(cardH * 0.64);
+  let qMinX = -1;
+  let qMaxX = -1;
+  let whiteStreak = 0;
+  for (let x = cardMinX + 4; x <= cardMaxX - 4; x++) {
+    let colHasDark = false;
+    for (let y = cardMinY + 4; y < bandMaxY; y++) {
+      if (data[y * width + x] < 128) {
+        colHasDark = true;
+        break;
+      }
+    }
+    if (colHasDark) {
+      if (qMinX === -1) qMinX = x;
+      qMaxX = x;
+      whiteStreak = 0;
+    } else if (qMinX !== -1) {
+      whiteStreak++;
+      if (qMaxX - qMinX >= 20 && whiteStreak >= 6) break;
+    }
+  }
+
+  let qMinY = -1;
+  let qMaxY = -1;
+  if (qMinX !== -1 && qMaxX - qMinX >= 20) {
+    let rowWhiteStreak = 0;
+    for (let y = cardMinY + 4; y < bandMaxY; y++) {
+      let rowHasDark = false;
+      for (let x = qMinX; x <= qMaxX; x++) {
+        if (data[y * width + x] < 128) {
+          rowHasDark = true;
+          break;
+        }
+      }
+      if (rowHasDark) {
+        if (qMinY === -1) qMinY = y;
+        qMaxY = y;
+        rowWhiteStreak = 0;
+      } else if (qMinY !== -1) {
+        rowWhiteStreak++;
+        if (qMaxY - qMinY >= 20 && rowWhiteStreak >= 6) break;
+      }
+    }
+  }
+
+  const qW = qMaxX - qMinX + 1;
+  const qH = qMaxY - qMinY + 1;
+  if (qMinX !== -1 && qMinY !== -1 && qW >= 21 && qH >= 21 && Math.abs(qW - qH) <= Math.max(8, qW * 0.18)) {
+    for (const qrSize of [21, 25, 29, 33]) {
+      const cellW = qW / qrSize;
+      const cellH = qH / qrSize;
+      const matrix: boolean[][] = Array.from({ length: qrSize }, () => Array(qrSize).fill(false));
+      for (let r = 0; r < qrSize; r++) {
+        for (let c = 0; c < qrSize; c++) {
+          const px = Math.min(width - 1, Math.max(0, Math.round(qMinX + (c + 0.5) * cellW)));
+          const py = Math.min(height - 1, Math.max(0, Math.round(qMinY + (r + 0.5) * cellH)));
+          matrix[r][c] = data[py * width + px] < 128;
+        }
+      }
+      const candidate = decodeQrMatrix(matrix);
+      if (candidate && candidate.length >= 2) {
+        try {
+          const reencoded = encodeQrMatrix(candidate);
+          if (reencoded.length === qrSize) {
+            let matches = 0;
+            for (let r = 0; r < qrSize; r++) {
+              for (let c = 0; c < qrSize; c++) {
+                if (reencoded[r][c] === matrix[r][c]) matches++;
+              }
+            }
+            if (matches / (qrSize * qrSize) >= 0.88) {
+              return { code: candidate, symbology: "QR_CODE" };
+            }
+          }
+        } catch {
+          // Ignore invalid candidate
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
 /**
  * Decode a barcode or QR code from an uploaded/captured image buffer (PNG/JPEG/WebP).
- * Scans horizontal scanlines for ISO/IEC 15417 Code-128B and also attempts QR grid sampling.
+ * Supports rotated (0/90/180/270), tilted (±15°/±8°), low-contrast, low-resolution, dark-background,
+ * and damaged-1D (via 2D QR fallback) images.
  */
 export async function decodeLabelImage(imageBytes: Buffer): Promise<{
   decoded: boolean;
   code: string | null;
   symbology: "CODE_128B" | "QR_CODE" | null;
 }> {
-  const { data, info } = await sharp(imageBytes)
-    .grayscale()
-    .raw()
-    .toBuffer({ resolveWithObject: true });
+  try {
+    const meta = await sharp(imageBytes).metadata();
+    const minDim = Math.min(meta.width ?? 480, meta.height ?? 300);
+    const angles = [0, -15, 15, -8, 8, 90, 180, 270];
 
-  const { width, height } = info;
-  // 1. Scan horizontal lines for Code-128B
-  const stepY = Math.max(1, Math.floor(height / 60));
-  for (let y = Math.floor(height * 0.1); y < height * 0.95; y += stepY) {
-    const darkLine: boolean[] = new Array(width);
-    const rowOffset = y * width;
-    for (let x = 0; x < width; x++) {
-      darkLine[x] = data[rowOffset + x] < 128;
+    for (const angle of angles) {
+      for (const normalizeContrast of [false, true]) {
+        let baseImg = sharp(imageBytes).grayscale();
+        if (normalizeContrast) baseImg = baseImg.normalize();
+        if (minDim < 220) {
+          baseImg = baseImg.resize({
+            width: (meta.width ?? 240) * 2,
+            height: (meta.height ?? 150) * 2,
+            fit: "fill",
+            kernel: "lanczos3",
+          });
+        }
+        if (angle !== 0) {
+          const rotatedPng = await baseImg.png().toBuffer();
+          baseImg = sharp(rotatedPng).rotate(angle, { background: "#ffffff" }).grayscale();
+        }
+        const { data, info } = await baseImg.raw().toBuffer({ resolveWithObject: true });
+        const res = tryDecodeGrayscaleBuffer(data, info.width, info.height);
+        if (res) {
+          return { decoded: true, code: res.code, symbology: res.symbology };
+        }
+      }
     }
-    const decoded = decodeCode128Scanline(darkLine);
-    if (decoded) {
-      return { decoded: true, code: decoded, symbology: "CODE_128B" };
-    }
+  } catch {
+    return { decoded: false, code: null, symbology: null };
   }
 
   return { decoded: false, code: null, symbology: null };
@@ -525,19 +777,22 @@ function drawQrAndBarcodeOnPdfPage(
   size: LabelSize
 ) {
   const { width, height } = page.getSize();
-  const qr = encodeQrMatrix(code);
+  const cleanCode = code.trim();
+  guard(cleanCode.length >= 1 && cleanCode.length <= 48, "LABEL_CODE_INVALID", "Warehouse label code must be 1..48 characters.", 422);
+  const qr = encodeQrMatrix(cleanCode);
   const qrLen = qr.length;
-  const qrBoxSize = Math.min(height * 0.54, width * 0.34);
-  const cell = qrBoxSize / (qrLen + 2);
-  const qrX = 12;
-  const qrY = height - qrBoxSize - 10;
+  const qrBoxSize = Math.min(height * 0.54, width * 0.36);
+  // Include full 4-module quiet zone on all 4 sides per ISO/IEC 18004
+  const cell = qrBoxSize / (qrLen + 8);
+  const qrX = 10;
+  const qrY = height - qrBoxSize - 8;
 
   for (let r = 0; r < qrLen; r++) {
     for (let c = 0; c < qrLen; c++) {
       if (qr[r][c]) {
         page.drawRectangle({
-          x: qrX + (c + 1) * cell,
-          y: qrY + (qrLen - r) * cell,
+          x: qrX + (c + 4) * cell,
+          y: qrY + (qrLen - 1 - r + 4) * cell,
           width: cell,
           height: cell,
           color: rgb(0, 0, 0),
@@ -546,35 +801,37 @@ function drawQrAndBarcodeOnPdfPage(
     }
   }
 
-  const textX = qrX + qrBoxSize + 10;
-  const fontSize = size === "compact_50x30" ? 11 : size === "shelf_100x60" ? 16 : 13;
-  page.drawText(code, {
+  const textX = qrX + qrBoxSize + 8;
+  const baseFontSize = size === "compact_50x30" ? 10.5 : size === "shelf_100x60" ? 15 : 12.5;
+  const maxTextW = Math.max(50, width - textX - 10);
+  const fontSize = Math.max(7.5, Math.min(baseFontSize, (maxTextW / Math.max(8, cleanCode.length)) * 1.65));
+  page.drawText(cleanCode, {
     x: textX,
-    y: height - 30,
+    y: height - 28,
     size: fontSize,
     font,
     color: rgb(0.05, 0.08, 0.12),
   });
   const typeText =
     targetType === "package" ? "PACKAGE" : targetType === "location" ? "LOCATION BIN" : "SAMPLE ITEM";
-  page.drawText(`QCW · ${typeText}`, {
+  page.drawText(`QCW - ${typeText}`, {
     x: textX,
-    y: height - 46,
+    y: height - 44,
     size: size === "compact_50x30" ? 7 : 8.5,
     font,
     color: rgb(0.3, 0.35, 0.4),
   });
 
-  // Draw standard ISO/IEC 15417 Code-128B 1D barcode across bottom band
-  const modules = encodeCode128B(code);
-  const barAreaWidth = width - 20;
+  // Draw standard ISO/IEC 15417 Code-128B 1D barcode across bottom band (includes 10X quiet zones)
+  const modules = encodeCode128B(cleanCode);
+  const barAreaWidth = width - 16;
   const modW = barAreaWidth / modules.length;
   const barY = 10;
-  const barH = Math.max(20, height * 0.25);
+  const barH = Math.max(18, height * 0.25);
   for (let i = 0; i < modules.length; i++) {
     if (modules[i] === 1) {
       page.drawRectangle({
-        x: 10 + i * modW,
+        x: 8 + i * modW,
         y: barY,
         width: modW,
         height: barH,
@@ -868,8 +1125,10 @@ export async function printLabels(
     });
   }
 
+  // Physical millimeter-to-PDF-point conversion (1 mm = 72 / 25.4 pt = 2.83465 pt):
+  // 50x30 mm -> [142, 85], 80x50 mm -> [227, 142], 100x60 mm -> [283, 170]
   const pageDims: [number, number] =
-    size === "compact_50x30" ? [150, 90] : size === "shelf_100x60" ? [300, 180] : [240, 140];
+    size === "compact_50x30" ? [142, 85] : size === "shelf_100x60" ? [283, 170] : [227, 142];
 
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.HelveticaBold);

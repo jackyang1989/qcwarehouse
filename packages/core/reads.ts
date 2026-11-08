@@ -19,6 +19,8 @@ export async function items(db:DB,actor:Actor) {
      from warehouse_items c where c.parent_item_id=w.id) components,
     (select jsonb_build_object(
       'reference_id',r.id,'state',r.state,'revision',r.revision,'expires_at',r.expires_at,
+      'seal_code',r.authorization_snapshot->>'seal_code',
+      'safe_location_code',r.authorization_snapshot->>'safe_location_code',
       'expired',r.expires_at<=now(),
       'in_use',exists(select 1 from reference_reservations rr where rr.reference_id=r.id and rr.released_at is null)
     ) from reference_samples r where r.item_id=w.id order by r.revision desc limit 1) reference_sample,
@@ -28,6 +30,7 @@ export async function items(db:DB,actor:Actor) {
     (select jsonb_build_object('id',s.id,'batch_id',s.batch_id,'tracking_norm',s.tracking_norm,'carrier_code',s.carrier_code,'state',s.state,'shipped_at',s.shipped_at)
      from shipment_items si join shipments s on s.id=si.shipment_id where si.item_id=w.id order by s.shipped_at desc nulls last,s.id desc limit 1) outbound_shipment,
     array(select d.id from disposition_requests d where d.item_id=w.id and d.state='requested'
+      and d.action in ('to_forwarder','to_domestic_address','return_to_seller')
       and not exists(select 1 from dispatch_batch_items bi where bi.disposition_id=d.id and bi.released_at is null)) instructions
     from warehouse_items w join packages p on p.id=w.package_id
     left join order_line_item_links a on a.item_id=w.id and a.unlinked_at is null
@@ -157,6 +160,8 @@ export async function customerDesk(db:DB,actor:Actor) {
   const tickets=(await db.query(`select id,public_no,subject,state,details->>'decision' decision from tickets where org_id=$1 order by created_at desc limit 100`,[org])).rows;
   const notices=(await customerNotifications(db,actor)).rows;
   const references=(await db.query(`select r.id reference_id,r.item_id,r.state,r.revision,r.condition_note,r.expires_at,
+    r.authorization_snapshot->>'seal_code' seal_code,
+    r.authorization_snapshot->>'safe_location_code' safe_location_code,
     r.expires_at<=now() expired,
     exists(select 1 from reference_reservations rr where rr.reference_id=r.id and rr.released_at is null) in_use,
     coalesce(
@@ -243,6 +248,8 @@ export async function warehouseItem(db:DB,actor:Actor,code:string) {
     a.order_line_id,a.expected_item_id,e.position expected_position,e.declared_fields,l.attributes line_attributes,
     exists(select 1 from disposition_requests d where d.item_id=w.id and d.state not in ('completed','cancelled')) reserved,
     exists(select 1 from reference_samples r where r.item_id=w.id and r.state='active') is_reference_sample,
+    (select r.state from reference_samples r where r.item_id=w.id order by r.revision desc limit 1) reference_sample_state,
+    (select r.authorization_snapshot->>'seal_code' from reference_samples r where r.item_id=w.id order by r.revision desc limit 1) reference_seal_code,
     (select case
       when t.state='IN_PROGRESS' then 'in_inspection'
       when t.state in ('SUBMITTED','QA_APPROVED') then 'inspected'
@@ -271,13 +278,19 @@ export async function warehouseItem(db:DB,actor:Actor,code:string) {
   const positions=rawPositions.map(pos=>{
     const df=(pos.declared_fields??{}) as Record<string,unknown>;
     const attr=(pos.line_attributes??{}) as Record<string,unknown>;
+    const declaredTracking=String(df.declared_tracking_no??df.tracking_no??df.waybill??df.source_tracking_no??(Array.isArray(pos.advised_tracking_nos)?pos.advised_tracking_nos.join(", "):""));
+    const perItemTracking=String(df.declared_tracking_no??df.tracking_no??df.waybill??df.source_tracking_no??"").trim();
+    const advisedList=Array.isArray(pos.advised_tracking_nos)?(pos.advised_tracking_nos as string[]).filter(Boolean):[];
     return {
       ...pos,
       sample_code:String(df.sample_code??df.sku??df.style_code??attr.sample_code??`POS-${pos.position}`),
       color:String(df.color??df.color_declared??df.colour??attr.color??attr.color_declared??""),
       size:String(df.size_label??df.size??attr.size??""),
       supplier_alias:String(df.supplier_alias??df.supplier??df.seller_name??attr.supplier_alias??""),
-      declared_tracking_no:String(df.tracking_no??df.waybill??(Array.isArray(pos.advised_tracking_nos)?pos.advised_tracking_nos.join(", "):"")),
+      declared_tracking_no:declaredTracking,
+      source_tracking_no:declaredTracking,
+      per_item_tracking_no:perItemTracking,
+      advised_tracking_nos:advisedList,
       garment_type:String(df.garment_type??attr.garment_type??""),
     };
   });
@@ -288,14 +301,21 @@ export async function warehouseItem(db:DB,actor:Actor,code:string) {
     color:String(df.color??df.color_declared??df.colour??attr.color??attr.color_declared??""),
     size:String(df.size_label??df.size??attr.size??""),
     supplier_alias:String(df.supplier_alias??df.supplier??df.seller_name??attr.supplier_alias??""),
-    declared_tracking_no:String(df.tracking_no??df.waybill??item.source_tracking_no??""),
+    declared_tracking_no:String(df.declared_tracking_no??df.tracking_no??df.waybill??df.source_tracking_no??item.source_tracking_no??""),
     garment_type:String(df.garment_type??attr.garment_type??""),
   }:null;
+  const refZoneWarning=(item.is_reference_sample || item.reference_sample_state==="pending_safe_storage") && item.location_zone!=="reference"
+    ?(item.reference_sample_state==="pending_safe_storage"
+      ?`客户已申请转为确认样（铅封号 ${item.reference_seal_code??"待核验"}），请前往库位移转扫码铅封并移入确认样专区（如 A-04-02-03）后生效。`
+      :"该确认样当前不在确认样专区（reference），请立即核查并移入确认样安全专柜！")
+    :null;
   return {item:{id:item.id,code:item.code,revision:item.revision,parent_item_id:item.parent_item_id,
     intake_batch_id:item.intake_batch_id,identity_state:item.identity_state,condition_state:item.condition_state,
     custody_state:item.custody_state,inspection_stage:item.inspection_stage??"pending",
     is_reference_sample:Boolean(item.is_reference_sample),
-    reference_zone_warning:Boolean(item.is_reference_sample && item.location_zone!=="reference"),
+    reference_sample_state:item.reference_sample_state??null,
+    reference_seal_code:item.reference_seal_code??null,
+    reference_zone_warning:refZoneWarning,
     package_code:item.package_code,source_tracking_no:item.source_tracking_no??null,
     location:item.location,location_zone:item.location_zone??null,
     order_id:item.order_id??null,order_number:item.order_number,order_state:item.order_state??null,

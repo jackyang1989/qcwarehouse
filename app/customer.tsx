@@ -449,7 +449,7 @@ export function NewOrder() {
   const [toleranceMm,setToleranceMm]=useState("15");
   const [referenceId,setReferenceId]=useState("");
   const [sizeMismatchConfirmed,setSizeMismatchConfirmed]=useState(false);
-  const [itemRows,setItemRows]=useState<{sku:string;size:string;color:string}[]>([]);
+  const [itemRows,setItemRows]=useState<{sku:string;size:string;color:string;supplier?:string;tracking_no?:string}[]>([]);
   const [showAllItems,setShowAllItems]=useState(false);
   const [selectedChecks,setSelectedChecks]=useState<string[]>(["visual","measure","seams","labels"]);
   const [notes,setNotes]=useState("");
@@ -554,6 +554,8 @@ export function NewOrder() {
                 sku:String(it.sample_code??`SKU-${String(idx+1).padStart(2,"0")}`),
                 size:String(it.size_label??attrs.size_label??""),
                 color:String(it.color_declared??attrs.color_declared??""),
+                supplier:String(it.supplier_alias??attrs.supplier_ref??""),
+                tracking_no:String(it.tracking_no??""),
               })));
             }
           }
@@ -594,31 +596,66 @@ export function NewOrder() {
   const maxQty=activeOffer?(activeOffer.service==="inspection"?300:activeOffer.rules.maximum):(serviceKind==="compare"?3:60);
   const clampedQty=Math.max(minQty,Math.min(maxQty,Number(qty)||minQty));
 
-  function updateItemRow(index:number,field:"sku"|"size"|"color",value:string) {
+  function inferVariantFromOffer(off:Row|undefined):string {
+    const sku=String(off?.sku_code??"");
+    const sub=String(off?.content?.subcategory??"");
+    if(sub==="tops"||sku.includes("-tops-")) return "tops";
+    if(sub==="bottoms"||sku.includes("-bottoms-")) return "leggings";
+    if(sub==="sports_bra"||sku.includes("-sports-bra-")||sku.includes("-sports_bra-")) return "sports";
+    return "basic";
+  }
+
+  function selectTemplateVariant(variant:string) {
+    setTemplateVariant(variant);
+    const targetSub=variant==="tops"?"tops":variant==="leggings"?"bottoms":variant==="sports"?"sports-bra":"";
+    let matched:Row|undefined;
+    if(!targetSub) {
+      matched=serviceOffers.find(o=>!String(o.sku_code??"").includes("-sub-")) ?? serviceOffers[0];
+    } else {
+      matched=serviceOffers.find(o=>
+        String(o.sku_code??"").includes(`-${targetSub}-`) ||
+        String(o.content?.subcategory??"")===targetSub.replace("-","_")
+      );
+    }
+    if(matched) {
+      setSelectedOfferId(matched.offer_id);
+      setQty(prev=>Math.max(matched!.rules.minimum,Math.min(matched!.rules.maximum,prev)));
+    }
+    setServerQuote(undefined);
+  }
+
+  function updateItemRow(index:number,field:"sku"|"size"|"color"|"supplier"|"tracking_no",value:string) {
     setItemRows(prev=>{
       const next=[...prev];
       while(next.length<clampedQty) {
         const idx=next.length;
-        next.push({sku:`${baseSku||"SKU"}-${String(idx+1).padStart(2,"0")}`,size:baseSize||"M",color:baseColor||"Black"});
+        next.push({sku:`${baseSku||"SKU"}-${String(idx+1).padStart(2,"0")}`,size:baseSize||"M",color:baseColor||"Black",supplier:supplierRef||"",tracking_no:""});
       }
-      next[index]={...(next[index]??{sku:baseSku,size:baseSize,color:baseColor}),[field]:value};
+      next[index]={...(next[index]??{sku:baseSku,size:baseSize,color:baseColor,supplier:supplierRef,tracking_no:""}),[field]:value};
       return next;
     });
   }
 
   function buildCurrentLine():Row|null {
     if(!activeOffer) return null;
+    const effectiveVariant=inferVariantFromOffer(activeOffer)!=="basic"?inferVariantFromOffer(activeOffer):templateVariant;
+    const garmentType=effectiveVariant==="tops"?"tops":effectiveVariant==="leggings"?"bottoms":effectiveVariant==="sports"?"sports_bra":undefined;
     const items=Array.from({length:clampedQty},(_,idx)=>{
       const custom=itemRows[idx];
       const rowSku=custom?.sku?.trim()||`${baseSku||"SKU"}-${String(idx+1).padStart(2,"0")}`;
       const rowSize=custom?.size?.trim()||baseSize.trim();
       const rowColor=custom?.color?.trim()||baseColor.trim();
+      const rowSupplier=custom?.supplier?.trim()||supplierRef.trim();
+      const rowTracking=custom?.tracking_no?.trim()||"";
       return {
         position:idx+1,
         sample_code:rowSku.slice(0,40),
         name:(itemName.trim()||activeOffer.title.en).slice(0,120),
         ...(rowSize?{size_label:rowSize}:{}),
         ...(rowColor?{color_declared:rowColor}:{}),
+        ...(rowSupplier?{supplier_alias:rowSupplier}:{}),
+        ...(rowTracking?{tracking_no:rowTracking}:{}),
+        ...(garmentType?{garment_type:garmentType}:{}),
         ...(toleranceMm&&Number(toleranceMm)>0?{tolerances:{dimension_mm:Number(toleranceMm)}}:{}),
         ...(attachmentId?{attachment_ids:[attachmentId]}:{}),
       };
@@ -635,7 +672,8 @@ export function NewOrder() {
       },
       attributes:{
         name:(itemName.trim()||activeOffer.title.en).slice(0,120),
-        ...(supplierRef.trim()?{supplier_ref:supplierRef.trim()}:{}),
+        ...(supplierRef.trim()?{supplier_ref:supplierRef.trim(),supplier_alias:supplierRef.trim()}:{}),
+        ...(garmentType?{garment_type:garmentType}:{}),
         ...(productLink.trim()?{product_url:productLink.trim()}:{}),
         ...(baseSize.trim()?{size_label:baseSize.trim()}:{}),
         ...(baseColor.trim()?{color_declared:baseColor.trim()}:{}),
@@ -918,12 +956,16 @@ export function NewOrder() {
             <div className="fields">
               <div className="field">
                 <label>Inspection template
-                  <select value={templateVariant} onChange={e=>setTemplateVariant(e.target.value)}>
+                  <select
+                    aria-label="Inspection template"
+                    value={inferVariantFromOffer(activeOffer)!=="basic"?inferVariantFromOffer(activeOffer):templateVariant}
+                    onChange={e=>selectTemplateVariant(e.target.value)}
+                  >
                     {isApparelCategory?<>
-                      <option value="basic">Apparel Basic Visual v1 ({activeOffer?.title.en??"Standard"})</option>
-                      <option value="tops">Tops &amp; Outerwear v1</option>
-                      <option value="leggings">Trousers &amp; Leggings v1</option>
-                      <option value="sports">Activewear &amp; Knitwear v1</option>
+                      <option value="basic">Apparel Basic Visual v1 (Standard)</option>
+                      <option value="tops">Tops &amp; Outerwear v1 (Tops &amp; Knitwear Inspection)</option>
+                      <option value="leggings">Trousers &amp; Leggings v1 (Bottoms, Pants &amp; Leggings Inspection)</option>
+                      {serviceKind!=="compare"&&<option value="sports">Activewear &amp; Sports Bra v1 (Sports Bra Inspection)</option>}
                     </>:<option value="basic">{activeOffer?.title.en??selectedCategoryName} Approved Template</option>}
                   </select>
                 </label>
@@ -938,7 +980,7 @@ export function NewOrder() {
                     onChange={e=>{
                       const val=Math.max(minQty,Math.min(maxQty,Number(e.target.value)||minQty));
                       setQty(val);
-                      if(serviceKind==="compare") {
+                      if(serviceKind==="compare" && !String(activeOffer?.sku_code??"").includes("-sub-")) {
                         const match=serviceOffers.find(o=>val>=o.rules.minimum&&val<=o.rules.maximum);
                         if(match) setSelectedOfferId(match.offer_id);
                       }
@@ -954,7 +996,10 @@ export function NewOrder() {
                 <select value={activeOffer?.offer_id??""} onChange={e=>{
                   const off=serviceOffers.find(o=>o.offer_id===e.target.value);
                   setSelectedOfferId(e.target.value);
-                  if(off) setQty(Math.max(off.rules.minimum,Math.min(off.rules.maximum,clampedQty)));
+                  if(off) {
+                    setTemplateVariant(inferVariantFromOffer(off));
+                    setQty(Math.max(off.rules.minimum,Math.min(off.rules.maximum,clampedQty)));
+                  }
                   setServerQuote(undefined);
                 }}>
                   {serviceOffers.map(o=><option key={o.offer_id} value={o.offer_id}>
@@ -1108,7 +1153,7 @@ export function NewOrder() {
           <div className="table-wrap">
             <table className="tbl">
               <thead>
-                <tr><th>#</th><th>Item SKU</th><th>{isApparelCategory?"Size":"Size / Spec"}</th><th>Color</th></tr>
+                <tr><th>#</th><th>Item SKU</th><th>{isApparelCategory?"Size":"Size / Spec"}</th><th>Color</th><th>Supplier / Shop</th><th>Parcel Waybill (optional)</th></tr>
               </thead>
               <tbody>
                 {Array.from({length:visibleRowLimit},(_,idx)=>{
@@ -1128,7 +1173,7 @@ export function NewOrder() {
                     <td>
                       <input
                         className="input"
-                        style={{minWidth:80}}
+                        style={{minWidth:72}}
                         aria-label={`Item ${idx+1} size`}
                         value={row?.size??baseSize}
                         onChange={e=>updateItemRow(idx,"size",e.target.value)}
@@ -1137,10 +1182,30 @@ export function NewOrder() {
                     <td>
                       <input
                         className="input"
-                        style={{minWidth:90}}
+                        style={{minWidth:84}}
                         aria-label={`Item ${idx+1} color`}
                         value={row?.color??baseColor}
                         onChange={e=>updateItemRow(idx,"color",e.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="input"
+                        style={{minWidth:110}}
+                        aria-label={`Item ${idx+1} supplier`}
+                        placeholder={supplierRef||"Shop / seller"}
+                        value={row?.supplier??supplierRef}
+                        onChange={e=>updateItemRow(idx,"supplier",e.target.value)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        className="input"
+                        style={{minWidth:120}}
+                        aria-label={`Item ${idx+1} waybill`}
+                        placeholder="e.g. SF1234567890"
+                        value={row?.tracking_no??""}
+                        onChange={e=>updateItemRow(idx,"tracking_no",e.target.value)}
                       />
                     </td>
                   </tr>;
@@ -1180,8 +1245,23 @@ export function NewOrder() {
 
         {step===3&&<Panel
           title="04   Inspection Scope"
-          subtitle="The selected template controls supported and required checks."
+          subtitle="The selected template controls supported measurements, workmanship checks, and required camera shots."
         >
+          {activeOffer?.content?.checks?.length>0&&<div className="card flat" style={{marginBottom:14}}>
+            <div className="row between flexwrap">
+              <strong>Active Template Checkpoints ({activeOffer.title.en} · {activeOffer.sku_code})</strong>
+              <Tag tone="green">{usd(activeOffer.rules.unit_cents??activeOffer.rules.package_cents)} {activeOffer.rules.unit_cents!=null?"/ item":"/ set"}</Tag>
+            </div>
+            <ul className="small" style={{marginTop:8,columns:2}}>
+              {(activeOffer.content.checks as Row[]).map((c:Row)=><li key={c.key}>
+                <strong>{c.label}</strong> {c.unit?`(${c.unit})`:""} — <span className="muted">{c.method}</span>
+              </li>)}
+            </ul>
+            {Array.isArray(activeOffer.content.shots)&&activeOffer.content.shots.length>0&&<div style={{marginTop:8}}>
+              <strong className="small">Required Camera Angles ({activeOffer.content.shots.length}): </strong>
+              <span className="small muted">{(activeOffer.content.shots as Row[]).map((s:Row)=>s.name||s.code).join(" · ")}</span>
+            </div>}
+          </div>}
           <div className="checklist">
             {wizardCheckDefs.map(([code,title,desc])=><label key={code} className="checkrow">
               <input
@@ -1901,10 +1981,10 @@ function ReportSection({section,results,grouped,showPhoto}:{section:Row;results:
     <div className="actions" style={{marginTop:8,flexWrap:"wrap"}}>
       {section.shots.map((sh:Row,idx:number)=>{
         const allIds=section.shots.map((s:Row)=>s.media_id);
-        const allLabels=section.shots.map((s:Row)=>`${s.item??""} · ${s.label??s.shot_code}`);
+        const allLabels=section.shots.map((s:Row)=>`${s.item??""} · ${s.label??s.shot_code??s.code}`);
         return <button key={sh.media_id+"-"+idx} type="button" className="evidence-open" onClick={()=>showPhoto(allIds,allLabels,idx)}>
-          <img className="thumb" src={"/api/v1/media/"+sh.media_id} alt={sh.label??sh.shot_code} loading="lazy"/>
-          <small className="code" style={{display:"block"}}>{sh.item?`${sh.item} · `:""}{sh.label??sh.shot_code}</small>
+          <img className="thumb" src={"/api/v1/media/"+sh.media_id} alt={sh.label??sh.shot_code??sh.code} loading="lazy"/>
+          <small className="code" style={{display:"block"}}>{sh.item?`${sh.item} · `:""}{sh.label??sh.shot_code??sh.code}</small>
         </button>;
       })}
     </div>
@@ -1914,10 +1994,10 @@ function ReportSection({section,results,grouped,showPhoto}:{section:Row;results:
     <div className="actions" style={{marginTop:8,flexWrap:"wrap"}}>
       {section.comparison.order_shots.map((sh:Row,idx:number)=>{
         const allIds=section.comparison.order_shots.map((s:Row)=>s.media_id);
-        const allLabels=section.comparison.order_shots.map((s:Row)=>`Side-by-Side · ${s.shot_code}`);
+        const allLabels=section.comparison.order_shots.map((s:Row)=>`Side-by-Side · ${s.shot_code??s.code}`);
         return <button key={sh.media_id+"-"+idx} type="button" className="evidence-open" onClick={()=>showPhoto(allIds,allLabels,idx)}>
-          <img className="thumb" src={"/api/v1/media/"+sh.media_id} alt={sh.shot_code} loading="lazy"/>
-          <small className="code" style={{display:"block"}}>{sh.shot_code}</small>
+          <img className="thumb" src={"/api/v1/media/"+sh.media_id} alt={sh.shot_code??sh.code} loading="lazy"/>
+          <small className="code" style={{display:"block"}}>{sh.shot_code??sh.code}</small>
         </button>;
       })}
     </div>
@@ -2167,7 +2247,11 @@ export function CustomerDesk({path}:{path:string}) {
         w.identity_state==="quarantined"?"Quarantined":label(w.custody_state),
         stamp(w.storage_until),
         <div className="cell-stack">
-          {w.reference_sample&&<span>{`${w.reference_sample.state==="active"?(w.reference_sample.expired?"Expired":"Active"):"Released"}${w.reference_sample.in_use?" · In comparison":""}`}</span>}
+          {w.reference_sample&&<span>{
+            w.reference_sample.state==="pending_safe_storage"
+              ?`Pending safe storage${w.reference_sample.seal_code?` · Seal ${w.reference_sample.seal_code}`:""}`
+              :`${w.reference_sample.state==="active"?(w.reference_sample.expired?"Expired":"Active"):"Released"}${w.reference_sample.seal_code?` · Seal ${w.reference_sample.seal_code}`:""}${w.reference_sample.in_use?" · In comparison":""}`
+          }</span>}
           {w.active_batch_id&&<small><CodeButton code={`Batch #${String(w.active_batch_id).slice(0,8)}`} onClick={()=>setBatchTarget(w.active_batch_id)}/></small>}
           {w.outbound_shipment?.id&&<small><CodeButton code={w.outbound_shipment.tracking_norm} onClick={()=>setTrackTarget({kind:"shipments",id:w.outbound_shipment.id,code:w.outbound_shipment.tracking_norm})}/></small>}
           {!w.reference_sample&&!w.active_batch_id&&!w.outbound_shipment?.id&&"—"}

@@ -519,7 +519,8 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
       translations:z.array(z.object({
         section:z.number().int().nonnegative(),
         result:z.number().int().nonnegative(),
-        reason_en:z.string().trim().min(2).max(2000),
+        typed_value_en:z.string().trim().min(1).max(2000).optional(),
+        reason_en:z.string().trim().min(1).max(2000).optional(),
         annotations_en:z.array(z.string().trim().max(200)).optional(),
       })).min(1),
     }),(db,a,b)=>translateReportCandidate(db,a,idSchema.parse(reportCandidate[1]),b));
@@ -1043,9 +1044,11 @@ async function extras(req:Request,path:string,actor:Actor|null):Promise<Response
     location_id:idSchema,
     scanned_item_code:z.string().trim().min(2).max(64).optional(),
     scanned_location_code:z.string().trim().min(2).max(64).optional(),
+    seal_code:z.string().trim().min(2).max(64).optional(),
   }),(db,a,b)=>moveItem(db,a,b.item_id,b.revision,b.location_id,{
     scanned_item_code:b.scanned_item_code,
     scanned_location_code:b.scanned_location_code,
+    seal_code:b.seal_code,
   }));
   const fake=path.match(/^\/checkout\/demo\/([a-f0-9-]{36})$/i);
   if(method==="POST" && fake && isDemo()) return extraWrite(req,path,actor,z.object({}),(db,a)=>demoPay(db,a,idSchema.parse(fake[1])));
@@ -1097,7 +1100,7 @@ async function dispatch(db:DB,actor:Actor,id:string,op:string,b:Record<string,an
       ...(x.batch_id?{batch_id:x.batch_id}:{}),
       ...(x.latest_attempt_state?{latest_attempt_state:x.latest_attempt_state}:{}),
     }))};
-    case "references": return {items:(await db.query(`select id reference_id,item_id,state,expires_at from reference_samples where org_id=$1 order by expires_at desc`,[organization(actor)])).rows};
+    case "references": return {items:(await db.query(`select id reference_id,item_id,state,expires_at,authorization_snapshot->>'seal_code' seal_code,authorization_snapshot->>'safe_location_code' safe_location_code from reference_samples where org_id=$1 order by expires_at desc`,[organization(actor)])).rows};
     case "requestRefund": return refundRequest(db,actor,b.payment_id,b.amount_cents,b.reason,id);
     case "requestPaymentRefund": return refundRequest(db,actor,id,b.amount_cents,b.reason);
     case "approveRefund": return refundApprove(db,actor,id,b.revision,hash(getCookie(req,"session")));

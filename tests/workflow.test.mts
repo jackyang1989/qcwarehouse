@@ -2108,12 +2108,27 @@ test("reference sample reservation, active comparison lock, outbound shipping co
   const reservedInstruction=await c.fetch(`/me/items/${seedItemId}/dispositions`,{
     action:"reserve_reference",terms_version_id:termsId,
   },"POST",201);
-  assert.equal(reservedInstruction.state,"completed");
+  assert.equal(reservedInstruction.state,"requested");
 
   const dupReserve=await c.fetch(`/me/items/${seedItemId}/dispositions`,{
     action:"reserve_reference",terms_version_id:termsId,
   },"POST",409);
   assert.equal(dupReserve.error.code,"REFERENCE_ALREADY_ACTIVE");
+
+  // Warehouse executes Golden Sample safe storage task: scan item + seal + move into REF_SAFE (A-04-02-03)
+  const storageDesk=await receiver.fetch("/staff/storage");
+  const pendingRef=storageDesk.pending_reference_tasks.find((t:{item_id:string})=>t.item_id===seedItemId);
+  assert(pendingRef);
+  const refSafeLoc=storageDesk.locations.find((l:{zone:string})=>l.zone==="reference");
+  assert(refSafeLoc);
+  await receiver.fetch("/staff/storage/move",{
+    item_id:seedItemId,
+    revision:pendingRef.item_revision,
+    location_id:refSafeLoc.id,
+    scanned_item_code:pendingRef.item_code,
+    scanned_location_code:refSafeLoc.code,
+    seal_code:pendingRef.seal_code,
+  });
 
   const refList=(await c.fetch("/me/reference-samples")).items as {reference_id:string;item_id:string;state:string;expires_at:string}[];
   assert.equal(refList.length,1);
@@ -5796,6 +5811,616 @@ test("warehouse expert audit remediations (AUD-001 to AUD-015) and 12 warehouse 
     disposition_ids:[d0.id,d1.id],
   },"POST",201);
   assert.ok(consolidatedReturnBatch.batch_id);
+});
+
+test("independent review remediation (NEW-001 to NEW-011) and 4-step Golden Sample conversion workflow",async()=>{
+  const {inflateSync}=await import("node:zlib");
+  const {createHash}=await import("node:crypto");
+  const {renderLabelPng,decodeLabelImage}=await import("../packages/core/labels");
+
+  const receiving=await staffLogin("receiving");
+  const inspector=await staffLogin("inspector");
+  const reviewer=await staffLogin("reviewer");
+  const {c:cust,registration:reg,terms}=await signCustomer();
+  const termsId=terms.find((t:{kind:string})=>t.kind==="terms")!.id;
+  const {locations}=await receiving.fetch("/staff/desk");
+  const locR01=locations.find((l:{code:string})=>l.code==="R-01")!;
+  const locRef=locations.find((l:{zone:string})=>l.zone==="reference"||l.code==="A-04-02-03")!;
+  assert.ok(locR01 && locRef);
+
+  // =========================================================================
+  // 1. NEW-001, NEW-002, NEW-003: Barcode quiet zones, XML escaping, QR V1-V4, perturbations & negative guards
+  // =========================================================================
+  const xmlSpecialCode=`S-A&B<C>"D'1`;
+  const xmlPng=await renderLabelPng(xmlSpecialCode,"item","standard_80x50");
+  const xmlDecoded=await decodeLabelImage(xmlPng);
+  assert.equal(xmlDecoded.decoded,true);
+  assert.equal(xmlDecoded.code,xmlSpecialCode);
+
+  const long46Code="P-LONG-BARCODE-PAYLOAD-VERSION-03-TEST-9999999";
+  assert.equal(long46Code.length,46);
+  const longPng=await renderLabelPng(long46Code,"package","compact_50x30");
+  const longMeta=await sharp(longPng).metadata();
+  // Auto-scaled width preserves full 10X Code-128 quiet zone even on compact_50x30
+  assert.ok((longMeta.width??0)>420,"Canvas auto-expands so long Code-128 never clips quiet zone");
+  const longDecoded=await decodeLabelImage(longPng);
+  assert.equal(longDecoded.decoded,true);
+  assert.equal(longDecoded.code,long46Code);
+
+  // Verify PDF physical aspect ratios across all 3 sizes via /staff/labels/print
+  const {PDFDocument}=await import("pdf-lib");
+  for(const [sz,expW,expH] of [["compact_50x30",142,85],["standard_80x50",227,142],["shelf_100x60",283,170]] as const) {
+    const pr=await receiving.fetch("/staff/labels/print",{
+      location_ids:[locRef.id],
+      label_size:sz,
+      reprint_reason:"Verify physical aspect ratio "+sz,
+    });
+    const pdfFile=await receiving.fetch(`/staff/labels/${pr.print_id}/file`);
+    const pDoc=await PDFDocument.load(pdfFile.pdf);
+    const pageSize=pDoc.getPage(0).getSize();
+    assert.equal(pageSize.width,expW,`PDF width matches physical ratio for ${sz}`);
+    assert.equal(pageSize.height,expH,`PDF height matches physical ratio for ${sz}`);
+  }
+
+  // Perturbation decoding: rotation, tilt, low-contrast, damaged 1D (QR fallback), low-res, dark border
+  const baseLabel=await renderLabelPng("S-8K4M2P","item","standard_80x50");
+  const baseM=await sharp(baseLabel).metadata();
+  const damaged1dSvg=Buffer.from(`<svg width="${baseM.width}" height="${baseM.height}" xmlns="http://www.w3.org/2000/svg"><rect x="10" y="${(baseM.height??262)-85}" width="${(baseM.width??420)-20}" height="55" fill="#ffffff"/></svg>`);
+  const perturbations:[string,Buffer][]= [
+    ["rot90",await sharp(baseLabel).rotate(90).png().toBuffer()],
+    ["rot180",await sharp(baseLabel).rotate(180).png().toBuffer()],
+    ["tilt12",await sharp(baseLabel).rotate(12,{background:"#ffffff"}).png().toBuffer()],
+    ["low_contrast",await sharp(baseLabel).linear(0.55,70).png().toBuffer()],
+    ["damaged_1d_qr_fallback",await sharp(baseLabel).composite([{input:damaged1dSvg,top:0,left:0}]).png().toBuffer()],
+    ["low_res",await sharp(baseLabel).resize(195).png().toBuffer()],
+    ["dark_desk_border",await sharp(baseLabel).extend({top:30,bottom:30,left:30,right:30,background:"#1e293b"}).png().toBuffer()],
+  ];
+  for(const [pName,pBuf] of perturbations) {
+    const res=await decodeLabelImage(pBuf);
+    assert.equal(res.decoded,true,`Perturbation ${pName} must decode`);
+    assert.equal(res.code,"S-8K4M2P",`Perturbation ${pName} payload exact match`);
+  }
+
+  // Negative barcode bounds: empty, >48 chars, and control characters
+  await assert.rejects(()=>renderLabelPng("","item"),(e:any)=>e?.code==="LABEL_CODE_INVALID");
+  await assert.rejects(()=>renderLabelPng("S-"+"X".repeat(48),"item"),(e:any)=>e?.code==="LABEL_CODE_INVALID");
+  await assert.rejects(()=>renderLabelPng("S-BAD\nCHAR","item"),/printable ASCII/);
+
+  // =========================================================================
+  // 2. NEW-005 & NEW-006: Intake context DTO, discrepancy auto-order freeze, and cross-waybill silent binding guard
+  // =========================================================================
+  const catalog=(await cust.fetch("/catalog")).offers;
+  const bottomsOffer=catalog.find((o:{sku_code:string})=>o.sku_code==="apparel-sub-bottoms-inspection-1")!;
+  const topsCompareOffer=catalog.find((o:{sku_code:string})=>o.sku_code==="apparel-sub-tops-compare-2")!;
+  assert.ok(bottomsOffer && topsCompareOffer,"Formal migration 008 subcategory offers present");
+
+  const wbDeclared="SF"+randomUUID().replace(/-/g,"").slice(0,10).toUpperCase();
+  const wbDifferent="YT"+randomUUID().replace(/-/g,"").slice(0,10).toUpperCase();
+  const {draft:orderTrackGuard}=await createAndPay(cust,[{
+    category_id:bottomsOffer.category_id,
+    offer_id:bottomsOffer.offer_id,
+    quantity:2,
+    items:[
+      {sample_code:"LEG-01",color_declared:"Black",size_label:"M",supplier_alias:"LeggingMaker",tracking_no:wbDeclared,garment_type:"bottoms"},
+      {sample_code:"LEG-02",color_declared:"Navy",size_label:"L",supplier_alias:"LeggingMaker",tracking_no:wbDeclared,garment_type:"bottoms"},
+    ],
+  }],terms);
+
+  const advDeclared=await cust.fetch("/me/parcels",{address_id:reg.warehouse_address.id,tracking_no:wbDeclared,carrier_code:"sf",order_ids:[orderTrackGuard.id]},"POST",201);
+  const advDifferent=await cust.fetch("/me/parcels",{address_id:reg.warehouse_address.id,tracking_no:wbDifferent,carrier_code:"yto",order_ids:[]},"POST",201);
+
+  const pkgDecl=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:wbDeclared,advice_id:advDeclared.id,carrier_code:"sf",outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+  const pkgDiff=await receiving.fetch("/staff/intake/check-in",{
+    tracking_no:wbDifferent,advice_id:advDifferent.id,carrier_code:"yto",outer_media_ids:[await receiving.photo("intake_outer")],
+  },"POST",201);
+
+  const codeDecl="S-TG"+randomUUID().replace(/-/g,"").slice(0,4).toUpperCase();
+  const codeDiff="S-DF"+randomUUID().replace(/-/g,"").slice(0,4).toUpperCase();
+  const unpDecl=await receiving.fetch(`/staff/packages/${pkgDecl.id}/items`,{revision:pkgDecl.revision,items:[{code:codeDecl,location_id:locR01.id}]},"POST",201);
+  const unpDiff=await receiving.fetch(`/staff/packages/${pkgDiff.id}/items`,{revision:pkgDiff.revision,items:[{code:codeDiff,location_id:locR01.id}]},"POST",201);
+
+  // Verify NEW-005 flattened & nested intake_context fields
+  const pkgDeclDetail=await receiving.fetch(`/staff/packages/${pkgDecl.id}`);
+  assert.equal(pkgDeclDetail.intake_context.total_declared_qty,2);
+  assert.equal(pkgDeclDetail.intake_context.cumulative_received_qty,1);
+  assert.equal(pkgDeclDetail.intake_context.remaining_unreceived_qty,1);
+  assert.equal(pkgDeclDetail.intake_context.orders[0].id,orderTrackGuard.id);
+  assert.equal(pkgDeclDetail.intake_context.orders[0].order_id,orderTrackGuard.id);
+  assert.equal(pkgDeclDetail.intake_context.declared_items.length,2);
+  assert.equal(pkgDeclDetail.intake_context.declared_items[0].order_public_no,orderTrackGuard.public_no);
+  assert.equal(pkgDeclDetail.intake_context.declared_items[0].declared_tracking_no,wbDeclared);
+
+  // Verify NEW-006: Silent binding of item from wbDifferent to position declaring wbDeclared is REJECTED (409)
+  const diffLookup=await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:codeDiff}));
+  const targetPos=diffLookup.positions.find((p:{public_no:string;position:number})=>p.public_no===orderTrackGuard.public_no && p.position===2)!;
+  assert.ok(targetPos);
+
+  const silentMismatchErr=await receiving.fetch(`/staff/items/${unpDiff.item_ids[0]}/assign`,{
+    revision:1,
+    order_line_id:targetPos.order_line_id,
+    expected_item_id:targetPos.id,
+    evidence_ids:[await receiving.photo("label_photo")],
+  },"POST",409);
+  assert.equal(silentMismatchErr.error.code,"TRACKING_MISMATCH_CONFIRMATION_REQUIRED");
+
+  // Direct identifyItem link path also rejects silent cross-waybill bypass
+  const identifyBypassErr=await receiving.fetch(`/staff/items/${unpDiff.item_ids[0]}/identify`,{
+    revision:1,
+    matches_advice:true,
+    order_line_id:targetPos.order_line_id,
+    expected_item_id:targetPos.id,
+    evidence_ids:[await receiving.photo("label_photo")],
+  },"POST",409);
+  assert.equal(identifyBypassErr.error.code,"TRACKING_MISMATCH_CONFIRMATION_REQUIRED");
+
+  // Override without sufficient reason (<4 chars) still rejected
+  const shortReasonErr=await receiving.fetch(`/staff/items/${unpDiff.item_ids[0]}/assign`,{
+    revision:1,
+    order_line_id:targetPos.order_line_id,
+    expected_item_id:targetPos.id,
+    evidence_ids:[await receiving.photo("label_photo")],
+    force_tracking_mismatch:true,
+    override_reason:"ok",
+  },"POST",409);
+  assert.equal(shortReasonErr.error.code,"TRACKING_MISMATCH_CONFIRMATION_REQUIRED");
+
+  // Controlled override with force_tracking_mismatch + >=4 char reason + photo succeeds and writes audit trail
+  const controlledAssign=await receiving.fetch(`/staff/items/${unpDiff.item_ids[0]}/assign`,{
+    revision:1,
+    order_line_id:targetPos.order_line_id,
+    expected_item_id:targetPos.id,
+    evidence_ids:[await receiving.photo("label_photo")],
+    force_tracking_mismatch:true,
+    override_reason:"Seller split 2nd legging into YTO parcel; verified packing slip photo",
+  });
+  assert.ok(controlledAssign.assignment_id);
+  const {rows:overrideAudits}=await pool.query(
+    "select after from audit_events where entity_type='warehouse_items' and entity_id=$1 and action='assign_item' order by id desc limit 1",
+    [unpDiff.item_ids[0]]
+  );
+  assert.equal(overrideAudits[0]?.after?.tracking_mismatch_override,true);
+  assert.equal(overrideAudits[0]?.after?.declared_tracking_no,wbDeclared);
+  assert.equal(overrideAudits[0]?.after?.actual_tracking_no,wbDifferent);
+
+  // Verify NEW-005: Discrepancy reported WITHOUT explicit order_id auto-resolves linked order and freezes it (on_hold)
+  const autoFreezeRes=await receiving.fetch(`/staff/packages/${pkgDecl.id}/discrepancy`,{
+    revision:unpDecl.revision,
+    discrepancy_type:"shortage",
+    expected_qty:2,
+    actual_qty:1,
+    note:"Parcel SF arrived with 1 piece instead of 2; holding order pending confirmation",
+  });
+  assert.equal(autoFreezeRes.order_held,true);
+  assert.ok(String(autoFreezeRes.ticket_no).startsWith("QTY-"));
+  assert.equal((await cust.fetch(`/orders/${orderTrackGuard.id}`)).state,"on_hold");
+
+  // =========================================================================
+  // 3. NEW-004: Seller-aware return consolidation fail-closed vs verified multi-parcel same-seller return
+  // =========================================================================
+  // Case A: Blank supplier_alias across 2 parcels -> MUST FAIL CLOSED (409 BATCH_MISMATCH)
+  const {draft:orderBlankSeller}=await createAndPay(cust,[{
+    category_id:bottomsOffer.category_id,
+    offer_id:bottomsOffer.offer_id,
+    quantity:2,
+    items:[
+      {sample_code:"BLK-1",size_label:"M",color_declared:"Black"},
+      {sample_code:"BLK-2",size_label:"L",color_declared:"Black"},
+    ],
+  }],terms);
+  const wbBlank1="ZT"+randomUUID().replace(/-/g,"").slice(0,10).toUpperCase();
+  const wbBlank2="ZT"+randomUUID().replace(/-/g,"").slice(0,10).toUpperCase();
+  const advB1=await cust.fetch("/me/parcels",{address_id:reg.warehouse_address.id,tracking_no:wbBlank1,carrier_code:"zto",order_ids:[orderBlankSeller.id]},"POST",201);
+  const advB2=await cust.fetch("/me/parcels",{address_id:reg.warehouse_address.id,tracking_no:wbBlank2,carrier_code:"zto",order_ids:[orderBlankSeller.id]},"POST",201);
+  const pkgB1=await receiving.fetch("/staff/intake/check-in",{tracking_no:wbBlank1,advice_id:advB1.id,carrier_code:"zto",outer_media_ids:[await receiving.photo("intake_outer")]},"POST",201);
+  const pkgB2=await receiving.fetch("/staff/intake/check-in",{tracking_no:wbBlank2,advice_id:advB2.id,carrier_code:"zto",outer_media_ids:[await receiving.photo("intake_outer")]},"POST",201);
+  const cB1="S-BL"+randomUUID().replace(/-/g,"").slice(0,4).toUpperCase();
+  const cB2="S-BL"+randomUUID().replace(/-/g,"").slice(0,4).toUpperCase();
+  const uB1=await receiving.fetch(`/staff/packages/${pkgB1.id}/items`,{revision:pkgB1.revision,items:[{code:cB1,location_id:locR01.id}]},"POST",201);
+  const uB2=await receiving.fetch(`/staff/packages/${pkgB2.id}/items`,{revision:pkgB2.revision,items:[{code:cB2,location_id:locR01.id}]},"POST",201);
+  const posBList=(await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:cB1}))).positions.filter((p:{public_no:string})=>p.public_no===orderBlankSeller.public_no);
+  await receiving.fetch(`/staff/items/${uB1.item_ids[0]}/assign`,{revision:1,order_line_id:posBList[0].order_line_id,expected_item_id:posBList[0].id,evidence_ids:[await receiving.photo("label_photo")]});
+  await receiving.fetch(`/staff/items/${uB2.item_ids[0]}/assign`,{revision:1,order_line_id:posBList[1].order_line_id,expected_item_id:posBList[1].id,evidence_ids:[await receiving.photo("label_photo")]});
+  const ordBlankCur=await cust.fetch(`/orders/${orderBlankSeller.id}`);
+  await cust.fetch(`/orders/${orderBlankSeller.id}/cancel`,{revision:ordBlankCur.revision});
+
+  const retAddr={recipient:"Return Warehouse",phone:"13900001111",address:"No. 99 Textile Ave, Keqiao"};
+  const dispB1=await cust.fetch(`/orders/${orderBlankSeller.id}/dispositions`,{
+    item_id:uB1.item_ids[0],action:"return_to_seller",destination:retAddr,
+    return_info:{requested_from_seller:true,customer_pays_shipping:true},terms_version_id:termsId,
+  },"POST",201);
+  const dispB2=await cust.fetch(`/orders/${orderBlankSeller.id}/dispositions`,{
+    item_id:uB2.item_ids[0],action:"return_to_seller",destination:retAddr,
+    return_info:{requested_from_seller:true,customer_pays_shipping:true},terms_version_id:termsId,
+  },"POST",201);
+  const blankBypassErr=await cust.fetch("/dispatch-batches",{disposition_ids:[dispB1.id,dispB2.id]},"POST",409);
+  assert.equal(blankBypassErr.error.code,"BATCH_MISMATCH","Blank supplier_alias across parcels must fail closed");
+
+  // Case B: Verified same-seller across 2 parcels WITH matching supplier_alias + seller_id -> allowed; conflicting seller_id -> rejected!
+  const {draft:orderVerifiedSeller}=await createAndPay(cust,[{
+    category_id:bottomsOffer.category_id,
+    offer_id:bottomsOffer.offer_id,
+    quantity:3,
+    items:[
+      {sample_code:"VER-1",size_label:"S",color_declared:"Grey",supplier_alias:"KeqiaoOfficialMill"},
+      {sample_code:"VER-2",size_label:"M",color_declared:"Grey",supplier_alias:"KeqiaoOfficialMill"},
+      {sample_code:"VER-3",size_label:"L",color_declared:"Grey",supplier_alias:"KeqiaoOfficialMill"},
+    ],
+  }],terms);
+  const wbV1="SF"+randomUUID().replace(/-/g,"").slice(0,10).toUpperCase();
+  const wbV2="SF"+randomUUID().replace(/-/g,"").slice(0,10).toUpperCase();
+  const advV1=await cust.fetch("/me/parcels",{address_id:reg.warehouse_address.id,tracking_no:wbV1,carrier_code:"sf",order_ids:[orderVerifiedSeller.id]},"POST",201);
+  const advV2=await cust.fetch("/me/parcels",{address_id:reg.warehouse_address.id,tracking_no:wbV2,carrier_code:"sf",order_ids:[orderVerifiedSeller.id]},"POST",201);
+  const pkgV1=await receiving.fetch("/staff/intake/check-in",{tracking_no:wbV1,advice_id:advV1.id,carrier_code:"sf",outer_media_ids:[await receiving.photo("intake_outer")]},"POST",201);
+  const pkgV2=await receiving.fetch("/staff/intake/check-in",{tracking_no:wbV2,advice_id:advV2.id,carrier_code:"sf",outer_media_ids:[await receiving.photo("intake_outer")]},"POST",201);
+  const cV1="S-VR"+randomUUID().replace(/-/g,"").slice(0,4).toUpperCase();
+  const cV2="S-VR"+randomUUID().replace(/-/g,"").slice(0,4).toUpperCase();
+  const cV3="S-VR"+randomUUID().replace(/-/g,"").slice(0,4).toUpperCase();
+  const uV1=await receiving.fetch(`/staff/packages/${pkgV1.id}/items`,{revision:pkgV1.revision,items:[{code:cV1,location_id:locR01.id}]},"POST",201);
+  const uV2=await receiving.fetch(`/staff/packages/${pkgV2.id}/items`,{revision:pkgV2.revision,items:[{code:cV2,location_id:locR01.id},{code:cV3,location_id:locR01.id}]},"POST",201);
+  const posVList=(await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:cV1}))).positions.filter((p:{public_no:string})=>p.public_no===orderVerifiedSeller.public_no);
+  await receiving.fetch(`/staff/items/${uV1.item_ids[0]}/assign`,{revision:1,order_line_id:posVList[0].order_line_id,expected_item_id:posVList[0].id,evidence_ids:[await receiving.photo("label_photo")]});
+  await receiving.fetch(`/staff/items/${uV2.item_ids[0]}/assign`,{revision:1,order_line_id:posVList[1].order_line_id,expected_item_id:posVList[1].id,evidence_ids:[await receiving.photo("label_photo")]});
+  await receiving.fetch(`/staff/items/${uV2.item_ids[1]}/assign`,{revision:1,order_line_id:posVList[2].order_line_id,expected_item_id:posVList[2].id,evidence_ids:[await receiving.photo("label_photo")]});
+  const ordVerCur=await cust.fetch(`/orders/${orderVerifiedSeller.id}`);
+  await cust.fetch(`/orders/${orderVerifiedSeller.id}/cancel`,{revision:ordVerCur.revision});
+
+  const dispV1=await cust.fetch(`/orders/${orderVerifiedSeller.id}/dispositions`,{
+    item_id:uV1.item_ids[0],action:"return_to_seller",destination:retAddr,
+    return_info:{requested_from_seller:true,customer_pays_shipping:true,seller_id:"SHOP-KQ-01",seller_name:"Keqiao Official Mill"},terms_version_id:termsId,
+  },"POST",201);
+  const dispV2=await cust.fetch(`/orders/${orderVerifiedSeller.id}/dispositions`,{
+    item_id:uV2.item_ids[0],action:"return_to_seller",destination:retAddr,
+    return_info:{requested_from_seller:true,customer_pays_shipping:true,seller_id:"SHOP-KQ-01",seller_name:"Keqiao Official Mill"},terms_version_id:termsId,
+  },"POST",201);
+  const dispV3Conflict=await cust.fetch(`/orders/${orderVerifiedSeller.id}/dispositions`,{
+    item_id:uV2.item_ids[1],action:"return_to_seller",destination:retAddr,
+    return_info:{requested_from_seller:true,customer_pays_shipping:true,seller_id:"SHOP-DIFFERENT-99",seller_name:"Other Shop"},terms_version_id:termsId,
+  },"POST",201);
+
+  const conflictSellerIdErr=await cust.fetch("/dispatch-batches",{disposition_ids:[dispV1.id,dispV3Conflict.id]},"POST",409);
+  assert.equal(conflictSellerIdErr.error.code,"BATCH_MISMATCH");
+
+  const okMultiParcelSameSeller=await cust.fetch("/dispatch-batches",{disposition_ids:[dispV1.id,dispV2.id]},"POST",201);
+  assert.ok(okMultiParcelSameSeller.batch_id);
+
+  // =========================================================================
+  // 4. NEW-007, NEW-008, NEW-010, NEW-011 & Section 四 Golden Sample 4-Step Conversion
+  // =========================================================================
+  const {draft:orderCmp}=await createAndPay(cust,[{
+    category_id:topsCompareOffer.category_id,
+    offer_id:topsCompareOffer.offer_id,
+    quantity:2,
+    options:{size_mismatch_confirmed:true},
+    items:[
+      {sample_code:"CMP-TOP-A",size_label:"M",color_declared:"Ivory",supplier_alias:"TopAtelier",garment_type:"tops",tolerances:{dimension_mm:5}},
+      {sample_code:"CMP-TOP-B",size_label:"M",color_declared:"Ivory",supplier_alias:"TopAtelier",garment_type:"tops",tolerances:{dimension_mm:5}},
+    ],
+  }],terms);
+  const wbCmp="JD"+randomUUID().replace(/-/g,"").slice(0,10).toUpperCase();
+  const advCmp=await cust.fetch("/me/parcels",{address_id:reg.warehouse_address.id,tracking_no:wbCmp,carrier_code:"jd",order_ids:[orderCmp.id]},"POST",201);
+  const pkgCmp=await receiving.fetch("/staff/intake/check-in",{tracking_no:wbCmp,advice_id:advCmp.id,carrier_code:"jd",outer_media_ids:[await receiving.photo("intake_outer")]},"POST",201);
+  const cmpCodeA="S-CA"+randomUUID().replace(/-/g,"").slice(0,4).toUpperCase();
+  const cmpCodeB="S-CB"+randomUUID().replace(/-/g,"").slice(0,4).toUpperCase();
+  const unpCmp=await receiving.fetch(`/staff/packages/${pkgCmp.id}/items`,{
+    revision:pkgCmp.revision,
+    items:[{code:cmpCodeA,location_id:locR01.id},{code:cmpCodeB,location_id:locR01.id}],
+  },"POST",201);
+  const [cmpItemA,cmpItemB]=unpCmp.item_ids;
+  const cmpPosList=(await receiving.fetch("/staff/items/by-code?"+new URLSearchParams({code:cmpCodeA}))).positions.filter((p:{public_no:string})=>p.public_no===orderCmp.public_no);
+  await receiving.fetch(`/staff/items/${cmpItemA}/assign`,{revision:1,order_line_id:cmpPosList[0].order_line_id,expected_item_id:cmpPosList[0].id,evidence_ids:[await receiving.photo("label_photo")]});
+  await receiving.fetch(`/staff/items/${cmpItemB}/assign`,{revision:1,order_line_id:cmpPosList[1].order_line_id,expected_item_id:cmpPosList[1].id,evidence_ids:[await receiving.photo("label_photo")]});
+
+  const cmpTask=(await inspector.fetch("/staff/desk")).tasks.find((t:{order_id:string})=>t.order_id===orderCmp.id)!;
+  assert.ok(cmpTask);
+  let cmpRev=(await inspector.fetch(`/staff/inspection-tasks/${cmpTask.id}/start`,{revision:cmpTask.revision})).revision;
+  const cmpDetail=await inspector.fetch(`/staff/inspection-tasks/${cmpTask.id}`);
+  assert.equal(cmpDetail.components.length,2);
+
+  // Upload a clean light-cyan JPEG as defect photo so we can verify red bounding-box overlay on PDF vs untouched original in private_files
+  const cleanBlueJpg=await sharp({
+    create:{width:400,height:300,channels:3,background:{r:220,g:235,b:250}},
+  }).jpeg({quality:95}).toBuffer();
+  const cleanBlueSha=createHash("sha256").update(cleanBlueJpg).digest("hex");
+  const defectTicket=await inspector.fetch("/media/upload-url",{
+    kind:"shot",mime:"image/jpeg",size_bytes:cleanBlueJpg.length,sha256:cleanBlueSha,
+  },"POST",201);
+  const defectPutPath=new URL(defectTicket.upload_url).pathname.replace(/^\/api\/v1/,"")+new URL(defectTicket.upload_url).search;
+  await inspector.fetch(defectPutPath,cleanBlueJpg,"PUT",200);
+  await inspector.fetch(`/media/${defectTicket.media_id}/complete`,{});
+  const defectMediaId=defectTicket.media_id;
+  const {rows:[origFileBefore]}=await pool.query<{data:Buffer}>("select data from private_files where key=$1",["media/"+defectMediaId]);
+  const origShaBefore=createHash("sha256").update(origFileBefore.data).digest("hex");
+
+  // Record results for both members in the comparison group, including:
+  // - 2-attempt numeric measurements (52.0 cm & 52.4 cm)
+  // - Chinese typed_value on care_label_check ("领口洗水标中文说明待译")
+  // - Chinese reason + Chinese annotation label on collar_rib_stitch_check
+  const cmpResults:Record<string,unknown>[]=[];
+  for(const [mIdx,member] of cmpDetail.components.entries()) {
+    for(const ck of cmpDetail.content.checks) {
+      if(ck.type==="number") {
+        const baseVal=ck.key==="chest_flat_cm"?(mIdx===0?52.0:53.0):65.0;
+        const secondVal=ck.key==="chest_flat_cm"?(mIdx===0?52.4:53.2):65.0;
+        cmpResults.push(
+          {item_key:ck.key,component:member.id,attempt:1,status:"RECORDED",typed_value:baseVal,unit:ck.unit??"cm",is_final:false,method:ck.method},
+          {item_key:ck.key,component:member.id,attempt:2,status:"RECORDED",typed_value:secondVal,unit:ck.unit??"cm",is_final:true,method:ck.method},
+        );
+      } else if(mIdx===0 && ck.key==="label_marking_check") {
+        cmpResults.push({
+          item_key:ck.key,
+          component:member.id,
+          attempt:1,
+          status:"RECORDED",
+          typed_value:"主唛车缝左偏约 2mm",
+          is_final:true,
+          method:ck.method,
+        });
+      } else if(mIdx===0 && ck.key==="workmanship_seams") {
+        cmpResults.push({
+          item_key:ck.key,
+          component:member.id,
+          attempt:1,
+          status:"OBSERVED_ISSUE",
+          is_final:true,
+          method:ck.method,
+          reason:"左肩领口罗纹浮线 0.8cm",
+          details:{
+            severity:"material_issue",
+            part_code:"collar",
+            annotations:[{x:25,y:30,w:30,h:30,label:"领口浮线瑕疵"}],
+          },
+          evidence_ids:[defectMediaId],
+        });
+      } else {
+        cmpResults.push({
+          item_key:ck.key,
+          component:member.id,
+          attempt:1,
+          status:"NOT_OBSERVED",
+          is_final:true,
+          method:ck.method,
+        });
+      }
+    }
+  }
+  cmpRev=(await inspector.fetch(`/staff/inspection-tasks/${cmpTask.id}/results`,{revision:cmpRev,results:cmpResults},"PUT")).revision;
+
+  // Upload required per-member shots + group comparison order_shots
+  for(const member of cmpDetail.components) {
+    for(const sh of cmpDetail.content.shots) {
+      const sid=await inspector.photo("shot");
+      cmpRev=(await inspector.fetch(`/staff/inspection-tasks/${cmpTask.id}/shots`,{
+        revision:cmpRev,component:member.id,shot_code:sh.code,media_id:sid,
+      })).revision;
+    }
+  }
+  for(const oCode of cmpDetail.content.order_shots) {
+    const gid=await inspector.photo("shot");
+    cmpRev=(await inspector.fetch(`/staff/inspection-tasks/${cmpTask.id}/shots`,{
+      revision:cmpRev,component:"group",shot_code:oCode,media_id:gid,
+    })).revision;
+  }
+
+  await inspector.fetch(`/staff/inspection-tasks/${cmpTask.id}/submit`,{revision:cmpRev});
+  const cmpFresh=await inspector.fetch(`/staff/inspection-tasks/${cmpTask.id}`);
+  const cmpRepSub=await inspector.fetch(`/staff/orders/${orderCmp.id}/report/submit`,{
+    revision:cmpFresh.order_revision,
+    task_ids:[cmpTask.id],
+  });
+
+  // Verify NEW-011: group order_shots are NOT duplicated into section.shots
+  const repBeforeTr=await reviewer.fetch(`/staff/reports/${cmpRepSub.id}`);
+  const secCmp=repBeforeTr.snapshot.sections[0];
+  assert.equal(secCmp.comparison.order_shots.length,cmpDetail.content.order_shots.length);
+  assert.equal(secCmp.shots.length,cmpDetail.components.length*cmpDetail.content.shots.length,"section.shots must contain only member shots, zero duplicated group shots");
+  assert.ok(!secCmp.shots.some((s:{component?:string})=>s.component==="group"));
+
+  // Verify NEW-010: snapshot records measure_conditions, attempts[], recorded_by, recorded_at
+  assert.ok(String(secCmp.measure_conditions).includes("Garment laid flat"));
+  const chestRes0=secCmp.results.find((r:{item_key:string;item:string})=>r.item_key==="chest_flat_cm" && r.item===cmpCodeA);
+  assert.equal(chestRes0.attempts.length,2);
+  assert.equal(chestRes0.attempts[0].typed_value,52.0);
+  assert.equal(chestRes0.attempts[1].typed_value,52.4);
+  assert.ok(chestRes0.recorded_by && chestRes0.recorded_at);
+
+  // Verify NEW-007: Approval blocked if typed_value or annotations[0].label still has Chinese even after reason_en is translated
+  const careIdx=secCmp.results.findIndex((r:{item_key:string;item:string})=>r.item_key==="label_marking_check" && r.item===cmpCodeA);
+  const collarIdx=secCmp.results.findIndex((r:{item_key:string;item:string})=>r.item_key==="workmanship_seams" && r.item===cmpCodeA);
+  assert.ok(careIdx>=0 && collarIdx>=0);
+
+  const partialTr=await reviewer.fetch(`/staff/reports/${cmpRepSub.id}/candidate`,{
+    revision:repBeforeTr.revision,
+    translations:[{section:0,result:collarIdx,reason_en:"0.8 cm loose rib thread observed at left collar seam"}],
+  },"PATCH");
+  // Still blocked because care_label_check.typed_value and collar annotations[0].label still contain Chinese!
+  const stillBlockedErr=await reviewer.fetch(`/staff/reports/${cmpRepSub.id}/approve`,{
+    revision:partialTr.revision,
+    checklist:["reviewed_en","evidence_checked"],
+  },"POST",422);
+  assert.equal(stillBlockedErr.error.code,"ENGLISH_TRANSLATION_REQUIRED");
+
+  // Batch translate typed_value_en, reason_en, and annotations_en while preserving *_zh
+  const fullTr=await reviewer.fetch(`/staff/reports/${cmpRepSub.id}/candidate`,{
+    revision:partialTr.revision,
+    translations:[
+      {section:0,result:careIdx,typed_value_en:"Main neck label stitched ~2mm left of center"},
+      {
+        section:0,
+        result:collarIdx,
+        reason_en:"0.8 cm loose rib thread observed at left collar seam",
+        annotations_en:["Loose collar seam thread"],
+      },
+    ],
+  },"PATCH");
+
+  const repAfterTr=await reviewer.fetch(`/staff/reports/${cmpRepSub.id}`);
+  const afterSec=repAfterTr.snapshot.sections[0];
+  assert.equal(afterSec.results[careIdx].typed_value,"Main neck label stitched ~2mm left of center");
+  assert.equal(afterSec.results[careIdx].typed_value_zh,"主唛车缝左偏约 2mm");
+  assert.equal(afterSec.results[collarIdx].reason,"0.8 cm loose rib thread observed at left collar seam");
+  assert.equal(afterSec.results[collarIdx].reason_zh,"左肩领口罗纹浮线 0.8cm");
+  assert.equal(afterSec.results[collarIdx].annotations[0].label,"Loose collar seam thread");
+  assert.equal(afterSec.results[collarIdx].annotations[0].label_zh,"领口浮线瑕疵");
+
+  await reviewer.fetch(`/staff/reports/${cmpRepSub.id}/approve`,{
+    revision:fullTr.revision,
+    checklist:["reviewed_en","evidence_checked"],
+  },"POST",202);
+  for(let i=0;i<50;i++){if(!await workOnce())break;}
+
+  // Verify NEW-008: Online report & PDF content, special chars (·, ±), measurement traceability, and red defect bounding-box overlay
+  const pubReport=await cust.fetch(`/orders/${orderCmp.id}/report`);
+  const pdfTicket=await cust.fetch(`/orders/${orderCmp.id}/report/versions/${pubReport.version}/pdf`);
+  const pdfUrl=new URL(pdfTicket.url);
+  const pdfDownload=await cust.fetch(pdfUrl.pathname.slice("/api/v1".length)+pdfUrl.search);
+  const rawPdf:Buffer=pdfDownload.pdf;
+  assert.equal(rawPdf.subarray(0,5).toString(),"%PDF-");
+
+  // Decompress FlateDecode streams in PDF to inspect rendered WinAnsi text operators
+  const streamChunks:string[]=[rawPdf.toString("latin1")];
+  let searchPos=0;
+  const rawLatin=rawPdf.toString("latin1");
+  while(true) {
+    const sIdx=rawLatin.indexOf("stream",searchPos);
+    if(sIdx===-1) break;
+    let dataStart=sIdx+6;
+    if(rawLatin[dataStart]==="\r" && rawLatin[dataStart+1]==="\n") dataStart+=2;
+    else if(rawLatin[dataStart]==="\n") dataStart+=1;
+    const eIdx=rawLatin.indexOf("endstream",dataStart);
+    if(eIdx===-1) break;
+    searchPos=eIdx+9;
+    try {
+      const inflated=inflateSync(rawPdf.subarray(dataStart,eIdx).subarray(0,eIdx-dataStart));
+      streamChunks.push(inflated.toString("latin1"));
+    } catch {
+      try {
+        // Trim trailing CR/LF before endstream
+        let trimEnd=eIdx;
+        while(trimEnd>dataStart && (rawPdf[trimEnd-1]===0x0a || rawPdf[trimEnd-1]===0x0d)) trimEnd--;
+        const inflated=inflateSync(rawPdf.subarray(dataStart,trimEnd));
+        streamChunks.push(inflated.toString("latin1"));
+      } catch {}
+    }
+  }
+  // Decode PDF hex string tokens <...> into Latin-1 text as well, since pdf-lib encodes WinAnsi text as hex or literal strings
+  const hexDecodedParts:string[]=[];
+  const combinedStreams=streamChunks.join("\n");
+  for(const m of combinedStreams.matchAll(/<([0-9A-Fa-f]{4,})>/g)) {
+    const hex=m[1]!;
+    if(hex.length%2===0) {
+      hexDecodedParts.push(Buffer.from(hex,"hex").toString("latin1"));
+    }
+  }
+  const allPdfText=combinedStreams+"\n"+hexDecodedParts.join("\n");
+
+  // 1) Special characters: middle dot \xb7 (·) and plus-minus \xb1 (±) preserved in PDF!
+  assert.ok(allPdfText.includes("\xb7"),"PDF preserves middle dot (· / 0xB7)");
+  assert.ok(allPdfText.includes("\xb15mm") || allPdfText.includes("\xb1"),"PDF preserves plus-minus (± / 0xB1) tolerance symbol");
+  // 2) Measurement traceability: conditions, method, attempts #1/#2, inspector, and English annotation label
+  assert.ok(allPdfText.includes("Garment laid flat"),"PDF includes measurement conditions");
+  assert.ok(allPdfText.includes("Method:"),"PDF includes measurement method");
+  assert.ok(allPdfText.includes("Attempt #1: 52 cm") && allPdfText.includes("Attempt #2: 52.4 cm"),"PDF includes full measurement attempt history");
+  assert.ok(allPdfText.includes("Inspector:"),"PDF includes measurement operator & timestamp");
+  assert.ok(allPdfText.includes("Loose collar seam thread"),"PDF includes translated defect annotation label");
+  // 3) PDF vector rectangle / composited JPEG red bounding box + untouched original file in private_files
+  const {rows:[origFileAfter]}=await pool.query<{data:Buffer}>("select data from private_files where key=$1",["media/"+defectMediaId]);
+  assert.equal(createHash("sha256").update(origFileAfter.data).digest("hex"),origShaBefore,"Original media asset in private_files remains bit-for-bit untouched");
+
+  // Extract embedded JPEG streams (FFD8FF ... FFD9) from PDF and verify at least one embedded image contains red bounding-box pixels!
+  let foundRedBoxInEmbeddedJpeg=false;
+  let jpegScan=0;
+  while(jpegScan<rawPdf.length-4) {
+    const soi=rawPdf.indexOf(Buffer.from([0xff,0xd8,0xff]),jpegScan);
+    if(soi===-1) break;
+    const eoi=rawPdf.indexOf(Buffer.from([0xff,0xd9]),soi+3);
+    if(eoi===-1) break;
+    const jpgSlice=rawPdf.subarray(soi,eoi+2);
+    jpegScan=eoi+2;
+    try {
+      const {data:rawRgb,info}=await sharp(jpgSlice).raw().toBuffer({resolveWithObject:true});
+      if(info.channels>=3) {
+        let redCount=0;
+        for(let p=0;p<rawRgb.length;p+=info.channels) {
+          if(rawRgb[p]!>190 && rawRgb[p+1]!<80 && rawRgb[p+2]!<80) redCount++;
+        }
+        if(redCount>=50) {
+          foundRedBoxInEmbeddedJpeg=true;
+          break;
+        }
+      }
+    } catch {}
+  }
+  assert.equal(foundRedBoxInEmbeddedJpeg,true,"Embedded defect photo in PDF contains visible red bounding-box pixels");
+
+  // =========================================================================
+  // 5. Section 四: 4-Step Golden Sample Conversion Workflow (Customer Request -> Pending Task -> Scan/Seal/REF_SAFE -> Active & Notified)
+  // =========================================================================
+  // cmpItemA is currently in R-01 (receiving zone, NOT reference zone).
+  // Step 1: Customer requests converting cmpItemA to a Golden Sample without waiting for warehouse staff first!
+  const gsReq=await cust.fetch(`/orders/${orderCmp.id}/dispositions`,{
+    item_id:cmpItemA,
+    action:"reserve_reference",
+    condition_note:"Keep Ivory M top as Golden Sample for bulk production",
+    terms_version_id:termsId,
+  },"POST",201);
+  // Step 2: System creates pending task; item is NOT yet an active reference sample
+  assert.equal(gsReq.state,"requested");
+  const deskPendingGs=await cust.fetch("/me/desk");
+  const pendingRefRow=deskPendingGs.references.find((r:{item_id:string})=>r.item_id===cmpItemA);
+  assert.ok(pendingRefRow);
+  assert.equal(pendingRefRow.state,"pending_safe_storage");
+  assert.ok(String(pendingRefRow.seal_code).startsWith("GS-"));
+
+  // Negative check: Before warehouse seals & moves into REF_SAFE, reference_match order using pendingRefRow.reference_id is blocked!
+  const refMatchOffer=catalog.find((o:{sku_code:string})=>o.sku_code==="apparel-reference_match-1")!;
+  const prematureRefErr=await cust.fetch("/orders",{
+    lines:[{
+      category_id:refMatchOffer.category_id,
+      offer_id:refMatchOffer.offer_id,
+      quantity:1,
+      options:{reference_id:pendingRefRow.reference_id},
+    }],
+  },"POST",409);
+  assert.equal(prematureRefErr.error.code,"REFERENCE_UNAVAILABLE");
+
+  // Negative check: Moving into REF_SAFE with wrong seal_code is blocked!
+  const stDesk=await receiving.fetch("/staff/storage");
+  const wfTask=stDesk.pending_reference_tasks.find((t:{item_id:string})=>t.item_id===cmpItemA);
+  assert.ok(wfTask,"Warehouse storage desk lists pending Golden Sample sealing task");
+  const wrongSealErr=await receiving.fetch("/staff/storage/move",{
+    item_id:cmpItemA,
+    revision:wfTask.item_revision,
+    location_id:locRef.id,
+    scanned_item_code:cmpCodeA,
+    scanned_location_code:locRef.code,
+    seal_code:"GS-WRONG-SEAL",
+  },"POST",409);
+  assert.equal(wrongSealErr.error.code,"SEAL_CODE_MISMATCH");
+
+  // Step 3: Warehouse scans item + applies/confirms seal_code + moves into REF_SAFE (A-04-02-03)
+  const sealedMove=await receiving.fetch("/staff/storage/move",{
+    item_id:cmpItemA,
+    revision:wfTask.item_revision,
+    location_id:locRef.id,
+    scanned_item_code:cmpCodeA,
+    scanned_location_code:locRef.code,
+    seal_code:wfTask.seal_code,
+  });
+  assert.equal(sealedMove.reference_activated,true);
+  assert.equal(sealedMove.seal_code,wfTask.seal_code);
+
+  // Step 4: System confirms conversion complete (state='active', disposition='completed') and notifies customer!
+  const activeRefs=(await cust.fetch("/me/reference-samples")).items;
+  const activatedGs=activeRefs.find((r:{item_id:string})=>r.item_id===cmpItemA);
+  assert.ok(activatedGs);
+  assert.equal(activatedGs.state,"active");
+  assert.equal(activatedGs.safe_location_code,locRef.code);
+  assert.equal(activatedGs.seal_code,wfTask.seal_code);
+
+  const notices=(await cust.fetch("/me/notifications")).rows;
+  assert.ok(notices.some((n:{template:string})=>n.template==="reference.sealed"),"Customer receives reference.sealed notification");
 });
 
 test("all core operations have a validated success response",assertCoreCoverage);

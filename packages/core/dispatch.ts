@@ -29,25 +29,49 @@ export async function instruct(db:DB,actor:Actor,itemId:string,input:Instruction
   }
   const terms=await currentTerms(db,["terms"]);
   guard(terms[0]?.id===input.terms_version_id,"TERMS_CHANGED","Review the current terms.");
+  if(input.action==="reserve_reference") {
+    await db.query("update reference_samples set state='expired' where item_id=$1 and state='active' and expires_at<=now()",[itemId]);
+    guard(!(await db.query("select 1 from reference_samples where item_id=$1 and state in ('active','pending_safe_storage') and expires_at>now()",[itemId])).rowCount,
+      "REFERENCE_ALREADY_ACTIVE","This item is already an active or pending reference sample.");
+  }
   guard(!(await db.query("select 1 from disposition_requests where item_id=$1 and state not in ('completed','cancelled')",[itemId])).rowCount,
     "ITEM_RESERVED","Resolve the active handling instruction before submitting a new one.");
   if(input.action==="reserve_reference") {
-    await db.query("update reference_samples set state='expired' where item_id=$1 and state='active' and expires_at<=now()",[itemId]);
-    guard(!(await db.query("select 1 from reference_samples where item_id=$1 and state='active' and expires_at>now()",[itemId])).rowCount,
-      "REFERENCE_ALREADY_ACTIVE","This item is already an active reference sample.");
     await db.query("update warehouse_items set custody_state='stored',revision=revision+1 where id=$1 and custody_state='received'",[itemId]);
+    const curLoc=w.location_id
+      ?(await db.query<{id:string;code:string;zone:string}>("select id,code,zone from storage_locations where id=$1",[w.location_id])).rows[0]
+      :undefined;
+    const alreadyInSafeZone=curLoc?.zone==="reference";
+    const sealCode=`GS-${new Date().toISOString().slice(0,10).replace(/-/g,"")}-${String(w.code).replace(/[^A-Z0-9]/gi,"").slice(-6).toUpperCase()}`;
+    const dispState=alreadyInSafeZone?"completed":"requested";
+    const refState=alreadyInSafeZone?"active":"pending_safe_storage";
     const out=await one(db,`insert into disposition_requests(org_id,item_id,action,destination,return_info,authorization_snapshot,state,created_by)
-      values($1,$2,'reserve_reference',null,null,jsonb_build_object('terms_version_id',$3::uuid,'authorized_at',now()),'completed',$4)
-      returning id,item_id,state,revision`,[org,itemId,input.terms_version_id,actor.id]);
+      values($1,$2,'reserve_reference',null,null,jsonb_build_object(
+        'terms_version_id',$3::uuid,
+        'authorized_at',now(),
+        'pending_safe_storage',$5::boolean,
+        'seal_code',$6::text
+      ),$7,$4)
+      returning id,item_id,state,revision`,[org,itemId,input.terms_version_id,actor.id,!alreadyInSafeZone,sealCode,dispState]);
     const nextRev=await one<{n:number}>(db,"select coalesce(max(revision),0)::int+1 n from reference_samples where item_id=$1",[itemId]);
     const ref=await one<{id:string}>(db,`insert into reference_samples(id,item_id,org_id,revision,authorization_snapshot,condition_note,expires_at,state)
-      values($1,$2,$3,$4,$5,$6,now()+interval '90 days','active') returning id`,[
+      values($1,$2,$3,$4,$5,$6,now()+interval '90 days',$7) returning id`,[
       uuid(),itemId,org,nextRev.n,
-      {terms_version_id:input.terms_version_id,authorized_by:actor.id,authorized_at:new Date().toISOString(),disposition_id:out.id,...(order?.category_id?{category_id:order.category_id}:{})},
+      {
+        terms_version_id:input.terms_version_id,
+        authorized_by:actor.id,
+        authorized_at:new Date().toISOString(),
+        disposition_id:out.id,
+        seal_code:sealCode,
+        pending_safe_storage:!alreadyInSafeZone,
+        ...(alreadyInSafeZone?{safe_location_id:curLoc!.id,safe_location_code:curLoc!.code,sealed_at:new Date().toISOString()}:{}),
+        ...(order?.category_id?{category_id:order.category_id}:{}),
+      },
       input.condition_note??null,
+      refState,
     ]);
-    await audit(db,actor,"authorize_disposition","disposition_requests",out.id);
-    await audit(db,actor,"reserve_reference","reference_samples",ref.id,{version:nextRev.n});
+    await audit(db,actor,"authorize_disposition","disposition_requests",out.id,{action:"reserve_reference",pending_safe_storage:!alreadyInSafeZone,seal_code:sealCode});
+    await audit(db,actor,"reserve_reference","reference_samples",ref.id,{version:nextRev.n,state:refState,seal_code:sealCode});
     return out;
   }
   if(["to_forwarder","to_domestic_address","return_to_seller"].includes(input.action)) {
@@ -61,9 +85,17 @@ export async function instruct(db:DB,actor:Actor,itemId:string,input:Instruction
       guard(Boolean(input.destination?.member_code?.trim()),"DESTINATION_INCOMPLETE","Provide your freight forwarder warehouse member/inbound code.",422);
     }
   }
-  let storedReturnInfo:Record<string,unknown>|null=input.return_info??null;
+   let storedReturnInfo:Record<string,unknown>|null=input.return_info??null;
   if(input.action==="return_to_seller") {
-    const info=z.object({requested_from_seller:z.literal(true),customer_pays_shipping:z.literal(true),deadline:z.iso.datetime().optional()}).parse(input.return_info);
+    const info=z.object({
+      requested_from_seller:z.literal(true),
+      customer_pays_shipping:z.literal(true),
+      deadline:z.iso.datetime().optional(),
+      seller_id:z.string().trim().min(1).max(120).optional(),
+      seller_name:z.string().trim().min(1).max(120).optional(),
+      seller_phone:z.string().trim().min(1).max(60).optional(),
+      rma_no:z.string().trim().min(1).max(120).optional(),
+    }).parse(input.return_info);
     guard(!info.deadline || new Date(info.deadline)>new Date(),"RETURN_EXPIRED","The seller's return deadline has passed.");
     storedReturnInfo=info;
   } else if(input.action==="retain") {
@@ -137,7 +169,13 @@ export async function planBatch(db:DB,actor:Actor,ids:string[]) {
   guard(uniqueIds.length===ids.length && ids.length>0 && ids.length<=100,"DISPOSITION_UNAVAILABLE","Some instructions cannot be combined.");
   const rows=(await db.query(
     `select d.*,
-            coalesce(e.declared_fields->>'supplier_alias',e.declared_fields->>'supplier',l.attributes->>'supplier_alias','') supplier_alias
+            w.package_id,
+            w.identity_state,
+            l.order_id,
+            coalesce(e.declared_fields->>'supplier_alias',e.declared_fields->>'supplier',e.declared_fields->>'supplier_ref',l.attributes->>'supplier_alias',l.attributes->>'supplier_ref','') supplier_alias,
+            coalesce(e.declared_fields->>'seller_id',e.declared_fields->>'supplier_id',l.attributes->>'seller_id',d.return_info->>'seller_id','') seller_id,
+            coalesce(e.declared_fields->>'seller_name',d.return_info->>'seller_name','') seller_name,
+            coalesce(e.declared_fields->>'seller_phone',d.return_info->>'seller_phone','') seller_phone
      from disposition_requests d
      join warehouse_items w on w.id=d.item_id and w.org_id=d.org_id
      left join order_line_item_links a on a.item_id=w.id and a.unlinked_at is null
@@ -164,12 +202,56 @@ export async function planBatch(db:DB,actor:Actor,ids:string[]) {
       (!r.return_info?.deadline || new Date(r.return_info.deadline)>new Date())
     );
     guard(validReturnAuth,"BATCH_MISMATCH","All seller return items must have active seller return authorization and unexpired deadlines.");
-    const nonEmptySuppliers=[...new Set(rows.map(r=>norm(r.supplier_alias)).filter(Boolean))];
-    guard(
-      nonEmptySuppliers.length<=1,
-      "BATCH_MISMATCH",
-      "Items from different declared suppliers cannot be merged into the same seller return batch."
-    );
+    if(rows.length>1) {
+      // Fail-closed: multi-item seller return consolidation requires verified package/order lineage and non-empty supplier identity on every item
+      const allHaveVerifiedSource=rows.every(r=>
+        Boolean(r.package_id) &&
+        r.identity_state==="identified" &&
+        Boolean(r.order_id) &&
+        norm(r.supplier_alias).length>0
+      );
+      guard(
+        allHaveVerifiedSource,
+        "BATCH_MISMATCH",
+        "Seller return consolidation requires verified order/package lineage and a non-empty supplier identity on every item (fail-closed when source is missing)."
+      );
+      const distinctSuppliers=[...new Set(rows.map(r=>norm(r.supplier_alias)))];
+      guard(
+        distinctSuppliers.length===1,
+        "BATCH_MISMATCH",
+        "Items from different declared suppliers cannot be merged into the same seller return batch."
+      );
+      // Guard against different sellers using the same short alias (e.g. conflicting seller_id, seller_name, or seller_phone)
+      const sellerIds=rows.map(r=>norm(r.seller_id)).filter(Boolean);
+      guard(
+        new Set(sellerIds).size<=1 && (sellerIds.length===0 || sellerIds.length===rows.length),
+        "BATCH_MISMATCH",
+        "Items with conflicting or partially missing seller IDs cannot be merged into the same seller return batch."
+      );
+      const sellerNames=rows.map(r=>norm(r.seller_name)).filter(Boolean);
+      guard(
+        new Set(sellerNames).size<=1 && (sellerNames.length===0 || sellerNames.length===rows.length),
+        "BATCH_MISMATCH",
+        "Items with conflicting seller names cannot be merged into the same seller return batch."
+      );
+      const sellerPhones=rows.map(r=>norm(r.seller_phone)).filter(Boolean);
+      guard(
+        new Set(sellerPhones).size<=1 && (sellerPhones.length===0 || sellerPhones.length===rows.length),
+        "BATCH_MISMATCH",
+        "Items with conflicting seller phone numbers cannot be merged into the same seller return batch."
+      );
+      // Multi-parcel same-seller check: if items come from different inbound parcels, they must either belong to the same order with matching supplier identity or carry explicit matching seller_id/seller_name
+      const distinctPackages=new Set(rows.map(r=>r.package_id));
+      if(distinctPackages.size>1) {
+        const distinctOrders=new Set(rows.map(r=>r.order_id));
+        const hasExplicitSellerProof=sellerIds.length===rows.length || sellerNames.length===rows.length;
+        guard(
+          distinctOrders.size===1 || hasExplicitSellerProof,
+          "BATCH_MISMATCH",
+          "Consolidating seller returns across different inbound parcels and different orders requires explicit matching seller_id or seller_name verification."
+        );
+      }
+    }
   }
   const b=await one<{id:string;revision:number}>(db,`insert into dispatch_batches(org_id,destination_snapshot,action,revision,state) values($1,$2,$3,1,'draft') returning id,revision`,[org,first.destination,first.action]);
   for(const r of rows) await db.query("insert into dispatch_batch_items(batch_id,item_id,disposition_id,org_id) values($1,$2,$3,$4)",[b.id,r.item_id,r.id,org]);

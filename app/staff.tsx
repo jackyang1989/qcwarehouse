@@ -176,9 +176,14 @@ export function WarehouseDesk({path,actor,demo=false}:{path:string;actor:Row;dem
           <p>匹配结果 <strong>{({matched:"已关联订单",user_only:"已找到客户，待关联订单",unmatched:"待认领（入仓后须停放未认领区 U-01）",ambiguous:"多个候选，请核对快递公司"} as Row)[lookup.result.match_state]}</strong></p>
           {lookup.result.receiving_code&&<p className="code">专属收件码：{lookup.result.receiving_code}</p>}
           {lookup.result.order_ids.length>0&&<p>关联订单数 {lookup.result.order_ids.length}</p>}
-          {lookup.context&&lookup.context.orders?.length>0&&<p className="small">
-            订单申报总件数：<strong>{lookup.context.total_declared_qty}</strong> 件 · 仓库累计已实收：<strong>{lookup.context.cumulative_received_qty}</strong> 件 · 在途未到仓预报运单：<strong>{lookup.context.in_transit_advices_count}</strong> 单
-          </p>}
+          {lookup.context&&lookup.context.orders?.length>0&&<div className="small" style={{marginTop:6}}>
+            <p style={{margin:"2px 0"}}>
+              订单申报总件数：<strong>{lookup.context.total_declared_qty}</strong> 件 · 仓库累计已实收：<strong>{lookup.context.cumulative_received_qty}</strong> 件 · 待到仓/未收件数：<strong>{lookup.context.remaining_unreceived_qty??Math.max(0,(lookup.context.total_declared_qty??0)-(lookup.context.cumulative_received_qty??0))}</strong> 件 · 在途未到仓预报运单：<strong>{lookup.context.in_transit_advices_count}</strong> 单
+            </p>
+            <p className="muted" style={{margin:"2px 0"}}>
+              关联委托订单：{lookup.context.orders.map((o:Row)=>`${o.public_no}（申报 ${o.total_declared_qty} / 已收 ${o.cumulative_received_qty} / 待绑 ${o.remaining_unlinked_qty}）`).join(" · ")}
+            </p>
+          </div>}
           {lookup.result.package_id&&<p>此运单已有实收记录，已定位到拆包登记。</p>}
         </div>}
         {lookup&&lookup.result.match_state!=="ambiguous"&&!lookup.result.package_id&&<Form key={lookup.tracking+"-"+lookup.carrier} label="确认实物到仓" run={async f=>{
@@ -247,13 +252,30 @@ export function WarehouseDesk({path,actor,demo=false}:{path:string;actor:Row;dem
               empty="该包裹关联订单暂无逐件申报明细。"
             />
           </div>}
-          <Table headers={["实物码","类型","库存状态","质检阶段","库位","操作"]} rows={selectedPackage.items.map((i:Row)=>[
+          <Table headers={["实物码","类型","库存状态","质检阶段","当前库位","同屏快捷操作"]} rows={selectedPackage.items.map((i:Row)=>[
             <span className="code">{i.code}</span>,
             i.parent_item_id?"套装组件":"主件",
             label(i.custody_state),
             <Tag tone={i.inspection_stage==="in_inspection"?"yellow":i.inspection_stage==="inspected"?"green":"gray"}>{label(i.inspection_stage??"pending")}</Tag>,
-            i.location??"—",
-            <a className="button sm" href="#item-intake" onClick={()=>selectItem(i.code)}>同屏核对/绑单</a>,
+            <span className="code">{i.location??"—"}</span>,
+            <div className="actions">
+              <a className="button sm primary" href="#item-intake" onClick={()=>selectItem(i.code)}>同屏核对/绑单</a>
+              {["received","stored"].includes(i.custody_state)&&<Form inline key={`mv-${i.id}-${i.revision}`} label="移位" run={async f=>{
+                const locId=text(f,"to_loc");
+                const locObj=data.locations.find((l:Row)=>l.id===locId);
+                if(!locObj) throw new Error("请选择目标库位。");
+                await request("/staff/storage/move","POST",{
+                  item_id:i.id,
+                  revision:i.revision,
+                  location_id:locObj.id,
+                  scanned_item_code:i.code,
+                  scanned_location_code:locObj.code,
+                });
+                packageDetail.reload();reload();
+              }}>
+                <Select name="to_loc" label="" choices={locations.filter((l:{id:string;label:string})=>l.label!==i.location)}/>
+              </Form>}
+            </div>,
           ])}/>
           {selectedPackage.parcel.state!=="quarantined"&&<Form key={packageId} label="逐件建档（自动生成无歧义 6 位 Base32 样品码）" run={async f=>{
             const n=Number(text(f,"quantity"));
@@ -314,9 +336,10 @@ export function WarehouseDesk({path,actor,demo=false}:{path:string;actor:Row;dem
           <details className="card" style={{marginTop:12}}>
             <summary>实收件数与申报不符 / 多包裹分批在途登记</summary>
             <Form label="提交包裹数量核对结论" run={async f=>{
+              const chosenOrderId=text(f,"order_id")||(selectedPackage.intake_context?.orders?.[0]?.order_id??selectedPackage.intake_context?.orders?.[0]?.id??"");
               const res=await request("/staff/packages/"+selectedPackage.parcel.id+"/discrepancy","POST",{
                 revision:selectedPackage.parcel.revision,
-                ...(selectedPackage.intake_context?.orders?.[0]?.id?{order_id:selectedPackage.intake_context.orders[0].id}:{}),
+                ...(chosenOrderId?{order_id:chosenOrderId}:{}),
                 expected_qty:Number(text(f,"expected_qty")),
                 actual_qty:Number(text(f,"actual_qty")),
                 discrepancy_type:text(f,"discrepancy_type"),
@@ -325,6 +348,15 @@ export function WarehouseDesk({path,actor,demo=false}:{path:string;actor:Row;dem
               setDiscrepancyResult(res);
               packageDetail.reload();reload();
             }}>
+              {(selectedPackage.intake_context?.orders?.length??0)>0&&<Select
+                name="order_id"
+                label="关联委托订单"
+                value={selectedPackage.intake_context.orders[0].order_id??selectedPackage.intake_context.orders[0].id}
+                choices={selectedPackage.intake_context.orders.map((o:Row)=>({
+                  id:o.order_id??o.id,
+                  label:`${o.public_no}（申报 ${o.total_declared_qty} 件 · 已收 ${o.cumulative_received_qty} 件）`,
+                }))}
+              />}
               <div className="fields three">
                 <Field name="expected_qty" label="订单申报总件数" type="number" min={1} value={selectedPackage.intake_context?.total_declared_qty||selectedPackage.parcel.received_quantity||1}/>
                 <Field name="actual_qty" label="本包实收件数" type="number" min={0} value={selectedPackage.parcel.received_quantity||0}/>
@@ -338,7 +370,9 @@ export function WarehouseDesk({path,actor,demo=false}:{path:string;actor:Row;dem
               <Field name="note" label="核对差异说明（客户与客服可见）" value="已核对外箱与内物清点数量"/>
             </Form>
             {discrepancyResult&&<p className="notice" role="status">
-              已记录数量核对结果：{discrepancyResult.discrepancy_type}{discrepancyResult.ticket_no?` · 已生成异常工单 ${discrepancyResult.ticket_no} 并挂起关联订单`:""}
+              已记录数量核对结果：{discrepancyResult.discrepancy_type}
+              {discrepancyResult.ticket_no?` · 已生成异常工单 ${discrepancyResult.ticket_no}`:""}
+              {discrepancyResult.order_held?" · 关联订单已自动冻结为暂停状态 (on_hold)":""}
             </p>}
           </details>
         </>}
@@ -2380,7 +2414,7 @@ export function WarehousePackageView({code}:{code:string}) {
       </div>
       {data.intake_context&&data.intake_context.orders?.length>0&&<Panel title="客户申报与仓库累计实收对照">
         <p className="small muted">
-          订单申报总件数：<strong>{data.intake_context.total_declared_qty}</strong> 件 · 仓库累计已实收：<strong>{data.intake_context.cumulative_received_qty}</strong> 件 · 在途未到仓预报运单：<strong>{data.intake_context.in_transit_advices_count}</strong> 单
+          订单申报总件数：<strong>{data.intake_context.total_declared_qty}</strong> 件 · 仓库累计已实收：<strong>{data.intake_context.cumulative_received_qty}</strong> 件 · 仍差在途件数：<strong>{data.intake_context.remaining_unreceived_qty??Math.max(0,(data.intake_context.total_declared_qty??0)-(data.intake_context.cumulative_received_qty??0))}</strong> 件 · 在途未到仓预报运单：<strong>{data.intake_context.in_transit_advices_count}</strong> 单
         </p>
         <Table
           headers={["订单号 / 位置","款号","颜色","尺码","供应商","服装子类","申报运单","当前绑定实物"]}
@@ -2446,19 +2480,37 @@ export function WarehousePackageView({code}:{code:string}) {
 function ItemIdentity({data,onSave}:{data:Row;onSave:()=>void}) {
   const {item}=data;
   const positions:Row[]=data.positions;
+  const [selectedPosId,setSelectedPosId]=useState<string>(positions[0]?.id??"");
+  useEffect(()=>{
+    if(!positions.some(p=>p.id===selectedPosId)) {
+      setSelectedPosId(positions[0]?.id??"");
+    }
+  },[positions,selectedPosId]);
+  const selectedPos=positions.find(p=>p.id===selectedPosId)??positions[0];
+  const actualTrack=String(item.source_tracking_no??"").trim().toUpperCase();
+  const posPerItemTrack=String(selectedPos?.per_item_tracking_no??"").trim().toUpperCase();
+  const posAdvisedTracks:string[]=Array.isArray(selectedPos?.advised_tracking_nos)?selectedPos.advised_tracking_nos.map((x:string)=>String(x).trim().toUpperCase()).filter(Boolean):[];
+  const hasTrackingMismatch=Boolean(
+    actualTrack && (
+      (posPerItemTrack && posPerItemTrack!==actualTrack) ||
+      (!posPerItemTrack && posAdvisedTracks.length>0 && !posAdvisedTracks.includes(actualTrack))
+    )
+  );
+  const expectedTrackDisplay=posPerItemTrack || posAdvisedTracks.join(", ") || "—";
   return <>
     <div className="notice">
       <strong className="code">{item.code}</strong> · {label(item.custody_state)} · 身份状态 {label(item.identity_state)} · 质检进度 <Tag tone={item.inspection_stage==="in_inspection"?"yellow":item.inspection_stage==="inspected"?"green":"gray"}>{label(item.inspection_stage??"pending")}</Tag> · 库位 <span className="code">{item.location??"未登记"}</span>
-      <p>实收包裹 <Link href={"/wh/packages/"+item.package_code}>{item.package_code}</Link>{item.order_number?" · 委托 "+item.order_number:" · 无委托实物"}</p>
+      <p>实收包裹 <Link href={"/wh/packages/"+item.package_code}>{item.package_code}</Link>{item.source_tracking_no?<> · 实际入库运单 <span className="code">{item.source_tracking_no}</span></>:null}{item.order_number?" · 委托 "+item.order_number:" · 无委托实物"}</p>
       {item.components?.length>0&&<p className="small">包含套装组件：{item.components.map((c:Row)=>c.code).join("、")}</p>}
-      {item.is_reference_sample&&<p><Tag tone="yellow">确认样核对委托 (Golden Sample / Reference Match)</Tag></p>}
+      {item.is_reference_sample&&<p><Tag tone="yellow">确认样核对委托 (Golden Sample · 铅封 {item.reference_seal_code??"—"})</Tag></p>}
+      {item.reference_sample_state==="pending_safe_storage"&&<p><Tag tone="yellow">待转入 REF_SAFE 确认样专柜 · 铅封号 {item.reference_seal_code??"待分配"}</Tag></p>}
       {item.reference_zone_warning&&<p className="bad"><strong>确认样库位告警：</strong>{item.reference_zone_warning}</p>}
       {!item.ownership_verified&&<p>待核验客户归属。完成认领后才能关联委托。</p>}
     </div>
     {item.declared_fields&&<div className="card">
       <strong>客户委托申报信息（位置 #{item.expected_position}）</strong>
       <p className="small">
-        款号/编号：<span className="code">{item.declared_fields.sample_code??"—"}</span> · 颜色：{item.declared_fields.color_declared??item.declared_fields.color??"—"} · 尺码：{item.declared_fields.size_label??item.declared_fields.size??"—"} · 供应商：{item.declared_fields.supplier_alias??"—"} · 服装子类：{item.declared_fields.garment_type??"—"} · 申报运单：<span className="code">{item.declared_fields.source_tracking_no??"—"}</span>
+        款号/编号：<span className="code">{item.declared_summary?.sample_code||item.declared_fields.sample_code||"—"}</span> · 颜色：{item.declared_summary?.color||item.declared_fields.color_declared||item.declared_fields.color||"—"} · 尺码：{item.declared_summary?.size||item.declared_fields.size_label||item.declared_fields.size||"—"} · 供应商：{item.declared_summary?.supplier_alias||item.declared_fields.supplier_alias||"—"} · 服装子类：{item.declared_summary?.garment_type||item.declared_fields.garment_type||"—"} · 申报运单：<span className="code">{item.declared_summary?.declared_tracking_no||item.declared_fields.tracking_no||item.declared_fields.source_tracking_no||"—"}</span>
       </p>
       {item.declared_fields.mismatch_note&&<p className="bad small">当前登记不符：{item.declared_fields.mismatch_note}</p>}
     </div>}
@@ -2506,7 +2558,7 @@ function ItemIdentity({data,onSave}:{data:Row;onSave:()=>void}) {
             p.size??"—",
             p.supplier_alias??"—",
             p.garment_type??"—",
-            <span className="code">{p.source_tracking_no??"—"}</span>,
+            <span className="code">{p.declared_tracking_no||p.source_tracking_no||"—"}</span>,
           ])}
         />
       </div>
@@ -2514,13 +2566,35 @@ function ItemIdentity({data,onSave}:{data:Row;onSave:()=>void}) {
         const position=positions.find(p=>p.id===text(f,"position"));
         if(!position)throw new Error("请选择同一客户的委托位置。");
         const proof=await upload(f.get("photo"),"label_photo");
-        await request("/staff/items/"+item.id+"/assign","POST",{revision:item.revision,order_line_id:position.order_line_id,
-          expected_item_id:position.id,evidence_ids:[proof]});
+        const forceMismatch=checked(f,"force_tracking_mismatch");
+        const overrideReason=text(f,"override_reason");
+        await request("/staff/items/"+item.id+"/assign","POST",{
+          revision:item.revision,
+          order_line_id:position.order_line_id,
+          expected_item_id:position.id,
+          evidence_ids:[proof],
+          ...(forceMismatch?{force_tracking_mismatch:true}:{}),
+          ...(overrideReason?{override_reason:overrideReason}:{}),
+        });
         onSave();
-      }}><Select name="position" label="同一客户的待收委托位置（含款号/颜色/尺码/供应商）" choices={positions.map(p=>({
-        id:p.id,
-        label:`${p.public_no} · ${p.title["zh-CN"]} · #${p.position}${p.sample_code?` · 款号:${p.sample_code}`:""}${p.color?` · 颜色:${p.color}`:""}${p.size?` · 尺码:${p.size}`:""}${p.supplier_alias?` · 供应商:${p.supplier_alias}`:""}${p.source_tracking_no?` · 运单:${p.source_tracking_no}`:""}`,
-      }))}/>
+      }}>
+        <label>同一客户的待收委托位置（含款号/颜色/尺码/供应商/运单）
+          <select name="position" value={selectedPos?.id??""} onChange={e=>setSelectedPosId(e.target.value)} required>
+            {positions.map(p=><option key={p.id} value={p.id}>
+              {`${p.public_no} · ${p.title["zh-CN"]} · #${p.position}${p.sample_code?` · 款号:${p.sample_code}`:""}${p.color?` · 颜色:${p.color}`:""}${p.size?` · 尺码:${p.size}`:""}${p.supplier_alias?` · 供应商:${p.supplier_alias}`:""}${(p.declared_tracking_no||p.source_tracking_no)?` · 申报运单:${p.declared_tracking_no||p.source_tracking_no}`:""}`}
+            </option>)}
+          </select>
+        </label>
+        {hasTrackingMismatch&&<div className="notice" style={{borderLeft:"4px solid #dc2626"}}>
+          <p className="bad" style={{margin:"0 0 6px"}}>
+            <strong>运单不一致拦截预警：</strong>当前实物实际入库运单为 <span className="code">{actualTrack}</span>，所选委托申报运单为 <span className="code">{expectedTrackDisplay}</span>。禁止静默跨运单绑定！
+          </p>
+          <p className="small muted" style={{margin:"0 0 8px"}}>
+            若经核对卖家发货凭证确认属于换单/拆包到货，请勾选下方受控异常处理确认框、填写不少于 4 字的核实依据并上传标签/面单核对照，系统将写入审计日志。
+          </p>
+          <label className="check"><input type="checkbox" name="force_tracking_mismatch"/>确认已核实换单/分包依据，执行受控跨运单绑定（写入审计）</label>
+          <Field name="override_reason" label="跨运单核实依据说明（受控绑定时必填，≥4字）" required={false}/>
+        </div>}
         <Photo label="商品标签核对照"/>
       </Form>
     </>:item.ownership_verified&&!item.order_number&&<Empty>当前实物没有可绑定的委托位置（可保留为无委托实物或由客户直接发起退回/转运）。</Empty>}

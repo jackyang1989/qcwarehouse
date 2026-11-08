@@ -1070,5 +1070,6 @@ CREATE TRIGGER freeze_inspection_quote BEFORE UPDATE OR DELETE ON inspection_quo
 CREATE TRIGGER freeze_dispatch_quote BEFORE UPDATE OR DELETE ON dispatch_quote_versions FOR EACH ROW EXECUTE FUNCTION freeze_accepted_quote();
 ALTER TABLE storage_quotes ADD COLUMN accepted_at timestamptz;
 CREATE TRIGGER freeze_storage_quote BEFORE UPDATE OR DELETE ON storage_quotes FOR EACH ROW EXECUTE FUNCTION freeze_accepted_quote();
+CREATE INDEX IF NOT EXISTS template_versions_category_key_idx ON template_versions(category_id, template_key, version DESC);
 
 COMMIT;

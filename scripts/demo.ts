@@ -103,37 +103,8 @@ async function seed() {
           [offer.id,{minimum,maximum,...(service==="inspection"?{unit_cents:price}:{package_cents:price}),business_days:3,demo:true}]);
       }
     }
-    const inspectionTypeId=serviceTypeIds.get("inspection")!;
-    const compareTypeId=serviceTypeIds.get("compare")!;
-    for(const sub of [APPAREL_SUBCATEGORY_TEMPLATES.tops,APPAREL_SUBCATEGORY_TEMPLATES.bottoms,APPAREL_SUBCATEGORY_TEMPLATES.sports_bra]) {
-      const tpl=await one<{id:string}>(db,`insert into template_versions(template_key,category_id,service_type_id,version,content,content_hash,state,author_id,reviewer_id,published_at)
-        values($1,$2,$3,1,$4,$5,'PUBLISHED',$6,$7,now()) returning id`,
-        [sub.code,category.id,inspectionTypeId,sub.content,hash(JSON.stringify(sub.content)),inspector,reviewer]);
-      await db.query("insert into template_capabilities values($1,$2)",[tpl.id,capability.id]);
-      const skuCode=`apparel-sub-${sub.subcategory.replace(/_/g,"-")}-inspection-1`;
-      const offer=await one<{id:string}>(db,"insert into service_offers(sku_code,service_type_id,title,enabled) values($1,$2,$3,true) returning id",
-        [skuCode,inspectionTypeId,{en:sub.title.en,"zh-CN":sub.title.zh}]);
-      await db.query("insert into offer_templates values($1,$2,$3,$4)",[offer.id,category.id,inspectionTypeId,tpl.id]);
-      await db.query("insert into sku_prices(offer_id,version,currency,rules,effective_from) values($1,1,'USD',$2,now())",
-        [offer.id,{minimum:1,maximum:100,unit_cents:3500,business_days:3,demo:true}]);
-    }
-    for(const sub of [APPAREL_SUBCATEGORY_TEMPLATES.tops,APPAREL_SUBCATEGORY_TEMPLATES.bottoms]) {
-      const compareContent={
-        ...sub.content,
-        order_shots:["side_by_side_front","side_by_side_back","detail_overlay"],
-      };
-      const tplKey=`apparel-${sub.subcategory}-compare`;
-      const tpl=await one<{id:string}>(db,`insert into template_versions(template_key,category_id,service_type_id,version,content,content_hash,state,author_id,reviewer_id,published_at)
-        values($1,$2,$3,1,$4,$5,'PUBLISHED',$6,$7,now()) returning id`,
-        [tplKey,category.id,compareTypeId,compareContent,hash(JSON.stringify(compareContent)),inspector,reviewer]);
-      await db.query("insert into template_capabilities values($1,$2)",[tpl.id,capability.id]);
-      const skuCode=`apparel-sub-${sub.subcategory}-compare-2`;
-      const offer=await one<{id:string}>(db,"insert into service_offers(sku_code,service_type_id,title,enabled) values($1,$2,$3,true) returning id",
-        [skuCode,compareTypeId,{en:`${sub.title.en} · 2-Item Comparison`,"zh-CN":`${sub.title.zh} · 2件横向对比`}]);
-      await db.query("insert into offer_templates values($1,$2,$3,$4)",[offer.id,category.id,compareTypeId,tpl.id]);
-      await db.query("insert into sku_prices(offer_id,version,currency,rules,effective_from) values($1,1,'USD',$2,now())",
-        [offer.id,{minimum:2,maximum:2,package_cents:6500,business_days:3,demo:true}]);
-    }
+    // Delegate apparel subcategory templates & offers to the migration-governed database function
+    await db.query("select ensure_apparel_subcategory_catalog()");
     await db.query("insert into shipping_rate_versions values($1,1,$2,now(),$3)",[uuid(),{first_weight_g:1000,first_cents:850,extra_step_g:500,extra_cents:200,handling_cents:300},admin]);
     await db.query("insert into app_config(key,value) values('storage.daily_cents','25'),('demo.seeded','true')");
   });

@@ -65,24 +65,43 @@ const TRUST_CAPABILITIES = [
   ],
 ] as const;
 
-const BUYER_SCENARIOS = [
+type BuyerScenario = {
+  tag: string;
+  title: string;
+  body: string;
+  wide: boolean;
+  image?: string;
+  imageAlt?: string;
+  mediaBadge?: string;
+};
+
+const BUYER_SCENARIOS: BuyerScenario[] = [
   {
     tag: "Supplier Selection",
     title: "Compare supplier samples before choosing a factory",
     body: "Order samples from two or three 1688, Alibaba, or direct factories and compare fabric hand-feel, stitching, weight, and flat dimensions under one camera before placing inventory orders.",
     wide: false,
+    image: "/marketing/scenes/home-supplier-compare.svg",
+    imageAlt: "Technical schematic comparing three candidate factory crewneck samples side by side under uniform studio framing",
+    mediaBadge: "Studio Schematic · Pending Photo",
   },
   {
     tag: "Small-Batch QC",
     title: "Inspect small-batch orders item by item",
     body: "Traditional factory AQL agencies rarely visit for 15, 40, or 80 garments. Send small-batch stock to our studio so every individual unit gets its own ID, checklist, and defect log.",
     wide: false,
+    image: "/marketing/scenes/home-small-batch-qc.svg",
+    imageAlt: "Technical schematic showing 40 capsule apparel units unboxed, barcoded, weighed, and logged individually",
+    mediaBadge: "Studio Schematic · Pending Photo",
   },
   {
     tag: "Restock Consistency",
     title: "Match new items against approved reference samples",
     body: "Seal an approved Golden Sample at QCWarehouse and benchmark future pre-production or restock units directly against your physical standard to catch silent fabric or sizing drift.",
     wide: false,
+    image: "/marketing/scenes/home-restock-reference.svg",
+    imageAlt: "Technical schematic showing an approved Golden Sample from REF_SAFE matched side by side with a new restock arrival",
+    mediaBadge: "Studio Schematic · Pending Photo",
   },
   {
     tag: "Pre-Freight Protection",
@@ -96,7 +115,7 @@ const BUYER_SCENARIOS = [
     body: "You stay in control of every unit: instruct us to send defective pieces back to the seller’s domestic return address, hold an approved reference, and consolidate the remaining items to your freight forwarder.",
     wide: true,
   },
-] as const;
+];
 
 const PROCESS_STAGES = [
   {
@@ -234,7 +253,7 @@ export default async function Home() {
               <li><span aria-hidden="true">✓</span>Per-item return, storage, or forwarding</li>
             </ul>
           </div>
-          <span className="pub-hero-caption">Illustrative studio photography · China receiving &amp; inspection bench</span>
+          <span className="pub-hero-caption">AI studio scene · China receiving &amp; inspection bench</span>
         </section>
 
         {/* TRUST STRIP */}
@@ -276,6 +295,18 @@ export default async function Home() {
                   key={item.title}
                   className={`pub-scenario-card${item.wide ? " wide" : ""}`}
                 >
+                  {item.image && (
+                    <div className="pub-scenario-media">
+                      <img
+                        src={item.image}
+                        alt={item.imageAlt ?? item.title}
+                        width={1200}
+                        height={750}
+                        loading="lazy"
+                      />
+                      {item.mediaBadge && <span className="pub-media-badge">{item.mediaBadge}</span>}
+                    </div>
+                  )}
                   <span className="pub-scenario-tag">{item.tag}</span>
                   <h3>{item.title}</h3>
                   <p>{item.body}</p>
@@ -376,7 +407,7 @@ export default async function Home() {
                       height={900}
                       loading="lazy"
                     />
-                    <span className="pub-media-badge">Illustrative Photography</span>
+                    <span className="pub-media-badge">AI Studio Illustration</span>
                   </div>
                   <figcaption>
                     <div>
@@ -389,8 +420,8 @@ export default async function Home() {
                 <figure className="pub-evidence-card">
                   <div className="pub-evidence-frame">
                     <img
-                      src="/marketing/qcw-05-stitching-defect.webp"
-                      alt="Close-up macro photo of a garment side seam highlighting an unsecured loose thread loop"
+                      src="/marketing/scenes/home-defect-closeup.svg"
+                      alt="Studio macro schematic of a navy raglan sleeve seam highlighting an unsecured stitching thread loop"
                       width={1200}
                       height={900}
                       loading="lazy"
@@ -402,7 +433,7 @@ export default async function Home() {
                         width="175"
                         height="165"
                         rx="10"
-                        fill="rgba(217, 45, 32, 0.10)"
+                        fill="rgba(217, 45, 32, 0.14)"
                         stroke="#d92d20"
                         strokeWidth="7"
                       />
@@ -411,7 +442,7 @@ export default async function Home() {
                         DEF-01 · Seam Thread
                       </text>
                     </svg>
-                    <span className="pub-media-badge">Illustrative + UI Overlay</span>
+                    <span className="pub-media-badge">Schematic + UI Overlay</span>
                   </div>
                   <figcaption>
                     <div>
@@ -424,13 +455,13 @@ export default async function Home() {
                 <figure className="pub-evidence-card span-2">
                   <div className="pub-evidence-frame">
                     <img
-                      src="/marketing/qcw-13-sorting-and-packing.webp"
-                      alt="Warehouse operator sorting individually bagged apparel items on a clean packing bench with a digital scale"
+                      src="/marketing/scenes/home-sorting-forwarding.svg"
+                      alt="Technical schematic showing inspected garments sorted by individual barcode into seller return, REF_SAFE retention, and forwarder packing lanes"
                       width={1350}
-                      height={900}
+                      height={760}
                       loading="lazy"
                     />
-                    <span className="pub-media-badge">Illustrative Photography</span>
+                    <span className="pub-media-badge">Studio Schematic · Pending Photo</span>
                   </div>
                   <figcaption>
                     <div>

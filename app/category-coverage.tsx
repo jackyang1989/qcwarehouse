@@ -5,7 +5,7 @@ import type { CSSProperties } from "react";
 import { useLoad } from "./ui";
 
 const categories = [
-  { name: "Apparel", photo: "/marketing/qcw-14-apparel-category-cover.webp", state: "Open Today", labels: ["Apparel"] },
+  { name: "Apparel", photo: "/brand/apparel.webp", state: "Open Today", labels: ["Apparel"] },
   { name: "Footwear", photo: "", state: "Planned", labels: ["Footwear"] },
   { name: "Bags & Accessories", photo: "", state: "Planned", labels: ["Bags", "Bags & Accessories"] },
   { name: "Home & Lifestyle", photo: "", state: "Planned", labels: ["Home", "Home goods", "Home & Lifestyle"] },

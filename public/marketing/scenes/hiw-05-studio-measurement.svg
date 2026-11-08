@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1350 900" width="1350" height="900" fill="none">
+  <defs>
+    <pattern id="grid24" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0v24" stroke="#e3ebf5" stroke-width="1"/>
+    </pattern>
+    <pattern id="heather" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#bfc6cf"/>
+      <circle cx="2" cy="2" r="0.9" fill="#aeb6c0"/>
+      <circle cx="6" cy="5" r="0.8" fill="#cfd5dd"/>
+      <path d="M0 6h4M4 2h4" stroke="#b4bcc6" stroke-width="0.6"/>
+    </pattern>
+    <pattern id="heatherLight" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#cfd5dd"/>
+      <circle cx="2" cy="3" r="0.8" fill="#bec6d0"/>
+      <circle cx="6" cy="6" r="0.8" fill="#dde2e8"/>
+    </pattern>
+    <pattern id="heatherDark" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#adb5c0"/>
+      <circle cx="3" cy="2" r="0.9" fill="#9ca5b1"/>
+      <circle cx="6" cy="6" r="0.8" fill="#bec6d0"/>
+    </pattern>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0f213b" flood-opacity="0.10"/>
+    </filter>
+    <filter id="softShadow" x="-6%" y="-6%" width="112%" height="116%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0f213b" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+  <rect width="1350" height="900" fill="#f3f6fb"/>
+  <rect width="1350" height="900" fill="url(#grid24)"/>
+  <rect x="0" y="0" width="1350" height="52" fill="#0f213b"/>
+  <circle cx="28" cy="26" r="6" fill="#3b82f6"/>
+  <text x="44" y="31" fill="#93b8ff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="700" letter-spacing="0.06em">STEP 05 · STUDIO BENCH EXECUTION</text>
+  <text x="1322" y="31" text-anchor="end" fill="#dce8f8" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="600">Overhead 5600K Camera Rig, Metric Tape &amp; Two-Pass Re-Measurement</text>
+<line x1="220" y1="88" x2="1130" y2="88" stroke="#334155" stroke-width="10" stroke-linecap="round"/><line x1="260" y1="88" x2="260" y2="790" stroke="#475569" stroke-width="8"/><line x1="1090" y1="88" x2="1090" y2="790" stroke="#475569" stroke-width="8"/><rect x="630" y="94" width="90" height="58" rx="8" fill="#0f172a"/><circle cx="675" cy="162" r="20" fill="#1e293b" stroke="#60a5fa" stroke-width="3"/><polygon points="350,96 470,96 500,148 320,148" fill="#1e293b"/><rect x="325" y="148" width="170" height="10" fill="#e0f2fe"/><polygon points="880,96 1000,96 1030,148 850,148" fill="#1e293b"/><rect x="855" y="148" width="170" height="10" fill="#e0f2fe"/><polygon points="675,182 330,680 1020,680" fill="#ffffff" opacity="0.45"/><rect x="210" y="250" width="930" height="540" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="3" filter="url(#shadow)"/><g filter="url(#softShadow)"><path d="M 536.84 364.5 Q 585 397.18 633.16 364.5 L 715.72 379.98 L 781.0799999999999 426.42 L 758.7199999999999 474.58 L 701.1 443.62 L 701.1 674.1 L 468.9 674.1 L 468.9 443.62 L 411.28000000000003 474.58 L 388.92 426.42 L 454.28 379.98 Z" fill="url(#heather)" stroke="#64748b" stroke-width="2.2" stroke-linejoin="round"/><path d="M 536.84 364.5 Q 585 397.18 633.16 364.5 Q 585 409.22 536.84 364.5" fill="none" stroke="#64748b" stroke-width="2"/><rect x="575.54" y="381.4936" width="18.919999999999998" height="24.08" rx="2" fill="#ffffff" stroke="#94a3b8" stroke-width="1.2"/><line x1="471.9" y1="665.5" x2="698.1" y2="665.5" stroke="#64748b" stroke-width="1.2" stroke-dasharray="4 3"/></g><rect x="465" y="458" width="240" height="20" rx="2" fill="#facc15" stroke="#a16207" stroke-width="1.6"/><rect x="465" y="458" width="7" height="20" fill="#cbd5e1" stroke="#64748b" stroke-width="1"/><line x1="479.0" y1="458" x2="479.0" y2="464" stroke="#422006" stroke-width="1.3"/><line x1="493.0" y1="458" x2="493.0" y2="464" stroke="#422006" stroke-width="1.3"/><line x1="507.0" y1="458" x2="507.0" y2="464" stroke="#422006" stroke-width="1.3"/><line x1="521.0" y1="458" x2="521.0" y2="464" stroke="#422006" stroke-width="1.3"/><line x1="535.0" y1="458" x2="535.0" y2="469" stroke="#422006" stroke-width="1.3"/><line x1="549.0" y1="458" x2="549.0" y2="464" stroke="#422006" stroke-width="1.3"/><line x1="563.0" y1="458" x2="563.0" y2="464" stroke="#422006" stroke-width="1.3"/><line x1="577.0" y1="458" x2="577.0" y2="464" stroke="#422006" stroke-width="1.3"/><line x1="591.0" y1="458" x2="591.0" y2="464" stroke="#422006" stroke-width="1.3"/><line x1="605.0" y1="458" x2="605.0" y2="469" stroke="#422006" stroke-width="1.3"/><line x1="619.0" y1="458" x2="619.0" y2="464" stroke="#422006" stroke-width="1.3"/><line x1="633.0" y1="458" x2="633.0" y2="464" stroke="#422006" stroke-width="1.3"/><line x1="647.0" y1="458" x2="647.0" y2="464" stroke="#422006" stroke-width="1.3"/><line x1="661.0" y1="458" x2="661.0" y2="464" stroke="#422006" stroke-width="1.3"/><line x1="675.0" y1="458" x2="675.0" y2="469" stroke="#422006" stroke-width="1.3"/><line x1="689.0" y1="458" x2="689.0" y2="464" stroke="#422006" stroke-width="1.3"/><rect x="519.0" y="428" width="132" height="24" rx="5" fill="#0f213b"/><text x="585.0" y="445" text-anchor="middle" fill="#fde047" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700">Read 1: 56.7 / Read 2: 56.5</text><rect x="835" y="300" width="265" height="210" rx="12" fill="#f8fafd" stroke="#cbd5e1" stroke-width="1.8"/><text x="858" y="338" fill="#1e3a8a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="800">TWO-PASS RE-CHECK</text><text x="858" y="374" fill="#0f213b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="700">Pass 1: 56.7 cm</text><text x="858" y="404" fill="#0f213b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="700">Pass 2: 56.5 cm</text><text x="858" y="442" fill="#b24046" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="800">Final: 56.6 cm (+1.6)</text><text x="858" y="480" fill="#64748b" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13">Logged by Inspector INS-04</text><rect x="835" y="545" width="265" height="165" rx="12" fill="#0f213b"/><text x="967" y="590" text-anchor="middle" fill="#93c5fd" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700">DIGITAL GRAM SCALE</text><text x="967" y="648" text-anchor="middle" fill="#34d399" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="38" font-weight="800">238 g</text><text x="967" y="684" text-anchor="middle" fill="#cbd5e1" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="13">22 °C · 52% RH Studio</text></svg>

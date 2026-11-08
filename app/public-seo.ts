@@ -25,7 +25,7 @@ const PUBLIC_ROUTE_SEO: Record<string, RouteSeoConfig> = {
     title: "Inspection Services in China — Piece-by-Piece, Comparison & Reference",
     description:
       "Compare QCWarehouse services in China: piece-by-piece Product Inspection (1–100+ items), side-by-side Sample Comparison (2–3 items), and Golden Sample Matching with photo and measurement evidence.",
-    ogImage: "/marketing/qcw-02-tshirt-chest-measurement.webp",
+    ogImage: "/brand/inspection-hero.webp",
   },
   "/services/inspection": {
     title: "Piece-by-Piece Product Inspection in China (1 to 100+ Items)",
@@ -37,31 +37,31 @@ const PUBLIC_ROUTE_SEO: Record<string, RouteSeoConfig> = {
     title: "Supplier Sample Comparison Service in China (2–3 Samples)",
     description:
       "Compare 2 or 3 candidate supplier samples side by side under identical lighting and measurement methods in China before committing to inventory.",
-    ogImage: "/marketing/qcw-07-three-supplier-samples.webp",
+    ogImage: "/brand/inspection-hero.webp",
   },
   "/services/reference": {
     title: "Golden Sample & Reference Matching Service in China",
     description:
       "Retain your approved Golden Sample in sealed storage in China and inspect new supplier samples or restock units directly against your physical benchmark.",
-    ogImage: "/marketing/qcw-08-golden-sample-matching.webp",
+    ogImage: "/brand/inspection-hero.webp",
   },
   "/categories": {
     title: "Supported Product Categories — Apparel Inspection Live Today",
     description:
       "See what products QCWarehouse inspects today in China: approved templates for Tops & T-Shirts, Leggings & Bottoms, Sports Bras & Activewear, plus planned and restricted category policies.",
-    ogImage: "/marketing/qcw-14-apparel-category-cover.webp",
+    ogImage: "/marketing/qcw-03-tshirt-length-measurement.webp",
   },
   "/how-it-works": {
     title: "How It Works — China Receiving, Item Inspection & Post-QC Routing",
     description:
       "Step-by-step chain of custody from your Chinese supplier shipment to parcel check-in, piece-by-piece inspection, independent report review, and return, storage, or freight-forwarder dispatch.",
-    ogImage: "/marketing/qcw-10-parcel-receiving-scanning.webp",
+    ogImage: "/marketing/qcw-01-home-hero.webp",
   },
   "/report-guide": {
     title: "Sample Inspection Report — Photos, Measurements & Defect Proof",
     description:
       "Explore an interactive demonstration QCWarehouse inspection report featuring metric tape photos, re-measurement logs, UI defect bounding boxes, side-by-side sample comparison, and scope boundaries.",
-    ogImage: "/marketing/qcw-07-three-supplier-samples.webp",
+    ogImage: "/marketing/qcw-03-tshirt-length-measurement.webp",
   },
   "/pricing": {
     title: "Transparent Product Inspection Pricing & Fee Estimator",

@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1080" width="1080" height="1080" fill="none">
+  <defs>
+    <pattern id="grid24" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0v24" stroke="#e3ebf5" stroke-width="1"/>
+    </pattern>
+    <pattern id="heather" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#bfc6cf"/>
+      <circle cx="2" cy="2" r="0.9" fill="#aeb6c0"/>
+      <circle cx="6" cy="5" r="0.8" fill="#cfd5dd"/>
+      <path d="M0 6h4M4 2h4" stroke="#b4bcc6" stroke-width="0.6"/>
+    </pattern>
+    <pattern id="heatherLight" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#cfd5dd"/>
+      <circle cx="2" cy="3" r="0.8" fill="#bec6d0"/>
+      <circle cx="6" cy="6" r="0.8" fill="#dde2e8"/>
+    </pattern>
+    <pattern id="heatherDark" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#adb5c0"/>
+      <circle cx="3" cy="2" r="0.9" fill="#9ca5b1"/>
+      <circle cx="6" cy="6" r="0.8" fill="#bec6d0"/>
+    </pattern>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0f213b" flood-opacity="0.10"/>
+    </filter>
+    <filter id="softShadow" x="-6%" y="-6%" width="112%" height="116%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0f213b" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+  <rect width="1080" height="1080" fill="#f3f6fb"/>
+  <rect width="1080" height="1080" fill="url(#grid24)"/>
+  <rect x="0" y="0" width="1080" height="52" fill="#0f213b"/>
+  <circle cx="28" cy="26" r="6" fill="#3b82f6"/>
+  <text x="44" y="31" fill="#93b8ff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="700" letter-spacing="0.06em">LIVE CATEGORY · APPAREL</text>
+  <text x="1052" y="31" text-anchor="end" fill="#dce8f8" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="600">Dedicated Subcategory Checklists &amp; Measurement Landmarks</text>
+<rect x="60" y="96" width="460" height="440" rx="18" fill="#ffffff" stroke="#d7e3f1" stroke-width="2" filter="url(#softShadow)"/><rect x="84" y="118" width="210" height="28" rx="6" fill="#eff6ff"/><text x="96" y="137" fill="#1e40af" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="800">TOPS &amp; KNITWEAR</text><path d="M225 221 Q290 176 355 221 L430 266 L455 416 L420 426 L395 311 L395 456 L185 456 L185 311 L160 426 L125 416 L150 266 Z" fill="#476788" stroke="#1e3a5f" stroke-width="2.5"/><path d="M232 376 L248 431 L332 431 L348 376 Z" fill="#3b5775" stroke="#1e3a5f" stroke-width="1.8"/><text x="290" y="504" text-anchor="middle" fill="#334155" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15" font-weight="700">HPS · Chest · Shoulder · Sleeve</text><rect x="560" y="96" width="460" height="440" rx="18" fill="#ffffff" stroke="#d7e3f1" stroke-width="2" filter="url(#softShadow)"/><rect x="584" y="118" width="210" height="28" rx="6" fill="#eff6ff"/><text x="596" y="137" fill="#1e40af" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="800">LEGGINGS &amp; BOTTOMS</text><path d="M708 206 L872 206 L888 296 L866 466 L826 466 L790 316 L754 466 L714 466 L692 296 Z" fill="#273449" stroke="#0f172a" stroke-width="2.5"/><line x1="705" y1="236" x2="875" y2="236" stroke="#64748b" stroke-width="2" stroke-dasharray="5 3"/><text x="790" y="504" text-anchor="middle" fill="#334155" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15" font-weight="700">Waist · Hip · Rise · Inseam</text><rect x="60" y="576" width="460" height="440" rx="18" fill="#ffffff" stroke="#d7e3f1" stroke-width="2" filter="url(#softShadow)"/><rect x="84" y="598" width="210" height="28" rx="6" fill="#eff6ff"/><text x="96" y="617" fill="#1e40af" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="800">SPORTS BRAS</text><path d="M222 701 L252 701 L262 773 Q290 799 318 773 L328 701 L358 701 L386 801 L378 906 L202 906 L194 801 Z" fill="#0f766e" stroke="#115e59" stroke-width="2.5"/><rect x="202" y="876" width="176" height="30" rx="4" fill="#134e4a"/><text x="290" y="984" text-anchor="middle" fill="#334155" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15" font-weight="700">Underband · Bust · Strap Symmetry</text><rect x="560" y="576" width="460" height="440" rx="18" fill="#ffffff" stroke="#d7e3f1" stroke-width="2" filter="url(#softShadow)"/><rect x="584" y="598" width="210" height="28" rx="6" fill="#eff6ff"/><text x="596" y="617" fill="#1e40af" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="800">GENERAL APPAREL</text><path d="M735 696 Q790 716 845 696 L878 741 L858 776 L912 939 L668 939 L722 776 L702 741 Z" fill="#c26d3a" stroke="#7c2d12" stroke-width="2.5"/><text x="790" y="984" text-anchor="middle" fill="#334155" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15" font-weight="700">Dresses · Outerwear · Mixed Lots</text></svg>

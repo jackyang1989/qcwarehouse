@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1350 900" width="1350" height="900" fill="none">
+  <defs>
+    <pattern id="grid24" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0v24" stroke="#e3ebf5" stroke-width="1"/>
+    </pattern>
+    <pattern id="heather" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#bfc6cf"/>
+      <circle cx="2" cy="2" r="0.9" fill="#aeb6c0"/>
+      <circle cx="6" cy="5" r="0.8" fill="#cfd5dd"/>
+      <path d="M0 6h4M4 2h4" stroke="#b4bcc6" stroke-width="0.6"/>
+    </pattern>
+    <pattern id="heatherLight" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#cfd5dd"/>
+      <circle cx="2" cy="3" r="0.8" fill="#bec6d0"/>
+      <circle cx="6" cy="6" r="0.8" fill="#dde2e8"/>
+    </pattern>
+    <pattern id="heatherDark" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#adb5c0"/>
+      <circle cx="3" cy="2" r="0.9" fill="#9ca5b1"/>
+      <circle cx="6" cy="6" r="0.8" fill="#bec6d0"/>
+    </pattern>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0f213b" flood-opacity="0.10"/>
+    </filter>
+    <filter id="softShadow" x="-6%" y="-6%" width="112%" height="116%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0f213b" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+  <rect width="1350" height="900" fill="#f3f6fb"/>
+  <rect width="1350" height="900" fill="url(#grid24)"/>
+  <rect x="0" y="0" width="1350" height="52" fill="#0f213b"/>
+  <circle cx="28" cy="26" r="6" fill="#3b82f6"/>
+  <text x="44" y="31" fill="#93b8ff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="700" letter-spacing="0.06em">STEP 02 · SUPPLIER DOMESTIC SHIPPING</text>
+  <text x="1322" y="31" text-anchor="end" fill="#dce8f8" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="600">Buy Directly from Chinese Sellers &amp; Ship Domestic Parcels</text>
+<rect x="100" y="110" width="440" height="190" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#softShadow)"/><text x="128" y="154" fill="#1e3a8a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="800">SUPPLIER A · GUANGZHOU</text><text x="128" y="188" fill="#0f213b" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="20" font-weight="800">1688 Apparel Factory</text><rect x="128" y="216" width="320" height="46" rx="8" fill="#eff6ff"/><text x="146" y="245" fill="#1d4ed8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="700">SF Express · SF-8810</text><path d="M 550 205 C 680 205, 720 470, 825 470" stroke="#2563eb" stroke-width="3.5" stroke-dasharray="9 5"/><rect x="100" y="380" width="440" height="190" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#softShadow)"/><text x="128" y="424" fill="#1e3a8a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="800">SUPPLIER B · DONGGUAN</text><text x="128" y="458" fill="#0f213b" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="20" font-weight="800">Alibaba Knitwear Mill</text><rect x="128" y="486" width="320" height="46" rx="8" fill="#eff6ff"/><text x="146" y="515" fill="#1d4ed8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="700">ZTO Express · ZTO-4192</text><path d="M 550 475 C 680 475, 720 470, 825 470" stroke="#2563eb" stroke-width="3.5" stroke-dasharray="9 5"/><rect x="100" y="650" width="440" height="190" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#softShadow)"/><text x="128" y="694" fill="#1e3a8a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="800">SUPPLIER C · NINGBO</text><text x="128" y="728" fill="#0f213b" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="20" font-weight="800">Direct Cut-and-Sew Studio</text><rect x="128" y="756" width="320" height="46" rx="8" fill="#eff6ff"/><text x="146" y="785" fill="#1d4ed8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="700">YTO Express · YTO-6057</text><path d="M 550 745 C 680 745, 720 470, 825 470" stroke="#2563eb" stroke-width="3.5" stroke-dasharray="9 5"/><polygon points="822,460 842,470 822,480" fill="#2563eb"/><rect x="850" y="210" width="410" height="520" rx="18" fill="#0f213b" stroke="#2563eb" stroke-width="3" filter="url(#shadow)"/><text x="1055" y="276" text-anchor="middle" fill="#93c5fd" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="800">QCWAREHOUSE RECEIVING HUB</text><text x="1055" y="320" text-anchor="middle" fill="#ffffff" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="26" font-weight="800">Foshan Intake Desk</text><rect x="925" y="366" width="260" height="176" rx="12" fill="#d97706" fill-opacity="0.22" stroke="#fbbf24" stroke-width="2.5"/><rect x="955" y="396" width="200" height="116" rx="8" fill="#f59e0b" fill-opacity="0.28" stroke="#fde047" stroke-width="2"/><text x="1055" y="462" text-anchor="middle" fill="#ffffff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="800">QCW-8F2K5</text><text x="1055" y="616" text-anchor="middle" fill="#cbd5e1" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16">Zero sourcing commission · Split parcels</text><text x="1055" y="644" text-anchor="middle" fill="#cbd5e1" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16">matched by tracking number + code</text></svg>

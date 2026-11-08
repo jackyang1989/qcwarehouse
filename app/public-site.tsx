@@ -173,15 +173,15 @@ export function PublicServicesOverview() {
               </Link>
             </div>
           </div>
-          <figure className="pub-page-hero-media" style={{ margin: 0 }}>
+          <figure className="pub-page-hero-media ratio-wide" style={{ margin: 0 }}>
             <img
-              src="/marketing/qcw-02-tshirt-chest-measurement.webp"
-              alt="Inspector measuring chest width across a flat-laid cotton T-shirt using a metric tape"
-              width={1200}
-              height={900}
+              src="/brand/inspection-hero.webp"
+              alt="QCWarehouse inspector wearing a navy uniform and white cotton gloves measuring a gray cotton top with a metric tape on an inspection table"
+              width={1460}
+              height={696}
               loading="eager"
             />
-            <span className="pub-media-badge">Illustrative Photography</span>
+            <span className="pub-media-badge">AI Studio Illustration</span>
           </figure>
         </div>
       </section>
@@ -292,13 +292,13 @@ export function PublicServicesOverview() {
         <div className="pub-service-photo-stack">
           <figure className="pub-photo-box">
             <img
-              src="/marketing/qcw-04-leggings-waist-measurement.webp"
-              alt="Flat-lay waist width measurement on charcoal athletic leggings using a metric tape"
+              src="/marketing/qcw-03-tshirt-length-measurement.webp"
+              alt="Overhead studio measurement showing a yellow metric tape measuring cotton T-shirt body length from high point shoulder to bottom hem"
               width={1200}
               height={900}
               loading="lazy"
             />
-            <span className="pub-media-badge">Illustrative Photography · Subcategory Check</span>
+            <span className="pub-media-badge">AI Studio Illustration · Length Check</span>
           </figure>
         </div>
       </section>
@@ -308,13 +308,13 @@ export function PublicServicesOverview() {
         <div className="pub-service-photo-stack">
           <figure className="pub-photo-box ratio-3-2">
             <img
-              src="/marketing/qcw-07-three-supplier-samples.webp"
-              alt="Three unbranded cotton T-shirt samples from different suppliers photographed side by side under uniform studio lighting"
+              src="/marketing/scenes/svc-three-samples.svg"
+              alt="Studio schematic comparing three candidate supplier garment samples side by side with overhead lighting, chest width tape, barcodes, and gram weight"
               width={1350}
               height={900}
               loading="lazy"
             />
-            <span className="pub-media-badge">Illustrative Photography · 3-Sample Set</span>
+            <span className="pub-media-badge">Studio Schematic · Pending Photo</span>
           </figure>
         </div>
         <div>
@@ -390,23 +390,23 @@ export function PublicServicesOverview() {
         <div className="pub-service-photo-stack">
           <figure className="pub-photo-box ratio-3-2">
             <img
-              src="/marketing/qcw-08-golden-sample-matching.webp"
-              alt="Approved navy Golden Sample laid next to a newly received production sample for visual and dimensional comparison"
+              src="/marketing/scenes/svc-golden-matching.svg"
+              alt="Studio schematic showing a retained Golden Sample from REF_SAFE placed beside an incoming restock sample for dimensional and visual comparison"
               width={1350}
               height={900}
               loading="lazy"
             />
-            <span className="pub-media-badge">Illustrative Photography · Reference vs Incoming</span>
+            <span className="pub-media-badge">Studio Schematic · Pending Photo</span>
           </figure>
           <figure className="pub-photo-box">
             <img
-              src="/marketing/qcw-15-golden-sample-storage.webp"
-              alt="Folded reference garment sealed inside a protective archival bag in dedicated Golden Sample cabinet storage"
+              src="/marketing/scenes/svc-ref-safe-vault.svg"
+              alt="Schematic diagram of tamper-sealed archival garment storage compartments inside dedicated REF_SAFE shelving"
               width={1200}
               height={900}
               loading="lazy"
             />
-            <span className="pub-media-badge">Illustrative Photography · Protected REF_SAFE Storage</span>
+            <span className="pub-media-badge">Studio Schematic · Pending Photo</span>
           </figure>
         </div>
       </section>
@@ -421,7 +421,20 @@ export function PublicServicesOverview() {
               Honest scope boundaries protect commercial buyers from false assumptions. Every report clearly separates observed physical facts from testing that requires accredited laboratories or on-site factory audits.
             </p>
           </div>
+          <Link className="button" href="/report-guide">
+            Explore Full Sample Report →
+          </Link>
         </div>
+        <figure className="pub-photo-box ratio-9-5" style={{ marginBottom: 18 }}>
+          <img
+            src="/marketing/scenes/svc-deliverables-overview.svg"
+            alt="Overview schematic of QCWarehouse versioned web inspection report, non-destructive defect bounding boxes, matching immutable PDF, and per-item routing controls"
+            width={1350}
+            height={750}
+            loading="lazy"
+          />
+          <span className="pub-media-badge">Studio Schematic · Deliverables Overview</span>
+        </figure>
         <div className="pub-boundary-grid">
           <div className="pub-boundary-box included">
             <h3 style={{ color: "#0b816b" }}>Included in QCWarehouse Reports</h3>
@@ -568,6 +581,8 @@ const SERVICE_HERO_CONFIG = {
     lead: "Send single prototypes or small-batch apparel orders to our China receiving center. Every physical garment gets its own barcode ID, approved template measurements, workmanship check, and documented photo proof.",
     image: "/marketing/qcw-02-tshirt-chest-measurement.webp",
     imageAlt: "Overhead metric tape chest width measurement on a light gray cotton T-shirt",
+    mediaBadge: "AI Studio Illustration",
+    ratioClass: "ratio-4-3",
     idealFor: "Single pre-order samples, capsule drops (10–100 pcs), high-ASP garments where defective returns abroad destroy margin.",
     quantities: "1–100 items self-serve online · 101–300 items via manual staff capacity quote.",
     method: "Individual item check-in, unstrained flat-lay metric tape measurements (0.1 cm precision + two-pass re-checks), digital garment weight, and zone-by-zone visual workmanship scan.",
@@ -577,8 +592,10 @@ const SERVICE_HERO_CONFIG = {
     eyebrow: "SERVICE DETAIL · SIDE-BY-SIDE EVALUATION",
     title: "Supplier Sample Comparison Service (2–3 Items)",
     lead: "Evaluating multiple 1688, Alibaba, or direct factories? Ship 2 or 3 comparable apparel samples to our studio so we can measure, weigh, and photograph them together under identical conditions.",
-    image: "/marketing/qcw-07-three-supplier-samples.webp",
-    imageAlt: "Three unbranded cotton T-shirt samples arranged side by side for visual and dimensional comparison",
+    image: "/marketing/scenes/svc-three-samples.svg",
+    imageAlt: "Technical schematic of three candidate supplier garment samples arranged side by side under 5600K studio lights",
+    mediaBadge: "Studio Schematic · Pending Photo",
+    ratioClass: "",
     idealFor: "Founders and buyers choosing between 2–3 candidate manufacturers before placing bulk deposits or custom label runs.",
     quantities: "2 or 3 comparable items from the same product category per comparison package.",
     method: "Synchronized overhead group photography, identical flat-lay tape placement across every sample, digital gram weight comparison, and collar/seam macro documentation.",
@@ -588,8 +605,10 @@ const SERVICE_HERO_CONFIG = {
     eyebrow: "SERVICE DETAIL · BENCHMARK CONSISTENCY",
     title: "Golden Sample & Reference Matching in China",
     lead: "Keep your approved Golden Sample sealed in QCWarehouse’s REF_SAFE storage and benchmark new pre-production or reorder samples directly against your physical standard.",
-    image: "/marketing/qcw-08-golden-sample-matching.webp",
-    imageAlt: "Approved navy reference garment placed beside an incoming sample for side-by-side comparison",
+    image: "/marketing/scenes/svc-golden-matching.svg",
+    imageAlt: "Technical schematic comparing a sealed Golden Sample retrieved from REF_SAFE against a newly arrived production sample",
+    mediaBadge: "Studio Schematic · Pending Photo",
+    ratioClass: "",
     idealFor: "Repeat SKU reorders, new factory transitions, and pre-production approval against a signed-off prototype.",
     quantities: "1 incoming sample compared against 1 active retained Golden Sample per order line.",
     method: "Controlled retrieval of your sealed Golden Sample, side-by-side flat measurement delta check, visual shade/rib/stitching comparison, and resealing into REF_SAFE.",
@@ -649,9 +668,9 @@ export function PublicServiceDetail({
               </Link>
             </div>
           </div>
-          <figure className="pub-page-hero-media" style={{ margin: 0 }}>
+          <figure className={`pub-page-hero-media${cfg.ratioClass ? ` ${cfg.ratioClass}` : ""}`} style={{ margin: 0 }}>
             <img src={cfg.image} alt={cfg.imageAlt} width={1350} height={900} loading="eager" />
-            <span className="pub-media-badge">Illustrative Photography</span>
+            <span className="pub-media-badge">{cfg.mediaBadge}</span>
           </figure>
         </div>
       </section>
@@ -810,6 +829,8 @@ export function PublicCategories() {
       badge: "Dedicated Subcategory Template",
       examples: "Crewneck tees, oversized hoodies, polo shirts, sweaters, zip jackets",
       checks: "Front body length (HPS), chest width (1/2), across shoulder, sleeve length, hem sweep, collar rib symmetry, garment weight & seam workmanship",
+      image: "/marketing/scenes/cat-tops-knitwear.svg",
+      imageAlt: "Technical measurement schematic of a slate pullover hoodie highlighting HPS length, chest width, shoulder, and sleeve landmarks",
       offer: topsOffer,
     },
     {
@@ -817,6 +838,8 @@ export function PublicCategories() {
       badge: "Dedicated Subcategory Template",
       examples: "Activewear leggings, woven trousers, denim, sweatpants, athletic shorts",
       checks: "Relaxed waistband (1/2), hip width, front rise, back rise, thigh width, inseam length, leg opening, crotch gusset & flatlock seam check",
+      image: "/marketing/scenes/cat-bottoms-leggings.svg",
+      imageAlt: "Technical measurement schematic of charcoal high-waist leggings showing relaxed waistband, hip width, inseam, and gusset seams",
       offer: bottomsOffer,
     },
     {
@@ -824,6 +847,8 @@ export function PublicCategories() {
       badge: "Dedicated Subcategory Template",
       examples: "Medium/high-support sports bras, crop tanks, moulded-cup bralettes",
       checks: "Underband flat width, bust width, strap length symmetry, center-front height, removable pad/lining check, elastic band stitching & weight",
+      image: "/marketing/scenes/cat-sports-bra.svg",
+      imageAlt: "Technical front and racerback schematic of a teal sports bra showing underbust band, bust width, strap symmetry, and lining checks",
       offer: braOffer,
     },
     {
@@ -831,6 +856,8 @@ export function PublicCategories() {
       badge: "Core Apparel Template",
       examples: "Dresses, skirts, light outerwear, scarves, or standard visual + flat-width checks",
       checks: "Visible condition across key zones, flat garment width, care/size label transcription, mandatory front/back/detail evidence photos",
+      image: "/marketing/scenes/cat-general-apparel.svg",
+      imageAlt: "Multi-garment schematic showing a woven dress, light zip jacket, and tailored skirt covered by the General Apparel inspection template",
       offer: generalOffer,
     },
   ];
@@ -886,15 +913,15 @@ export function PublicCategories() {
               </Link>
             </div>
           </div>
-          <figure className="pub-photo-box ratio-1-1" style={{ maxWidth: 300, justifySelf: "center", width: "100%" }}>
+          <figure className="pub-photo-box ratio-1-1" style={{ maxWidth: 320, justifySelf: "center", width: "100%" }}>
             <img
-              src="/marketing/qcw-14-apparel-category-cover.webp"
-              alt="Studio flat-lay of unbranded cotton T-shirt, charcoal sports leggings, and folded knitwear"
+              src="/marketing/scenes/cat-apparel-collection.svg"
+              alt="Multi-garment schematic showing Tops and Knitwear, Leggings and Bottoms, Sports Bras, and General Apparel tracks"
               width={1080}
               height={1080}
               loading="eager"
             />
-            <span className="pub-media-badge">Illustrative Photography</span>
+            <span className="pub-media-badge">Studio Schematic · 4 Garment Tracks</span>
           </figure>
         </div>
 
@@ -903,6 +930,16 @@ export function PublicCategories() {
             const cents = track.offer?.rules.unit_cents;
             return (
               <article className="pub-subcat-card" key={track.title}>
+                <figure className="pub-photo-box ratio-16-10">
+                  <img
+                    src={track.image}
+                    alt={track.imageAlt}
+                    width={1200}
+                    height={750}
+                    loading="lazy"
+                  />
+                  <span className="pub-media-badge">Subcategory Schematic · Pending Photo</span>
+                </figure>
                 <div className="row between flexwrap" style={{ gap: 8 }}>
                   <span className="tag blue">{track.badge}</span>
                   {cents != null && (
@@ -981,56 +1018,63 @@ const JOURNEY_STEPS = [
     owner: "You (Buyer)",
     title: "Create Your Inspection Order & Receive Your Parcel Code",
     body: "Sign up to get QCWarehouse’s China receiving center address and your permanent personal receiving code. Select Product Inspection, Sample Comparison, or Golden Sample Matching, specify item quantities, and attach optional size charts or tolerances.",
-    photo: null,
-    photoAlt: "",
+    photo: "/marketing/scenes/hiw-01-order-ui.svg",
+    photoAlt: "Schematic UI preview showing service scope configuration paired with a buyer's permanent China receiving code QCW-8F2K5",
+    mediaBadge: "UI Workflow Schematic",
   },
   {
     num: "02",
     owner: "You + Your Chinese Suppliers",
     title: "Purchase Directly from Sellers & Ship Domestic Parcels",
     body: "Buy directly from your chosen factories, Alibaba, 1688, or Taobao sellers—QCWarehouse never acts as a middleman or takes supplier commissions. Paste your receiving address + code at checkout and submit each seller’s domestic courier tracking number in your workspace. Multiple suppliers can ship separate parcels.",
-    photo: null,
-    photoAlt: "",
+    photo: "/marketing/scenes/hiw-02-supplier-dispatch.svg",
+    photoAlt: "Schematic showing three independent Chinese factories shipping separate SF, ZTO, and YTO domestic parcels to the Foshan receiving hub",
+    mediaBadge: "Process Schematic",
   },
   {
     num: "03",
     owner: "QCWarehouse Intake Desk",
     title: "Physical Parcel Arrival & Condition Check-In",
     body: "When domestic couriers drop off parcels, our intake desk scans the carrier waybill, photographs exterior carton damage or moisture if present, and matches the parcel to your account. Note: a courier ‘Delivered’ scan is not final warehouse receipt until physical unboxing and count verification are completed.",
-    photo: "/marketing/qcw-10-parcel-receiving-scanning.webp",
-    photoAlt: "Intake operator scanning an arriving cardboard parcel on a clean receiving table",
+    photo: "/marketing/scenes/hiw-03-intake-scanning.svg",
+    photoAlt: "Technical schematic of physical carton check-in showing handheld barcode scan of waybill SF-DEMO-8810, scale weighing, and carton damage inspection",
+    mediaBadge: "Studio Schematic · Pending Photo",
   },
   {
     num: "04",
     owner: "QCWarehouse Sample Registry",
     title: "Item-by-Item Identification & Protected Staging",
     body: "Each garment is unboxed, counted against your expected quantity, assigned a unique traceable sample barcode, and placed in clean numbered staging bins. Quantity mismatches or uncommissioned parcels are flagged with photo evidence before inspection begins.",
-    photo: "/marketing/qcw-11-sample-storage.webp",
-    photoAlt: "Organized apparel sample shelving bays with individually bagged garments",
+    photo: "/marketing/scenes/hiw-04-barcode-staging.svg",
+    photoAlt: "Technical schematic showing individually polybagged garments tagged S-DEMO-204A, 204B, 204C and staged in numbered bins W-01-A..C",
+    mediaBadge: "Studio Schematic · Pending Photo",
   },
   {
     num: "05",
     owner: "QCWarehouse Inspection Studio",
     title: "Bench Measurement, Visual Check & Studio Photography",
     body: "Under neutral studio lighting, inspectors execute your category’s approved checklist—capturing front/back views, metric tape-in-frame measurements (with automatic two-pass re-checks on anomalies), digital scale weight, and macro close-ups of stitching or surface defects.",
-    photo: "/marketing/qcw-12-photo-workstation.webp",
-    photoAlt: "Overhead camera and diffused studio lights above a flat-lay apparel inspection table",
+    photo: "/marketing/scenes/hiw-05-studio-measurement.svg",
+    photoAlt: "Technical schematic of an overhead 5600K studio camera rig, two-pass flat-lay metric tape re-measurement, and calibrated gram scale",
+    mediaBadge: "Studio Schematic · Pending Photo",
   },
   {
     num: "06",
     owner: "QCWarehouse Independent QA Review",
     title: "QA Verification & Immutable English Report Publication",
     body: "A separate reviewer verifies measurement logs, checks non-destructive red defect bounding boxes, translates bench notes into clear commercial English, and publishes a locked versioned report (online + downloadable PDF).",
-    photo: null,
-    photoAlt: "",
+    photo: "/marketing/scenes/hiw-06-qa-review.svg",
+    photoAlt: "Technical schematic of the independent QA reviewer screen verifying zh-CN bench notes against English buyer defect annotations before locking report v2",
+    mediaBadge: "Workflow Schematic",
   },
   {
     num: "07",
     owner: "Your Instruction → QCWarehouse Dispatch",
     title: "Decide Per Item: Return to Seller, Store, or Forward",
     body: "After reviewing the evidence, issue item-by-item handling instructions: seal an approved piece as a Golden Sample, pay domestic postage to return defective items to the seller’s designated address, or consolidate approved items to your freight forwarder in China.",
-    photo: "/marketing/qcw-13-sorting-and-packing.webp",
-    photoAlt: "Operator folding and separating individually bagged inspected garments for outbound dispatch",
+    photo: "/marketing/scenes/hiw-07-outbound-routing.svg",
+    photoAlt: "Technical schematic of three item-level outbound routes: domestic RMA seller return, REF_SAFE Golden Sample vault retention, and freight forwarder consolidation",
+    mediaBadge: "Studio Schematic · Pending Photo",
   },
 ] as const;
 
@@ -1071,54 +1115,39 @@ export function PublicHowItWorks() {
       </div>
 
       <section className="pub-page-hero">
-        <div className="pub-page-hero-grid">
+        <div className="row between flexwrap" style={{ gap: 18 }}>
           <div>
             <p className="pub-eyebrow">PHYSICAL FULFILLMENT &amp; CUSTODY WORKFLOW</p>
             <h1>How QCWarehouse Works—Step by Step</h1>
-            <p>
-              Follow the physical journey from ordering samples with your Chinese supplier to parcel check-in, piece-by-piece studio inspection, report review, and outbound item routing.
+            <p style={{ marginBottom: 0 }}>
+              Follow all seven physical stages from creating an inspection commission and receiving your permanent parcel code to intake scanning, studio measurement, QA report lock, and item-by-item outbound dispatch.
             </p>
-            <div className="row flexwrap" style={{ gap: 10 }}>
-              <Link className="button primary" href="/orders/new">
-                Create an Inspection →
-              </Link>
-              <Link className="button" href="/report-guide">
-                See Sample Report Deliverable
-              </Link>
-            </div>
           </div>
-          <figure className="pub-page-hero-media" style={{ margin: 0 }}>
-            <img
-              src="/marketing/qcw-12-photo-workstation.webp"
-              alt="Apparel inspection photography workstation with overhead camera and neutral lighting"
-              width={1350}
-              height={900}
-              loading="eager"
-            />
-            <span className="pub-media-badge">Illustrative Photography</span>
-          </figure>
+          <div className="row flexwrap" style={{ gap: 10 }}>
+            <Link className="button primary" href="/orders/new">
+              Create an Inspection →
+            </Link>
+            <Link className="button" href="/report-guide">
+              See Sample Report
+            </Link>
+          </div>
         </div>
       </section>
 
-      {/* 7-Step Visual Physical Flow */}
+      {/* 7-Step Visual Physical Flow (1-to-1 Scene Visuals) */}
       <ol className="pub-journey" aria-label="Seven-stage inspection workflow">
         {JOURNEY_STEPS.map((st) => (
-          <li
-            key={st.num}
-            className={`pub-journey-step${st.photo ? "" : " no-photo"}`}
-          >
+          <li key={st.num} className="pub-journey-step">
             <span className="pub-journey-badge">{st.num}</span>
             <div>
               <p className="pub-eyebrow" style={{ marginBottom: 4 }}>{st.owner}</p>
               <h2 style={{ fontSize: "1.18rem", margin: "0 0 6px" }}>{st.title}</h2>
               <p style={{ margin: 0, fontSize: 13.8, lineHeight: 1.6, color: "#4a5e76" }}>{st.body}</p>
             </div>
-            {st.photo && (
-              <figure className="pub-photo-box ratio-3-2">
-                <img src={st.photo} alt={st.photoAlt} width={1350} height={900} loading="lazy" />
-                <span className="pub-media-badge">Illustrative Photography</span>
-              </figure>
-            )}
+            <figure className="pub-photo-box ratio-3-2">
+              <img src={st.photo} alt={st.photoAlt} width={1350} height={900} loading="lazy" />
+              <span className="pub-media-badge">{st.mediaBadge}</span>
+            </figure>
           </li>
         ))}
       </ol>

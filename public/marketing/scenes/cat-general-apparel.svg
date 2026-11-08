@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 750" width="1200" height="750" fill="none">
+  <defs>
+    <pattern id="grid24" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0v24" stroke="#e3ebf5" stroke-width="1"/>
+    </pattern>
+    <pattern id="heather" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#bfc6cf"/>
+      <circle cx="2" cy="2" r="0.9" fill="#aeb6c0"/>
+      <circle cx="6" cy="5" r="0.8" fill="#cfd5dd"/>
+      <path d="M0 6h4M4 2h4" stroke="#b4bcc6" stroke-width="0.6"/>
+    </pattern>
+    <pattern id="heatherLight" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#cfd5dd"/>
+      <circle cx="2" cy="3" r="0.8" fill="#bec6d0"/>
+      <circle cx="6" cy="6" r="0.8" fill="#dde2e8"/>
+    </pattern>
+    <pattern id="heatherDark" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#adb5c0"/>
+      <circle cx="3" cy="2" r="0.9" fill="#9ca5b1"/>
+      <circle cx="6" cy="6" r="0.8" fill="#bec6d0"/>
+    </pattern>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0f213b" flood-opacity="0.10"/>
+    </filter>
+    <filter id="softShadow" x="-6%" y="-6%" width="112%" height="116%">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0f213b" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="750" fill="#f3f6fb"/>
+  <rect width="1200" height="750" fill="url(#grid24)"/>
+  <rect x="0" y="0" width="1200" height="52" fill="#0f213b"/>
+  <circle cx="28" cy="26" r="6" fill="#3b82f6"/>
+  <text x="44" y="31" fill="#93b8ff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="700" letter-spacing="0.06em">CORE TEMPLATE · GENERAL APPAREL</text>
+  <text x="1172" y="31" text-anchor="end" fill="#dce8f8" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="600">Dresses, Skirts, Light Outerwear &amp; Mixed Garment Batches</text>
+<rect x="64" y="88" width="1072" height="600" rx="16" fill="#ffffff" stroke="#d7e3f1" stroke-width="1.8" filter="url(#softShadow)"/><text x="245" y="148" text-anchor="middle" fill="#9a3412" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="800">WOVEN DRESSES</text><path d="M187 215 Q245 240 303 215 L343 275 L319 320 L307 370 L379 600 L111 600 L183 370 L171 320 L147 275 Z" fill="#d97745" stroke="#7c2d12" stroke-width="2.5" stroke-linejoin="round"/><rect x="181" y="360" width="128" height="20" rx="2" fill="#facc15" stroke="#a16207" stroke-width="1.6"/><rect x="181" y="360" width="7" height="20" fill="#cbd5e1" stroke="#64748b" stroke-width="1"/><line x1="195.0" y1="360" x2="195.0" y2="366" stroke="#422006" stroke-width="1.3"/><line x1="209.0" y1="360" x2="209.0" y2="366" stroke="#422006" stroke-width="1.3"/><line x1="223.0" y1="360" x2="223.0" y2="366" stroke="#422006" stroke-width="1.3"/><line x1="237.0" y1="360" x2="237.0" y2="366" stroke="#422006" stroke-width="1.3"/><line x1="251.0" y1="360" x2="251.0" y2="371" stroke="#422006" stroke-width="1.3"/><line x1="265.0" y1="360" x2="265.0" y2="366" stroke="#422006" stroke-width="1.3"/><line x1="279.0" y1="360" x2="279.0" y2="366" stroke="#422006" stroke-width="1.3"/><line x1="293.0" y1="360" x2="293.0" y2="366" stroke="#422006" stroke-width="1.3"/><rect x="179.0" y="330" width="132" height="24" rx="5" fill="#0f213b"/><text x="245.0" y="347" text-anchor="middle" fill="#fde047" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700">Waist / Width</text><text x="600" y="148" text-anchor="middle" fill="#1e3a8a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="800">LIGHT OUTERWEAR</text><path d="M532 220 L576 200 L624 200 L668 220 L748 275 L778 520 L738 530 L710 350 L710 570 L490 570 L490 350 L462 530 L422 520 L452 275 Z" fill="#2b4c7e" stroke="#172554" stroke-width="2.5" stroke-linejoin="round"/><line x1="600" y1="200" x2="600" y2="570" stroke="#cbd5e1" stroke-width="3"/><text x="955" y="148" text-anchor="middle" fill="#374151" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="800">SKIRTS &amp; MIXED LOTS</text><path d="M873 270 L1037 270 L1091 550 L819 550 Z" fill="#64748b" stroke="#1e293b" stroke-width="2.5" stroke-linejoin="round"/><line x1="916.0" y1="295" x2="870.5" y2="550" stroke="#334155" stroke-width="1.6"/><line x1="941.8" y1="295" x2="926.4" y2="550" stroke="#334155" stroke-width="1.6"/><line x1="968.2" y1="295" x2="983.6" y2="550" stroke="#334155" stroke-width="1.6"/><line x1="994.0" y1="295" x2="1039.5" y2="550" stroke="#334155" stroke-width="1.6"/><rect x="140" y="622" width="920" height="44" rx="8" fill="#f8fafd" stroke="#dde6f2"/><text x="600" y="649" text-anchor="middle" fill="#334155" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="650">Covers full-zone visual workmanship, flat width, care/size label transcription &amp; mandatory angle photos.</text></svg>

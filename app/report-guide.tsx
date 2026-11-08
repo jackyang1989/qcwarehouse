@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export function ApparelIllustration({ kind = "shirt" }: { kind?: "shirt" | "bag" | "shoe" }) {
   return (
@@ -163,6 +163,8 @@ type LightboxItem = {
   code: string;
   title: string;
   caption: string;
+  mediaBadge: string;
+  span2?: boolean;
 };
 
 const DEMO_SAMPLES = [
@@ -266,38 +268,60 @@ const MEASUREMENT_ROWS = [
 
 const PHOTO_EVIDENCE: LightboxItem[] = [
   {
-    code: "FRM-01 · GROUP OVERHEAD",
-    title: "Side-by-Side Comparison Frame (Samples A, B, C)",
-    src: "/marketing/qcw-07-three-supplier-samples.webp",
-    alt: "Overhead studio comparison of three unbranded cotton T-shirt samples laid flat under uniform neutral lighting",
-    caption: "All three candidate samples photographed in a single overhead frame under 5600K diffused lighting to document shade, neckline rib geometry, and silhouette differences.",
+    code: "FRM-01 · FRONT OVERVIEW",
+    title: "S-DEMO-204A · Front Overview (Heather Gray, Size L)",
+    src: "/marketing/scenes/rpt-204a-front.svg",
+    alt: "Studio schematic of sample S-DEMO-204A heather-gray cotton crewneck T-shirt laid flat showing front view and blank collar satin label",
+    caption: "Mandatory flat front overview tying registered barcode S-DEMO-204A to heather-gray garment identity, neckline symmetry, and blank satin care label.",
+    mediaBadge: "Schematic · Pending Studio Photo",
   },
   {
-    code: "FRM-02 · CHEST TAPE PROOF",
+    code: "FRM-02 · BACK OVERVIEW",
+    title: "S-DEMO-204A · Back Overview & Half-Moon Yoke Stitch",
+    src: "/marketing/scenes/rpt-204a-back.svg",
+    alt: "Studio schematic of sample S-DEMO-204A heather-gray cotton crewneck T-shirt rear view highlighting shoulder alignment and collar yoke stitching",
+    caption: "Rear flat view confirming clean back jersey panel, half-moon collar reinforcement stitch, and twin-needle bottom hem alignment.",
+    mediaBadge: "Schematic · Pending Studio Photo",
+  },
+  {
+    code: "FRM-03 · CHEST TAPE PROOF",
     title: "S-DEMO-204A · Chest Width Measurement (55.1 cm)",
     src: "/marketing/qcw-02-tshirt-chest-measurement.webp",
-    alt: "Overhead inspection photograph showing flexible metric tape across flat T-shirt chest from underarm seam to underarm seam",
-    caption: "Flexible metric tape positioned horizontally from left underarm seam to right underarm seam on unstrained flat garment; both endpoints visible in frame.",
+    alt: "Overhead AI studio photograph showing flexible metric tape across flat heather-gray T-shirt chest from underarm seam to underarm seam",
+    caption: "Flexible metric tape positioned horizontally 2.5 cm below armhole seam on unstrained flat garment; both endpoints remain visible inside frame.",
+    mediaBadge: "AI Studio Sample · Demo",
   },
   {
-    code: "FRM-03 · HPS LENGTH PROOF",
+    code: "FRM-04 · HPS LENGTH PROOF",
     title: "S-DEMO-204A · Front Body Length HPS (72.0 cm)",
     src: "/marketing/qcw-03-tshirt-length-measurement.webp",
-    alt: "Overhead inspection photograph showing metric tape from high point shoulder down to bottom hem on flat gray T-shirt",
-    caption: "High Point Shoulder (adjacent to collar rib seam) to bottom hem edge recorded on the same bench surface without stretching.",
+    alt: "Overhead AI studio photograph showing metric tape vertically from high point shoulder down to bottom hem on matching heather-gray T-shirt",
+    caption: "High Point Shoulder (adjacent to collar rib seam) to bottom hem edge recorded on the same neutral surface without tension distortion.",
+    mediaBadge: "AI Studio Sample · Demo",
   },
   {
-    code: "FRM-04 · COLLAR & LABEL DETAIL",
-    title: "S-DEMO-204A · Neck-Tape Seam & Blank Care Label Check",
-    src: "/marketing/qcw-09-care-label-detail.webp",
-    alt: "Macro detail of cotton T-shirt collar seam stitching and blank white woven satin label",
-    caption: "Macro documentation of collar cover-stitching density, shoulder tape reinforcement, and attached satin label blankness prior to private-label branding.",
+    code: "FRM-05 · GROUP OVERHEAD (A / B / C)",
+    title: "Side-by-Side Comparison Frame (S-DEMO-204A, 204B, 204C)",
+    src: "/marketing/scenes/rpt-204abc-group.svg",
+    alt: "Studio schematic comparing all three heather-gray Size L supplier crewneck samples S-DEMO-204A, S-DEMO-204B, and S-DEMO-204C side by side",
+    caption: "Synchronized overhead comparison schematic matching the Sample Comparison matrix: Sample B (214 g, +1.6 cm chest width) visually separated against Samples A (238 g) and C (241 g).",
+    mediaBadge: "Schematic · Pending Studio Photo",
+    span2: true,
   },
 ];
 
 export function ReportGuide() {
   const [showAnnotations, setShowAnnotations] = useState(true);
   const [lightbox, setLightbox] = useState<LightboxItem | null>(null);
+
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLightbox(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightbox]);
 
   return (
     <>
@@ -309,11 +333,11 @@ export function ReportGuide() {
 
       {/* Page Masthead */}
       <section className="pub-page-hero">
-        <div className="pub-page-hero-grid">
+        <div className="row between flexwrap" style={{ gap: 20, alignItems: "flex-end" }}>
           <div>
             <p className="pub-eyebrow">DELIVERABLE PREVIEW · REPORT STRUCTURE</p>
             <h1>Sample Inspection &amp; Comparison Report</h1>
-            <p>
+            <p style={{ marginBottom: 16 }}>
               Inspect the exact structure, measurement traceability, non-destructive defect annotations, and scope boundaries you receive before deciding whether to return, store, or ship your items from China.
             </p>
             <div className="row flexwrap no-print" style={{ gap: 10 }}>
@@ -332,16 +356,16 @@ export function ReportGuide() {
               </Link>
             </div>
           </div>
-          <figure className="pub-page-hero-media" style={{ margin: 0 }}>
-            <img
-              src="/marketing/qcw-07-three-supplier-samples.webp"
-              alt="Three candidate cotton T-shirt samples compared side by side on a neutral inspection bench"
-              width={1350}
-              height={900}
-              loading="eager"
-            />
-            <span className="pub-media-badge">Illustrative Photography · Demo Set</span>
-          </figure>
+          <div className="pub-meta-grid" style={{ margin: 0, minWidth: "min(340px, 100%)" }}>
+            <div className="def">
+              <dt>Demo Garment Identity</dt>
+              <dd>Heather-Gray Crewneck · Size L</dd>
+            </div>
+            <div className="def">
+              <dt>Report Snapshot</dt>
+              <dd>RPT-DEMO-204 · Immutable v2</dd>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -391,7 +415,7 @@ export function ReportGuide() {
             </div>
             <div className="def">
               <dt>Recorded Evidence</dt>
-              <dd>6 Studio Frames + 2 Defect Boxes</dd>
+              <dd>5 Core Frames + 2 Defect Boxes</dd>
             </div>
           </div>
         </section>
@@ -496,7 +520,7 @@ export function ReportGuide() {
           </div>
           <div className="pub-evidence-gallery">
             {PHOTO_EVIDENCE.map((item) => (
-              <figure className="pub-evidence-card" key={item.code}>
+              <figure className={`pub-evidence-card${item.span2 ? " span-2" : ""}`} key={item.code}>
                 <button
                   type="button"
                   className="pub-zoom-trigger"
@@ -505,7 +529,7 @@ export function ReportGuide() {
                 >
                   <div className="pub-evidence-frame">
                     <img src={item.src} alt={item.alt} width={1200} height={900} loading="lazy" />
-                    <span className="pub-media-badge">Illustrative Photography</span>
+                    <span className="pub-media-badge">{item.mediaBadge}</span>
                   </div>
                 </button>
                 <figcaption>
@@ -544,8 +568,8 @@ export function ReportGuide() {
             <figure className="pub-evidence-card">
               <div className="pub-evidence-frame">
                 <img
-                  src="/marketing/qcw-05-stitching-defect.webp"
-                  alt="Macro close-up of T-shirt side seam showing an unsecured sewing thread loop"
+                  src="/marketing/scenes/rpt-204b-seam-defect.svg"
+                  alt="Macro schematic of S-DEMO-204B heather-gray T-shirt left side seam highlighting an unsecured 14 mm overlock thread loop"
                   width={1200}
                   height={900}
                   loading="lazy"
@@ -558,7 +582,7 @@ export function ReportGuide() {
                       width="175"
                       height="165"
                       rx="10"
-                      fill="rgba(217, 45, 32, 0.10)"
+                      fill="rgba(217, 45, 32, 0.12)"
                       stroke="#d92d20"
                       strokeWidth="6"
                     />
@@ -568,7 +592,7 @@ export function ReportGuide() {
                     </text>
                   </svg>
                 )}
-                <span className="pub-media-badge">Illustrative Photography</span>
+                <span className="pub-media-badge">Schematic · Pending Studio Photo</span>
               </div>
               <figcaption>
                 <div>
@@ -584,8 +608,8 @@ export function ReportGuide() {
             <figure className="pub-evidence-card">
               <div className="pub-evidence-frame">
                 <img
-                  src="/marketing/qcw-06-fabric-stain.webp"
-                  alt="Close-up of light gray cotton jersey showing a faint localized surface stain"
+                  src="/marketing/scenes/rpt-204b-surface-stain.svg"
+                  alt="Macro schematic of S-DEMO-204B heather-gray cotton jersey showing a localized 8 mm brownish surface mark"
                   width={1200}
                   height={900}
                   loading="lazy"
@@ -598,7 +622,7 @@ export function ReportGuide() {
                       width="175"
                       height="145"
                       rx="10"
-                      fill="rgba(217, 45, 32, 0.10)"
+                      fill="rgba(217, 45, 32, 0.12)"
                       stroke="#d92d20"
                       strokeWidth="6"
                     />
@@ -608,7 +632,7 @@ export function ReportGuide() {
                     </text>
                   </svg>
                 )}
-                <span className="pub-media-badge">Illustrative Photography</span>
+                <span className="pub-media-badge">Schematic · Pending Studio Photo</span>
               </div>
               <figcaption>
                 <div>
@@ -630,7 +654,7 @@ export function ReportGuide() {
           <div className="pub-service-detail" style={{ margin: "14px 0 0", padding: 20, background: "#f8fafd" }}>
             <div>
               <p style={{ color: "#22364f", fontSize: 13.5, lineHeight: 1.6 }}>
-                After reviewing a comparison or inspection report, you can instruct QCWarehouse to seal an approved item (for example, <span className="code">S-DEMO-204A</span>) inside our dedicated <span className="code">REF_SAFE</span> reference cabinet. When your supplier ships a restock or pre-production piece weeks later, you order <strong>Golden Sample Matching</strong> so our inspector lays your sealed reference next to the new arrival and documents any drift in fabric hand-feel, shade, stitching, or flat dimensions.
+                After reviewing a comparison or inspection report, you can instruct QCWarehouse to seal an approved item (for example, <span className="code">S-DEMO-204A</span>) inside our dedicated <span className="code">REF_SAFE</span> reference cabinet. When your supplier ships a restock or pre-production piece weeks later (illustrated below as <span className="code">S-DEMO-319A</span>), you order <strong>Golden Sample Matching</strong> so our inspector lays your sealed heather-gray reference next to the new arrival and documents any drift in fabric hand-feel, shade, stitching, or flat dimensions.
               </p>
               <div className="row flexwrap no-print" style={{ gap: 8, marginTop: 12 }}>
                 <Link className="button sm" href="/services/reference">
@@ -640,13 +664,13 @@ export function ReportGuide() {
             </div>
             <figure className="pub-photo-box ratio-3-2">
               <img
-                src="/marketing/qcw-08-golden-sample-matching.webp"
-                alt="Approved navy reference sample laid side by side with an incoming garment sample for matching"
+                src="/marketing/scenes/rpt-204a-reference-match.svg"
+                alt="Side-by-side comparison schematic of retained heather-gray Golden Sample S-DEMO-204A and incoming heather-gray restock sample S-DEMO-319A"
                 width={1350}
                 height={900}
                 loading="lazy"
               />
-              <span className="pub-media-badge">Illustrative Photography</span>
+              <span className="pub-media-badge">Schematic · Pending Studio Photo</span>
             </figure>
           </div>
         </section>
@@ -758,7 +782,7 @@ export function ReportGuide() {
             <img className="lightbox-img" src={lightbox.src} alt={lightbox.alt} />
           </div>
           <div style={{ textAlign: "center", fontSize: 12.5, color: "#cbd8ea" }} onClick={(e) => e.stopPropagation()}>
-            {lightbox.caption} · <em>Illustrative studio photography (synthetic sample report)</em>
+            {lightbox.caption} · <em>{lightbox.mediaBadge}</em>
           </div>
         </div>
       )}

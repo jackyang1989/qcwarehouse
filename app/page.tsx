@@ -414,10 +414,10 @@ export default async function Home() {
                     />
                     <svg className="pub-bbox-svg" viewBox="0 0 1200 900" aria-hidden="true">
                       <rect
-                        x="615"
-                        y="385"
-                        width="135"
-                        height="145"
+                        x="520"
+                        y="275"
+                        width="335"
+                        height="255"
                         rx="8"
                         fill="rgba(220, 38, 38, 0.10)"
                         stroke="#dc2626"

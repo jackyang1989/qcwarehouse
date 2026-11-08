@@ -580,7 +580,7 @@ export function ReportGuide() {
                     title: "S-DEMO-204B · Unsecured Overlock Stitch Loop on Left Side Seam",
                     src: "/marketing/report-sample-b-seam-defect.webp",
                     alt: "Macro close-up of an unsecured overlock stitch loop along the left side seam of Sample B heather-gray cotton T-shirt",
-                    caption: "Raw macro photograph stays untouched in storage; UI coordinate box (x:0.66 y:0.47) highlights the ~14 mm thread loop.",
+                    caption: "Raw macro photograph stays untouched in storage; UI coordinate box (x:0.23 y:0.41) highlights the ~14 mm thread loop.",
                   })
                 }
                 aria-label="Inspect B-DEF-01 macro seam photo"
@@ -596,10 +596,10 @@ export function ReportGuide() {
                   {showAnnotations && (
                     <svg className="pub-bbox-svg" viewBox="0 0 1200 900" aria-hidden="true">
                       <rect
-                        x="795"
-                        y="420"
-                        width="110"
-                        height="135"
+                        x="280"
+                        y="365"
+                        width="390"
+                        height="275"
                         rx="8"
                         fill="rgba(220, 38, 38, 0.12)"
                         stroke="#dc2626"
@@ -612,7 +612,7 @@ export function ReportGuide() {
               <div className="pub-defect-schema-card">
                 <div className="pub-defect-coords">
                   <div><span>Garment Zone</span><strong>Left Side Seam</strong></div>
-                  <div><span>UI Coordinate Box</span><strong className="mono">x:0.66 y:0.47</strong></div>
+                  <div><span>UI Coordinate Box</span><strong className="mono">x:0.23 y:0.41</strong></div>
                   <div><span>Example Dimension</span><strong>~14 mm thread loop</strong></div>
                 </div>
               </div>
@@ -641,7 +641,7 @@ export function ReportGuide() {
                     title: "S-DEMO-204B · Localized Surface Spot on Lower Front Panel",
                     src: "/marketing/report-sample-b-fabric-stain.webp",
                     alt: "Macro close-up of a localized brownish surface stain on the heather-gray cotton jersey knit of Sample B",
-                    caption: "Raw macro photograph stays untouched in storage; UI coordinate box (x:0.36 y:0.44) highlights the ~8 mm surface spot.",
+                    caption: "Raw macro photograph stays untouched in storage; UI coordinate box (x:0.18 y:0.33) highlights the ~8 mm surface spot.",
                   })
                 }
                 aria-label="Inspect B-DEF-02 macro fabric stain photo"
@@ -657,10 +657,10 @@ export function ReportGuide() {
                   {showAnnotations && (
                     <svg className="pub-bbox-svg" viewBox="0 0 1200 900" aria-hidden="true">
                       <rect
-                        x="425"
-                        y="395"
-                        width="110"
-                        height="85"
+                        x="220"
+                        y="295"
+                        width="375"
+                        height="295"
                         rx="8"
                         fill="rgba(220, 38, 38, 0.12)"
                         stroke="#dc2626"
@@ -673,7 +673,7 @@ export function ReportGuide() {
               <div className="pub-defect-schema-card">
                 <div className="pub-defect-coords">
                   <div><span>Garment Zone</span><strong>Lower Front Panel</strong></div>
-                  <div><span>UI Coordinate Box</span><strong className="mono">x:0.36 y:0.44</strong></div>
+                  <div><span>UI Coordinate Box</span><strong className="mono">x:0.18 y:0.33</strong></div>
                   <div><span>Example Dimension</span><strong>~8 mm surface spot</strong></div>
                 </div>
               </div>

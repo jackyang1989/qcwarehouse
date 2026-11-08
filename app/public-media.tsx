@@ -1,56 +1,133 @@
-import type { ReactNode } from "react";
+export type SpecFrameTone = "slate" | "blue" | "amber" | "navy";
 
-export type PendingAssetRatio = "16-10" | "16-9" | "4-3" | "3-2" | "1-1";
+export type SpecIconKind =
+  | "compare"
+  | "barcode"
+  | "reference"
+  | "defect"
+  | "packing"
+  | "intake"
+  | "bench"
+  | "garment"
+  | "storage"
+  | "report";
 
-export function StudioAssetPending({
+function SpecIcon({ kind }: { kind: SpecIconKind }) {
+  switch (kind) {
+    case "compare":
+      return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 7h16m-4-4 4 4-4 4" />
+          <path d="M20 17H4m4-4-4 4 4 4" />
+        </svg>
+      );
+    case "barcode":
+      return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2" />
+          <path d="M7 9v6M11 9v6M14 9v6M17 9v6" />
+        </svg>
+      );
+    case "reference":
+      return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 2 19 6v6c0 5-3.5 8.5-7 10-3.5-1.5-7-5-7-10V6l7-4Z" />
+          <path d="m9.5 12.5 1.8 1.8 3.7-4" />
+        </svg>
+      );
+    case "defect":
+      return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.5-3.5M11 8v3M11 14h.01" />
+        </svg>
+      );
+    case "packing":
+      return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 8l9-5 9 5v8l-9 5-9-5V8Z" />
+          <path d="M3 8l9 5 9-5M12 13v8" />
+        </svg>
+      );
+    case "intake":
+      return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="4" width="18" height="14" rx="2" />
+          <path d="M8 20h8M12 14V8m-3 3 3-3 3 3" />
+        </svg>
+      );
+    case "garment":
+      return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M8 4 4 7l2 4 3-1v10h6V10l3 1 2-4-4-3c-1 1.6-2.3 2.4-4 2.4S9 5.6 8 4Z" />
+        </svg>
+      );
+    case "storage":
+      return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="4" y="4" width="16" height="16" rx="2" />
+          <path d="M4 12h16M10 8h4M10 16h4" />
+        </svg>
+      );
+    case "report":
+      return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M6 3h9l4 4v14H6V3Z" />
+          <path d="M15 3v4h4M9 12h6M9 16h6" />
+        </svg>
+      );
+    case "bench":
+    default:
+      return (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 7h18v6H3zM6 13v7M18 13v7M7 10h2M12 10h2M17 10h1" />
+        </svg>
+      );
+  }
+}
+
+export function InspectionSpecPanel({
   slotId,
-  filename,
+  eyebrow,
   title,
-  brief,
-  dimensions,
-  ratio = "3-2",
-  statusLabel = "ASSET_PENDING",
-  subBadge = "Studio Shoot Scheduled",
-  overlay,
+  summary,
+  highlights,
+  icon = "bench",
+  tone = "slate",
   compact = false,
+  footerNote,
 }: {
   slotId: string;
-  filename: string;
+  eyebrow: string;
   title: string;
-  brief: string;
-  dimensions?: string;
-  ratio?: PendingAssetRatio;
-  statusLabel?: string;
-  subBadge?: string;
-  overlay?: ReactNode;
+  summary: string;
+  highlights?: readonly string[];
+  icon?: SpecIconKind;
+  tone?: SpecFrameTone;
   compact?: boolean;
+  footerNote?: string;
 }) {
   return (
     <div
-      className={`pub-asset-pending ratio-${ratio}${compact ? " compact" : ""}`}
-      role="img"
-      aria-label={`${statusLabel}: ${title} (${filename})`}
+      className={`pub-spec-panel tone-${tone}${compact ? " compact" : ""}`}
+      data-asset-slot={slotId}
     >
-      <div className="pub-asset-pending-grid" aria-hidden="true" />
-      <div className="pub-asset-pending-head">
-        <span className="pub-asset-pending-pill">{statusLabel} · {slotId}</span>
-        {dimensions && <span className="pub-asset-pending-dims">{dimensions}</span>}
+      <div className="pub-spec-head">
+        <span className="pub-spec-eyebrow">{eyebrow}</span>
+        <span className="pub-spec-icon" aria-hidden="true">
+          <SpecIcon kind={icon} />
+        </span>
       </div>
-      <div className="pub-asset-pending-body">
-        <div className="pub-asset-pending-icon" aria-hidden="true">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 7h3l2-2h6l2 2h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z" />
-            <circle cx="12" cy="13.5" r="3.5" />
-          </svg>
-        </div>
-        <strong className="pub-asset-pending-title">{title}</strong>
-        <p className="pub-asset-pending-brief">{brief}</p>
-        <div className="pub-asset-pending-foot">
-          <code>{filename}</code>
-          <span>{subBadge}</span>
-        </div>
-      </div>
-      {overlay}
+      <strong className="pub-spec-title">{title}</strong>
+      <p className="pub-spec-summary">{summary}</p>
+      {highlights && highlights.length > 0 && (
+        <ul className="pub-spec-chips" aria-label="Protocol checkpoints">
+          {highlights.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      )}
+      {footerNote && <div className="pub-spec-foot">{footerNote}</div>}
     </div>
   );
 }

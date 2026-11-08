@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { legalPages, servicePages } from "../packages/core/portal-routes";
-import { StudioAssetPending } from "./public-media";
+import { InspectionSpecPanel, type SpecFrameTone, type SpecIconKind } from "./public-media";
 import { Empty, ErrorBlock, Panel, Tabs, usd, useLoad } from "./ui";
 
 export type CatalogCheck = {
@@ -142,6 +142,12 @@ export function PublicServicesOverview() {
   const compOffers = offers.filter((o) => o.service === "compare");
   const refOffers = offers.filter((o) => o.service === "reference_match");
   const hasDemoRates = offers.some((o) => o.rules?.demo === true);
+  const primaryInspOffer = inspOffers.find((o) => !o.content?.subcategory) ?? inspOffers[0];
+  const primaryCompOffer = compOffers.find((o) => !o.content?.subcategory) ?? compOffers[0];
+  const primaryRefOffer = refOffers[0];
+  const inspHref = primaryInspOffer ? `/orders/new?offer=${primaryInspOffer.offer_id}` : "/orders/new";
+  const compHref = primaryCompOffer ? `/orders/new?offer=${primaryCompOffer.offer_id}` : "/orders/new";
+  const refHref = primaryRefOffer ? `/orders/new?offer=${primaryRefOffer.offer_id}` : "/orders/new";
 
   return (
     <>
@@ -180,7 +186,6 @@ export function PublicServicesOverview() {
               height={696}
               loading="eager"
             />
-            <span className="pub-media-badge">AI Studio Illustration</span>
           </figure>
         </div>
       </section>
@@ -204,7 +209,7 @@ export function PublicServicesOverview() {
             <p>Pick the workflow that matches your stage—shortlisting suppliers, checking small-batch inventory, or verifying a reorder.</p>
           </div>
         </div>
-        <div className="tablewrap">
+        <div className="tablewrap pub-compare-desktop">
           <table className="tbl">
             <thead>
               <tr>
@@ -241,6 +246,82 @@ export function PublicServicesOverview() {
               </tr>
             </tbody>
           </table>
+        </div>
+        <div className="pub-compare-mobile">
+          <article className="pub-compare-mcard">
+            <div className="pub-compare-mcard-head">
+              <h3>Product Inspection</h3>
+              <span className="pub-price-chip">{summarizeRate(inspOffers, "/ item")}</span>
+            </div>
+            <dl>
+              <div>
+                <dt>Primary Use Case</dt>
+                <dd>Check 1 prototype or 10–100+ small-batch units individually before export</dd>
+              </div>
+              <div>
+                <dt>Eligible Quantity</dt>
+                <dd><strong>1–100 items</strong> online (101–300 via staff quote)</dd>
+              </div>
+              <div>
+                <dt>Core Evidence</dt>
+                <dd>Unique item ID, 0.1 cm tape photos &amp; defect coordinate boxes</dd>
+              </div>
+            </dl>
+            <div className="row flexwrap" style={{ gap: 8 }}>
+              <Link className="button primary sm" href={inspHref}>Configure Product Inspection →</Link>
+              <Link className="button sm" href="/services/inspection">Details</Link>
+            </div>
+          </article>
+
+          <article className="pub-compare-mcard">
+            <div className="pub-compare-mcard-head">
+              <h3>Sample Comparison</h3>
+              <span className="pub-price-chip">{summarizeRate(compOffers, "/ group")}</span>
+            </div>
+            <dl>
+              <div>
+                <dt>Primary Use Case</dt>
+                <dd>Evaluate 2 or 3 candidate samples from different suppliers side by side</dd>
+              </div>
+              <div>
+                <dt>Eligible Quantity</dt>
+                <dd><strong>2 or 3 comparable items</strong> per group</dd>
+              </div>
+              <div>
+                <dt>Core Evidence</dt>
+                <dd>Unified measurement delta table + single-frame group photo</dd>
+              </div>
+            </dl>
+            <div className="row flexwrap" style={{ gap: 8 }}>
+              <Link className="button primary sm" href={compHref}>Configure Sample Comparison →</Link>
+              <Link className="button sm" href="/services/compare">Details</Link>
+            </div>
+          </article>
+
+          <article className="pub-compare-mcard">
+            <div className="pub-compare-mcard-head">
+              <h3>Golden Sample Matching</h3>
+              <span className="pub-price-chip">{summarizeRate(refOffers, "/ match")}</span>
+            </div>
+            <dl>
+              <div>
+                <dt>Primary Use Case</dt>
+                <dd>Verify a new pre-production or restock piece against your retained Golden Sample</dd>
+              </div>
+              <div>
+                <dt>Eligible Quantity</dt>
+                <dd><strong>1 incoming item</strong> per retained Golden Sample line</dd>
+              </div>
+              <div>
+                <dt>Core Evidence</dt>
+                <dd>Paired Reference-vs-Incoming photos &amp; variance log</dd>
+              </div>
+            </dl>
+            <div className="row flexwrap" style={{ gap: 8 }}>
+              <Link className="button primary sm" href={refHref}>Configure Golden Sample Matching →</Link>
+              <Link className="button sm" href="/services/reference">Details</Link>
+            </div>
+          </article>
         </div>
         <details className="pub-details-drawer">
           <summary>Additional service rules: post-report routing, prerequisites &amp; tolerance handling</summary>
@@ -291,11 +372,11 @@ export function PublicServicesOverview() {
             <strong>Scope boundary:</strong> Covers non-destructive visual and dimensional checks on physical arrivals—not destructive lab fiber testing, wash shrinkage, or compliance certification.
           </p>
           <div className="row flexwrap" style={{ gap: 10 }}>
-            <Link className="button primary sm" href="/services/inspection">
-              Explore Product Inspection →
+            <Link className="button primary sm" href={inspHref}>
+              Configure Product Inspection →
             </Link>
-            <Link className="button sm" href="/orders/new">
-              Order Piece-by-Piece Inspection
+            <Link className="button sm" href="/services/inspection">
+              Product Inspection Details
             </Link>
           </div>
         </div>
@@ -306,9 +387,8 @@ export function PublicServicesOverview() {
               alt="QCWarehouse inspector wearing white cotton gloves measuring a slate-blue cotton sweatshirt with a yellow metric tape beside a blank sample card"
               width={1350}
               height={900}
-              loading="lazy"
+              loading="eager"
             />
-            <span className="pub-media-badge">AI Studio Illustration · Item Inspection</span>
           </figure>
         </div>
       </section>
@@ -322,9 +402,8 @@ export function PublicServicesOverview() {
               alt="Overhead studio comparison showing three unbranded cotton T-shirts from separate factories inspected side by side with caliper and metric tape on a neutral table"
               width={1350}
               height={900}
-              loading="lazy"
+              loading="eager"
             />
-            <span className="pub-media-badge">AI Studio Illustration · 3-Sample Comparison</span>
           </figure>
         </div>
         <div>
@@ -352,11 +431,11 @@ export function PublicServicesOverview() {
             </div>
           </div>
           <div className="row flexwrap" style={{ gap: 10 }}>
-            <Link className="button primary sm" href="/services/compare">
-              Explore Sample Comparison →
+            <Link className="button primary sm" href={compHref}>
+              Configure Sample Comparison →
             </Link>
-            <Link className="button sm" href="/report-guide">
-              See Comparison Report Sample
+            <Link className="button sm" href="/services/compare">
+              Sample Comparison Details
             </Link>
           </div>
         </div>
@@ -389,11 +468,11 @@ export function PublicServicesOverview() {
             </div>
           </div>
           <div className="row flexwrap" style={{ gap: 10 }}>
-            <Link className="button primary sm" href="/services/reference">
-              Explore Golden Sample Matching →
+            <Link className="button primary sm" href={refHref}>
+              Configure Golden Sample Matching →
             </Link>
-            <Link className="button sm" href="/orders/new">
-              Configure Reference Match
+            <Link className="button sm" href="/services/reference">
+              Golden Sample Details
             </Link>
           </div>
         </div>
@@ -404,21 +483,19 @@ export function PublicServicesOverview() {
               alt="QCWarehouse inspector comparing two identical navy sweatshirts side by side next to a clear protective storage zip bag"
               width={1350}
               height={900}
-              loading="lazy"
+              loading="eager"
             />
-            <span className="pub-media-badge">AI Studio Illustration · Golden Match</span>
           </figure>
-          <div className="pub-photo-box ratio-4-3" style={{ background: "transparent", border: "0" }}>
-            <StudioAssetPending
-              slotId="PH-10"
-              filename="service-reference-storage.webp"
-              title="Tamper-Sealed Reference Storage Cabinet"
-              brief="Small lockable cabinet storing retained Golden Samples inside clear sealed sleeves between incoming restock audits."
-              dimensions="1200 × 900 · 4:3"
-              ratio="4-3"
-              compact
-            />
-          </div>
+          <InspectionSpecPanel
+            slotId="PH-10"
+            eyebrow="Protected Reference Storage Protocol"
+            title="Tamper-Sealed Sleeves & Shelf Custody Between Reorders"
+            summary="Approved Golden Samples stay sealed inside individually barcoded storage sleeves and controlled bins so subsequent pre-production checks compare against the exact original physical garment."
+            highlights={["Sealed Sleeve Custody", "Location Bin Tracked", "Reseal Logged on Return"]}
+            icon="storage"
+            tone="amber"
+            compact
+          />
         </div>
       </section>
 
@@ -605,7 +682,6 @@ const SERVICE_HERO_CONFIG = {
     lead: "Send single prototypes or small-batch apparel orders to our China receiving center. Every physical garment gets its own barcode ID, approved template measurements, workmanship check, and documented photo proof.",
     image: "/marketing/service-item-inspection.webp",
     imageAlt: "QCWarehouse inspector wearing white cotton gloves measuring a slate-blue cotton sweatshirt with a yellow metric tape and sample card",
-    mediaBadge: "AI Studio Illustration · Item Inspection",
     ratioClass: "",
     idealFor: "Single pre-order samples, capsule drops (10–100 pcs), high-ASP garments where defective returns abroad destroy margin.",
     quantities: "1–100 items self-serve online · 101–300 items via manual staff capacity quote.",
@@ -618,7 +694,6 @@ const SERVICE_HERO_CONFIG = {
     lead: "Evaluating multiple 1688, Alibaba, or direct factories? Ship 2 or 3 comparable apparel samples to our studio so we can measure, weigh, and photograph them together under identical conditions.",
     image: "/marketing/service-three-samples.webp",
     imageAlt: "Overhead studio photo comparing three candidate factory T-shirt samples laid flat under neutral studio lighting beside a caliper and metric tape",
-    mediaBadge: "AI Studio Illustration · 3-Sample Bench",
     ratioClass: "",
     idealFor: "Founders and buyers choosing between 2–3 candidate manufacturers before placing bulk deposits or custom label runs.",
     quantities: "2 or 3 comparable items from the same product category per comparison package.",
@@ -631,7 +706,6 @@ const SERVICE_HERO_CONFIG = {
     lead: "Keep your approved Golden Sample sealed in QCWarehouse’s protected reference storage and benchmark new pre-production or reorder samples directly against your physical standard.",
     image: "/marketing/service-golden-matching.webp",
     imageAlt: "Side-by-side comparison showing an approved navy Golden Sample beside a sealed clear storage sleeve and an incoming production sample",
-    mediaBadge: "AI Studio Illustration · Reference Matching",
     ratioClass: "",
     idealFor: "Repeat SKU reorders, new factory transitions, and pre-production approval against a signed-off prototype.",
     quantities: "1 incoming sample compared against 1 active retained Golden Sample per order line.",
@@ -694,7 +768,6 @@ export function PublicServiceDetail({
           </div>
           <figure className={`pub-page-hero-media${cfg.ratioClass ? ` ${cfg.ratioClass}` : ""}`} style={{ margin: 0 }}>
             <img src={cfg.image} alt={cfg.imageAlt} width={1350} height={900} loading="eager" />
-            <span className="pub-media-badge">{cfg.mediaBadge}</span>
           </figure>
         </div>
       </section>
@@ -891,9 +964,11 @@ export function PublicCategories() {
       examples: "Crewneck tees, oversized hoodies, polo shirts, sweaters, zip jackets",
       checks: "HPS length, chest width (1/2), shoulder, sleeve, hem sweep, collar rib & seams",
       slotId: "PH-11",
-      filename: "category-tops-knitwear.webp",
-      shotTitle: "Tops & Hoodies Studio Flat-Lay Photography",
-      shotBrief: "Blue-gray hoodie and light gray crewneck cotton tee laid flat showing collar rib, sleeves, hem, and knit texture.",
+      specEyebrow: "Dedicated Tops Template",
+      specTitle: "Upper-Body Dimensional & Seam Construction Suite",
+      specSummary: "Measured flat without tension along high-point shoulder, armhole-offset chest, shoulder slope, sleeve, and collar rib.",
+      specHighlights: ["HPS Length", "1/2 Chest Width", "Sleeve & Shoulder", "Collar & Hem Stitch"],
+      specTone: "blue" as SpecFrameTone,
       diagramId: "tops" as const,
       offer: topsOffer,
     },
@@ -902,9 +977,11 @@ export function PublicCategories() {
       examples: "Activewear leggings, woven trousers, denim, sweatpants, athletic shorts",
       checks: "Relaxed waistband, hip width, front/back rise, inseam, outseam, leg opening & gusset",
       slotId: "PH-12",
-      filename: "category-bottoms-leggings.webp",
-      shotTitle: "Bottoms & Leggings Studio Flat-Lay Photography",
-      shotBrief: "Dark gray yoga leggings laid flat in unstretched state beside metric tape showing waistband, rise, gusset, and twin leg seams.",
+      specEyebrow: "Dedicated Bottoms Template",
+      specTitle: "Relaxed Waistband, Rise, Inseam & Gusset Suite",
+      specSummary: "Records relaxed waistband, hip width, front/back rise, inseam, outseam, ankle opening, and crotch-gusset seam alignment.",
+      specHighlights: ["1/2 Waistband", "Front & Back Rise", "Inseam & Outseam", "Gusset Construction"],
+      specTone: "slate" as SpecFrameTone,
       diagramId: "bottoms" as const,
       offer: bottomsOffer,
     },
@@ -913,9 +990,11 @@ export function PublicCategories() {
       examples: "Medium/high-support sports bras, crop tanks, moulded-cup bralettes",
       checks: "Underband width, bust width, strap symmetry, removable pad/lining check & seams",
       slotId: "PH-13",
-      filename: "category-sports-bra.webp",
-      shotTitle: "Sports Bra Studio Flat-Lay Photography",
-      shotBrief: "Unbranded forest-green sports bra laid flat displaying front cups, shoulder straps, underband construction, and clean stitching.",
+      specEyebrow: "Dedicated Activewear Template",
+      specTitle: "Underband, Strap Symmetry & Lining Check Suite",
+      specSummary: "Documents unstrained underband width, upper bust flat span, strap symmetry, removable pad pocket finish, and overlock bindings.",
+      specHighlights: ["Underband Width", "Bust Flat Span", "Strap Symmetry", "Pad & Lining Finish"],
+      specTone: "blue" as SpecFrameTone,
       diagramId: "sports_bra" as const,
       offer: braOffer,
     },
@@ -924,9 +1003,11 @@ export function PublicCategories() {
       examples: "Dresses, skirts, light outerwear, scarves, or standard visual + flat-width checks",
       checks: "Key workmanship zones, flat width, size/care label check & mandatory overview photos",
       slotId: "PH-14",
-      filename: "category-general-apparel.webp",
-      shotTitle: "Mixed Apparel Studio Flat-Lay Grouping",
-      shotBrief: "Clean flat-lay combination of dress, skirt, and light outer jacket photographed together under uniform studio illumination.",
+      specEyebrow: "Standard Apparel Template",
+      specTitle: "Flexible Visual, Label & Flat-Dimension Inspection",
+      specSummary: "Applies mandatory front/back overview photography, weight check, core flat dimensions, care-label inspection, and zone workmanship scans.",
+      specHighlights: ["Overview Angles", "Garment Mass (g)", "Size & Care Label", "Visible Seam Zones"],
+      specTone: "slate" as SpecFrameTone,
       diagramId: null,
       offer: generalOffer,
     },
@@ -1001,13 +1082,14 @@ export function PublicCategories() {
             return (
               <article className="pub-subcat-card" key={track.title}>
                 <div className="pub-subcat-media">
-                  <StudioAssetPending
+                  <InspectionSpecPanel
                     slotId={track.slotId}
-                    filename={track.filename}
-                    title={track.shotTitle}
-                    brief={track.shotBrief}
-                    dimensions="1200 × 900 · 4:3"
-                    ratio="4-3"
+                    eyebrow={track.specEyebrow}
+                    title={track.specTitle}
+                    summary={track.specSummary}
+                    highlights={track.specHighlights}
+                    icon="garment"
+                    tone={track.specTone}
                     compact
                   />
                 </div>
@@ -1137,13 +1219,15 @@ type JourneyStep = {
   outcome: string;
   photo?: string;
   photoAlt?: string;
-  mediaBadge?: string;
   uiCropTop?: boolean;
-  pendingPhoto?: {
+  specCard?: {
     slotId: string;
-    filename: string;
+    eyebrow: string;
     title: string;
-    brief: string;
+    summary: string;
+    highlights: readonly string[];
+    icon: SpecIconKind;
+    tone: SpecFrameTone;
   };
 };
 
@@ -1157,7 +1241,6 @@ const JOURNEY_STEPS: JourneyStep[] = [
     outcome: "Ready-to-paste shipping recipient details and a structured checklist awaiting supplier parcels.",
     photo: "/marketing/workflow-create-order-ui.webp",
     photoAlt: "Sanitized screenshot of the QCWarehouse Create an Inspection order interface showing service choices and estimated USD pricing",
-    mediaBadge: "Live System UI · Order Setup",
     uiCropTop: true,
   },
   {
@@ -1169,7 +1252,6 @@ const JOURNEY_STEPS: JourneyStep[] = [
     outcome: "Every incoming parcel tracking number pre-linked cleanly to your open order.",
     photo: "/marketing/scenes/hiw-02-supplier-dispatch.svg",
     photoAlt: "Clean schematic showing three domestic supplier parcels routed with personal buyer receiving code to the QCWarehouse intake facility",
-    mediaBadge: "Process Schematic · Multi-Seller Dispatch",
   },
   {
     num: "03",
@@ -1178,11 +1260,14 @@ const JOURNEY_STEPS: JourneyStep[] = [
     youDo: "Wait for our physical check-in notice rather than relying solely on automated courier ‘Delivered’ alerts.",
     weDo: "Scan the domestic waybill at the dock, weigh incoming cartons, and photograph any exterior crushing or dampness.",
     outcome: "Timestamped arrival record confirming physical parcel custody inside the studio.",
-    pendingPhoto: {
+    specCard: {
       slotId: "PH-15",
-      filename: "workflow-parcel-receiving.webp",
-      title: "Studio Receiving Counter Carton Scan",
-      brief: "Inspector scanning domestic carton barcode beside a digital parcel scale at the intake desk.",
+      eyebrow: "Dock Check-In Protocol",
+      title: "Waybill Scan, Parcel Weight & Exterior Carton Check",
+      summary: "Physical arrival timestamps only record after barcode dock scanning, carton scale logging, and exterior condition verification.",
+      highlights: ["Waybill Matched", "Carton Weight Logged", "Damage Check"],
+      icon: "intake",
+      tone: "blue",
     },
   },
   {
@@ -1192,11 +1277,14 @@ const JOURNEY_STEPS: JourneyStep[] = [
     youDo: "Confirm resolution only if an arriving parcel differs from expected count or arrived without a receiving code.",
     weDo: "Open parcels, match unit counts, attach a unique sample tag to every piece, and stage units in numbered bins.",
     outcome: "Full 1-to-1 physical traceability before measurements or photography begin.",
-    pendingPhoto: {
+    specCard: {
       slotId: "PH-16",
-      filename: "workflow-sample-registration.webp",
-      title: "Unboxed Apparel Item Tagging & Staging",
-      brief: "Opened shipping box beside folded garments as staff attach individual sample tags near numbered staging trays.",
+      eyebrow: "1-to-1 Unit Chain of Custody",
+      title: "Unique Barcode ID & Numbered Staging Bin Allocation",
+      summary: "Every garment inside the parcel receives its own barcode label and bin location; discrepancies pause before bench inspection.",
+      highlights: ["Unit Count Verified", "Sample ID Attached", "Numbered Bin Staged"],
+      icon: "barcode",
+      tone: "slate",
     },
   },
   {
@@ -1206,11 +1294,14 @@ const JOURNEY_STEPS: JourneyStep[] = [
     youDo: "Supply optional size tolerances or special focus zones up front so the bench enforces your criteria.",
     weDo: "Lay items flat under neutral lighting, shoot mandatory angles & metric tape photos, weigh units, and re-measure outliers.",
     outcome: "Unedited original bench photos and double-checked millimeter-grade data linked per barcode.",
-    pendingPhoto: {
+    specCard: {
       slotId: "PH-17",
-      filename: "workflow-inspection-station.webp",
-      title: "Overhead Camera Rig & Studio Measurement Table",
-      brief: "Overhead studio lighting frame, camera rig, and flat-lay apparel garment undergoing tape measurement.",
+      eyebrow: "5600K Inspection Bench",
+      title: "Flat Metric Tape Readings, 1 g Weighing & Zone Workmanship Scan",
+      summary: "Out-of-tolerance variance triggers automatic independent second readings with both raw measurements preserved.",
+      highlights: ["0.1 cm Tape Proof", "Two-Pass Re-Checks", "Unaltered Raw Photos"],
+      icon: "bench",
+      tone: "blue",
     },
   },
   {
@@ -1222,7 +1313,6 @@ const JOURNEY_STEPS: JourneyStep[] = [
     outcome: "Immutable versioned English web report and downloadable PDF ready for your buying decision.",
     photo: "/marketing/workflow-qa-review-ui.webp",
     photoAlt: "Sanitized screenshot of the QCWarehouse QA review workbench verifying measurements, Chinese field notes, and English translations",
-    mediaBadge: "Live System UI · Bilingual QA Review",
     uiCropTop: true,
   },
   {
@@ -1232,11 +1322,14 @@ const JOURNEY_STEPS: JourneyStep[] = [
     youDo: "Decide item by item: authorize domestic returns to sellers, convert an approved unit into a Golden Sample, or ship good stock to your forwarder.",
     weDo: "Pack approved items per your authorization, quote exact domestic courier postage, dispatch cartons, and upload return or outbound tracking numbers.",
     outcome: "Only approved merchandise leaves China while defects stay behind for domestic resolution.",
-    pendingPhoto: {
+    specCard: {
       slotId: "PH-18",
-      filename: "workflow-outbound-routing.webp",
-      title: "Post-Inspection Return, Hold & Forwarder Packing",
-      brief: "Studio packing bench holding separated seller-return bags, retained holds, and outbound forwarder cartons during final dispatch checks.",
+      eyebrow: "Buyer-Controlled Routing",
+      title: "Split Dispatch: Seller Returns, Vault Hold & Forwarder Consolidation",
+      summary: "Every individual barcode accepts its own post-report instruction before domestic courier dispatch or sealing.",
+      highlights: ["Return to Seller", "Golden Sample Seal", "Forwarder Carton"],
+      icon: "packing",
+      tone: "amber",
     },
   },
 ];
@@ -1301,22 +1394,22 @@ export function PublicHowItWorks() {
       <ol className="pub-journey" aria-label="Seven-stage inspection workflow">
         {JOURNEY_STEPS.map((st, idx) => {
           const reverseRow = idx % 2 === 1;
-          const mediaEl = st.pendingPhoto ? (
-            <div className="pub-photo-box ratio-3-2" style={{ background: "transparent", border: "0" }}>
-              <StudioAssetPending
-                slotId={st.pendingPhoto.slotId}
-                filename={st.pendingPhoto.filename}
-                title={st.pendingPhoto.title}
-                brief={st.pendingPhoto.brief}
-                dimensions="1350 × 900 · 3:2"
-                ratio="3-2"
+          const mediaEl = st.specCard ? (
+            <div className="pub-photo-box" style={{ background: "transparent", border: "0" }}>
+              <InspectionSpecPanel
+                slotId={st.specCard.slotId}
+                eyebrow={st.specCard.eyebrow}
+                title={st.specCard.title}
+                summary={st.specCard.summary}
+                highlights={st.specCard.highlights}
+                icon={st.specCard.icon}
+                tone={st.specCard.tone}
                 compact
               />
             </div>
           ) : (
             <figure className={`pub-photo-box ratio-3-2${st.uiCropTop ? " ui-shot" : ""}`}>
-              <img src={st.photo} alt={st.photoAlt ?? st.title} width={1350} height={900} loading="lazy" />
-              {st.mediaBadge && <span className="pub-media-badge">{st.mediaBadge}</span>}
+              <img src={st.photo} alt={st.photoAlt ?? st.title} width={1350} height={900} loading="eager" />
             </figure>
           );
 
@@ -1386,7 +1479,7 @@ export function PublicHowItWorks() {
             <h2 id="resp-matrix-heading" style={{ fontSize: "1.2rem" }}>Role &amp; Responsibility Summary</h2>
           </div>
         </div>
-        <div className="tablewrap">
+        <div className="tablewrap pub-resp-desktop">
           <table className="tbl">
             <thead>
               <tr>
@@ -1429,6 +1522,49 @@ export function PublicHowItWorks() {
               </tr>
             </tbody>
           </table>
+        </div>
+        <div className="pub-resp-mobile">
+          {[
+            [
+              "Merchandise Purchase",
+              "Select supplier, pay for goods & share receiving code",
+              "Ship parcel domestically in China",
+              "Not involved (independent third party)",
+            ],
+            [
+              "Inbound Arrival",
+              "Register seller’s courier tracking number",
+              "Provide accurate waybill & packing count",
+              "Verify physical receipt, carton state & item IDs",
+            ],
+            [
+              "Physical Inspection",
+              "Select template & optional target specs",
+              "—",
+              "Execute checklist, photos, re-measurements & QA review",
+            ],
+            [
+              "Seller Returns",
+              "Agree return with seller, supply return address & pay return postage",
+              "Receive return & process merchandise refund",
+              "Pack authorized items, hand over to courier & log waybill",
+            ],
+            [
+              "Forwarding Abroad",
+              "Appoint freight forwarder & approve domestic shipping quote",
+              "—",
+              "Consolidate eligible items & ship to your China forwarder",
+            ],
+          ].map(([stage, buyer, seller, qcw]) => (
+            <article className="pub-resp-mcard" key={stage}>
+              <h3>{stage}</h3>
+              <dl>
+                <div><dt>You (Buyer)</dt><dd>{buyer}</dd></div>
+                <div><dt>Chinese Seller</dt><dd>{seller}</dd></div>
+                <div><dt>QCWarehouse</dt><dd>{qcw}</dd></div>
+              </dl>
+            </article>
+          ))}
         </div>
       </section>
 
@@ -1594,7 +1730,16 @@ export function PublicPricing() {
             </p>
             <div className="pub-pillar-foot">
               <Link className="button sm" href="/services/inspection">Service scope →</Link>
-              <Link className="button primary sm" href="/orders/new">Configure</Link>
+              <Link
+                className="button primary sm"
+                href={
+                  (inspOffers.find((o) => !o.content?.subcategory) ?? inspOffers[0])
+                    ? `/orders/new?offer=${(inspOffers.find((o) => !o.content?.subcategory) ?? inspOffers[0]).offer_id}`
+                    : "/orders/new"
+                }
+              >
+                Configure
+              </Link>
             </div>
           </div>
         </section>
@@ -1611,7 +1756,16 @@ export function PublicPricing() {
             </p>
             <div className="pub-pillar-foot">
               <Link className="button sm" href="/services/compare">Service scope →</Link>
-              <Link className="button primary sm" href="/orders/new">Configure</Link>
+              <Link
+                className="button primary sm"
+                href={
+                  (compOffers.find((o) => !o.content?.subcategory) ?? compOffers[0])
+                    ? `/orders/new?offer=${(compOffers.find((o) => !o.content?.subcategory) ?? compOffers[0]).offer_id}`
+                    : "/orders/new"
+                }
+              >
+                Configure
+              </Link>
             </div>
           </div>
         </section>
@@ -1628,7 +1782,12 @@ export function PublicPricing() {
             </p>
             <div className="pub-pillar-foot">
               <Link className="button sm" href="/services/reference">Service scope →</Link>
-              <Link className="button primary sm" href="/orders/new">Configure</Link>
+              <Link
+                className="button primary sm"
+                href={refOffers[0] ? `/orders/new?offer=${refOffers[0].offer_id}` : "/orders/new"}
+              >
+                Configure
+              </Link>
             </div>
           </div>
         </section>
@@ -1795,7 +1954,7 @@ export function PublicPricing() {
             <p>Understand exactly when each charge applies across your order lifecycle.</p>
           </div>
         </div>
-        <div className="tablewrap">
+        <div className="tablewrap pub-resp-desktop">
           <table className="tbl">
             <thead>
               <tr>
@@ -1832,6 +1991,43 @@ export function PublicPricing() {
               </tr>
             </tbody>
           </table>
+        </div>
+        <div className="pub-resp-mobile">
+          {[
+            [
+              "1. Inspection / Comparison Fee",
+              "At order confirmation (before bench work starts)",
+              "Per item, per 2–3 item set, or per reference match from active catalog",
+              "Parcel check-in, barcode tagging, approved template checks, measurement & defect photos, QA review, online report + PDF, and initial post-report custody window",
+            ],
+            [
+              "2. Domestic Return to Seller",
+              "Only if you instruct a seller return after report review",
+              "Quoted per outbound parcel by weight & destination province in China",
+              "Packing authorized return items, domestic courier label, handover scan, and waybill tracking (excludes seller merchandise refund)",
+            ],
+            [
+              "3. Forwarding to Your Freight Forwarder",
+              "Only when you request outbound dispatch in China",
+              "Quoted per outbound carton; eligible items can be consolidated per parcel",
+              "Consolidation of your selected items, outer carton weighing, and domestic delivery to your designated Chinese forwarder warehouse",
+            ],
+            [
+              "4. Extended Storage / Golden Sample Custody",
+              "Only after the included free decision window expires",
+              "Per-item policy schedule shown on each sample record before renewal",
+              "Continued climate-organized bin custody or sealed reference vault Golden Sample retention",
+            ],
+          ].map(([cat, when, calc, cover]) => (
+            <article className="pub-resp-mcard" key={cat}>
+              <h3>{cat}</h3>
+              <dl>
+                <div><dt>When It Is Charged</dt><dd>{when}</dd></div>
+                <div><dt>How It Is Calculated</dt><dd>{calc}</dd></div>
+                <div><dt>What Is Covered</dt><dd>{cover}</dd></div>
+              </dl>
+            </article>
+          ))}
         </div>
       </section>
 

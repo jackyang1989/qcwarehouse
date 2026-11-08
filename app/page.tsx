@@ -7,7 +7,7 @@ import { isDemo } from "../packages/core/common";
 import { catalog } from "../packages/core/orders";
 import { staffHome } from "../packages/core/portal-routes";
 import { PlatformIcon, PublicFooter, PublicHeader } from "./chrome";
-import { StudioAssetPending, type PendingAssetRatio } from "./public-media";
+import { InspectionSpecPanel, type SpecFrameTone, type SpecIconKind } from "./public-media";
 import { homeJsonLd, metadataForPath } from "./public-seo";
 import { SampleReportPreview } from "./report-guide";
 
@@ -19,6 +19,7 @@ type LiveOffer = {
   service: string;
   title: { en: string };
   category: { en: string };
+  content?: { subcategory?: string };
   rules: {
     minimum: number;
     maximum: number;
@@ -66,13 +67,14 @@ const TRUST_CAPABILITIES = [
   ],
 ] as const;
 
-type PendingSlotMeta = {
+type ScenarioSpecMeta = {
   slotId: string;
-  filename: string;
+  eyebrow: string;
   title: string;
-  brief: string;
-  dimensions: string;
-  ratio: PendingAssetRatio;
+  summary: string;
+  highlights: readonly string[];
+  icon: SpecIconKind;
+  tone: SpecFrameTone;
 };
 
 type BuyerScenario = {
@@ -80,7 +82,7 @@ type BuyerScenario = {
   title: string;
   body: string;
   wide: boolean;
-  pendingPhoto?: PendingSlotMeta;
+  specCard?: ScenarioSpecMeta;
 };
 
 const BUYER_SCENARIOS: BuyerScenario[] = [
@@ -89,13 +91,14 @@ const BUYER_SCENARIOS: BuyerScenario[] = [
     title: "Compare supplier samples before choosing a factory",
     body: "Order samples from two or three 1688, Alibaba, or direct factories and compare fabric hand-feel, stitching, weight, and flat dimensions under one camera before placing inventory orders.",
     wide: false,
-    pendingPhoto: {
+    specCard: {
       slotId: "PH-02",
-      filename: "home-supplier-comparison.webp",
-      title: "3 Candidate Cotton Tees Under 5600K Bench Lighting",
-      brief: "Overhead frame comparing three comparable plain tees side by side with subtle collar & stitch differences beside a bench scale.",
-      dimensions: "1350 × 900 · 3:2",
-      ratio: "3-2",
+      eyebrow: "2–3 Sample Matrix",
+      title: "Unified Bench Evaluation Across Shortlisted Factories",
+      summary: "Side-by-side flat dimensions, gram weight, and collar/seam construction checks recorded in a single delta report.",
+      highlights: ["Identical 5600K Lighting", "1 g Scale Read", "Flat Delta Log"],
+      icon: "compare",
+      tone: "blue",
     },
   },
   {
@@ -103,13 +106,14 @@ const BUYER_SCENARIOS: BuyerScenario[] = [
     title: "Inspect small-batch orders item by item",
     body: "Traditional factory AQL agencies rarely visit for 15, 40, or 80 garments. Send small-batch stock to our studio so every individual unit gets its own ID, checklist, and defect log.",
     wide: false,
-    pendingPhoto: {
+    specCard: {
       slotId: "PH-03",
-      filename: "home-small-batch-inspection.webp",
-      title: "Small-Batch Apparel Barcoding at Inspection Bench",
-      brief: "Inspector scanning individual sample labels across ~12 folded garments in clear numbered sleeves on a compact studio table.",
-      dimensions: "1350 × 900 · 3:2",
-      ratio: "3-2",
+      eyebrow: "1–100+ Unit Verification",
+      title: "Individual Barcode Traceability on Every Garment",
+      summary: "Each physical unit receives a unique sample ID linking its overview photos, tape readings, and disposition status.",
+      highlights: ["Unique Sample IDs", "Two-Pass Re-Checks", "Zone Defect Log"],
+      icon: "barcode",
+      tone: "slate",
     },
   },
   {
@@ -117,13 +121,14 @@ const BUYER_SCENARIOS: BuyerScenario[] = [
     title: "Match new items against approved reference samples",
     body: "Seal an approved Golden Sample at QCWarehouse and benchmark future pre-production or restock units directly against your physical standard to catch silent fabric or sizing drift.",
     wide: false,
-    pendingPhoto: {
+    specCard: {
       slotId: "PH-04",
-      filename: "home-reference-comparison.webp",
-      title: "Approved Reference vs. Incoming Restock Pair",
-      brief: "Two distinct same-model activewear garments aligned side by side as inspector compares construction against the sealed Golden Sample.",
-      dimensions: "1350 × 900 · 3:2",
-      ratio: "3-2",
+      eyebrow: "Golden Sample Control",
+      title: "Direct Physical Benchmark Against Your Retained Standard",
+      summary: "Approved prototypes stay tamper-sealed between shipments for direct side-by-side restock variance verification.",
+      highlights: ["Sealed Vault Custody", "Shade & Rib Check", "Dimensional Variance"],
+      icon: "reference",
+      tone: "amber",
     },
   },
   {
@@ -183,6 +188,10 @@ export default async function Home() {
   const refOffers = offers.filter((o) => o.service === "reference_match");
   const hasDemoRates = offers.some((o) => o.rules?.demo === true);
 
+  const primaryInspOffer = inspOffers.find((o) => !o.content?.subcategory) ?? inspOffers[0];
+  const primaryCompOffer = compOffers.find((o) => !o.content?.subcategory) ?? compOffers[0];
+  const primaryRefOffer = refOffers[0];
+
   const inspRate = summarizeRate(inspOffers, "/ item");
   const compRate = summarizeRate(compOffers, "/ group");
   const refRate = summarizeRate(refOffers, "/ match");
@@ -193,6 +202,7 @@ export default async function Home() {
       title: "Product Inspection",
       rate: inspRate,
       href: "/services/inspection",
+      orderHref: primaryInspOffer ? `/orders/new?offer=${primaryInspOffer.offer_id}` : "/orders/new",
       whatItIs:
         "Piece-by-piece physical inspection at our China receiving center—from a single prototype sample up to dozens of small-batch units.",
       whoItsFor:
@@ -207,6 +217,7 @@ export default async function Home() {
       title: "Sample Comparison",
       rate: compRate,
       href: "/services/compare",
+      orderHref: primaryCompOffer ? `/orders/new?offer=${primaryCompOffer.offer_id}` : "/orders/new",
       whatItIs:
         "Side-by-side evaluation of 2 or 3 comparable samples from different Chinese suppliers or production batches under identical studio conditions.",
       whoItsFor:
@@ -221,6 +232,7 @@ export default async function Home() {
       title: "Golden Sample Matching",
       rate: refRate,
       href: "/services/reference",
+      orderHref: primaryRefOffer ? `/orders/new?offer=${primaryRefOffer.offer_id}` : "/orders/new",
       whatItIs:
         "Direct physical benchmark comparison of a newly arrived sample against an approved Golden Sample sealed in your QCWarehouse account.",
       whoItsFor:
@@ -276,7 +288,6 @@ export default async function Home() {
               <li><span aria-hidden="true">✓</span>Per-item return, storage, or forwarding</li>
             </ul>
           </div>
-          <span className="pub-hero-caption">AI Studio Illustration · China inspection workbench</span>
         </section>
 
         {/* TRUST STRIP */}
@@ -318,9 +329,18 @@ export default async function Home() {
                   key={item.title}
                   className={`pub-scenario-card${item.wide ? " wide" : ""}`}
                 >
-                  {item.pendingPhoto && (
+                  {item.specCard && (
                     <div className="pub-scenario-media">
-                      <StudioAssetPending {...item.pendingPhoto} compact />
+                      <InspectionSpecPanel
+                        slotId={item.specCard.slotId}
+                        eyebrow={item.specCard.eyebrow}
+                        title={item.specCard.title}
+                        summary={item.specCard.summary}
+                        highlights={item.specCard.highlights}
+                        icon={item.specCard.icon}
+                        tone={item.specCard.tone}
+                        compact
+                      />
                     </div>
                   )}
                   <span className="pub-scenario-tag">{item.tag}</span>
@@ -385,7 +405,7 @@ export default async function Home() {
                       <Link className="button sm" href={svc.href}>
                         Service details →
                       </Link>
-                      <Link className="button primary sm" href="/orders/new">
+                      <Link className="button primary sm" href={svc.orderHref}>
                         Start Order
                       </Link>
                     </div>
@@ -415,51 +435,37 @@ export default async function Home() {
             <div className="pub-evidence-layout">
               <div className="pub-evidence-mosaic stacked">
                 <figure className="pub-evidence-card span-2">
-                  <div className="pub-evidence-frame ratio-16-10">
-                    <StudioAssetPending
+                  <div className="pub-evidence-frame">
+                    <InspectionSpecPanel
                       slotId="PH-05"
-                      filename="home-seam-defect.webp"
-                      title="Macro Side-Seam Workmanship Flaw"
-                      brief="Close-up studio macro of a navy athletic side seam with a loose stitching thread loop. Raw photo remains unaltered while UI renders non-destructive bounding coordinates."
-                      dimensions="1200 × 900 · 4:3"
-                      ratio="16-10"
-                      overlay={
-                        <svg className="pub-bbox-svg" viewBox="0 0 1200 750" aria-hidden="true">
-                          <rect
-                            x="930"
-                            y="265"
-                            width="175"
-                            height="145"
-                            rx="10"
-                            fill="rgba(217, 45, 32, 0.12)"
-                            stroke="#d92d20"
-                            strokeWidth="6"
-                          />
-                          <rect x="775" y="214" width="330" height="40" rx="6" fill="#d92d20" />
-                          <text x="790" y="240" fill="#ffffff" fontSize="19" fontWeight="700" fontFamily="ui-monospace, monospace">
-                            DEF-01 · UI Overlay Demo
-                          </text>
-                        </svg>
-                      }
+                      eyebrow="Non-Destructive Defect Logging"
+                      title="UI-Layer Coordinate Bounding Boxes Over Untouched Raw Photos"
+                      summary="On live orders, original bench photos stay unmodified in storage while reviewers attach exact bounding coordinates and English explanations on defective zones."
+                      highlights={["Untouched Raw Capture", "x/y Coordinate Record", "zh → EN QA Translation"]}
+                      icon="defect"
+                      tone="amber"
+                      footerNote="Interactive defect overlay demonstration is available inside the Sample Report"
                     />
                   </div>
                   <figcaption>
                     <div>
-                      <strong>Annotated Workmanship Close-Up (UI Layer Preview)</strong>
-                      <span>Non-destructive coordinate bounding boxes highlight localized seam issues without editing raw studio captures.</span>
+                      <strong>Annotated Workmanship Documentation</strong>
+                      <span>Coordinate boxes highlight localized seam, fabric, or surface flaws without ever editing original camera evidence.</span>
                     </div>
                   </figcaption>
                 </figure>
 
                 <figure className="pub-evidence-card span-2">
                   <div className="pub-evidence-frame">
-                    <StudioAssetPending
+                    <InspectionSpecPanel
                       slotId="PH-06"
-                      filename="home-sorting-dispatch.webp"
-                      title="Customer-Directed Post-Inspection Sorting Bench"
-                      brief="Compact studio packing station separating customer-approved outbound cartons on the left and individually bagged domestic seller-return items on the right."
-                      dimensions="1350 × 760 · 16:9"
-                      ratio="16-9"
+                      eyebrow="Per-Item Post-Report Fulfillment"
+                      title="Separated Seller Returns, Held References & Forwarder Consolidation"
+                      summary="Approved pieces and rejected seller-return units remain segregated by barcode from bench checkout until you submit outbound dispatch or return authorization."
+                      highlights={["Seller Return Waybill", "Sealed Reference Hold", "Forwarder Carton Consolidation"]}
+                      icon="packing"
+                      tone="blue"
+                      footerNote="Domestic postage & consolidation quotes appear only after you choose items"
                     />
                   </div>
                   <figcaption>

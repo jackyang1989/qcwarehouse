@@ -475,17 +475,45 @@ export function PublicServicesOverview() {
             </Link>
           </div>
         </div>
-        <div className="pub-service-photo-stack">
+        <figure className="pub-photo-box ratio-3-2">
+          <img
+            src="/marketing/service-golden-matching.webp"
+            alt="QCWarehouse inspector in white cotton gloves comparing two identical dark navy sweatshirts side by side next to a clear protective storage zip bag"
+            width={1350}
+            height={900}
+            loading="eager"
+          />
+        </figure>
+
+        <div className="pub-service-subrow">
+          <div>
+            <p className="pub-eyebrow">PROTECTED REFERENCE STORAGE &amp; CUSTODY LIFECYCLE</p>
+            <h3 style={{ fontSize: "1.22rem", color: "#0f213a", margin: "0 0 10px" }}>
+              Tamper-Sealed Reference Storage Between Reorders
+            </h3>
+            <p className="pub-lead" style={{ fontSize: 14, marginBottom: 14 }}>
+              After any inspection or comparison order, convert an approved unit into your retained Golden Sample. We seal it inside an individually barcoded sleeve and dedicated storage bin so future restock shipments are checked against the exact physical garment you signed off.
+            </p>
+            <div className="pub-meta-grid" style={{ margin: 0 }}>
+              <div className="pub-meta-cell">
+                <span>Included Free Window</span>
+                <strong>30 days complimentary custody from report publication</strong>
+              </div>
+              <div className="pub-meta-cell">
+                <span>Extended Retention</span>
+                <strong>$5.00 / item per 30-day storage renewal cycle</strong>
+              </div>
+              <div className="pub-meta-cell">
+                <span>Chain of Custody</span>
+                <strong>Tamper-evident seal + barcoded bin location tracking</strong>
+              </div>
+              <div className="pub-meta-cell">
+                <span>Post-Match Handling</span>
+                <strong>Automatically resealed &amp; returned to vault after each check</strong>
+              </div>
+            </div>
+          </div>
           <figure className="pub-photo-box ratio-3-2">
-            <img
-              src="/marketing/service-golden-matching.webp"
-              alt="QCWarehouse inspector comparing two identical navy sweatshirts side by side next to a clear protective storage zip bag"
-              width={1350}
-              height={900}
-              loading="eager"
-            />
-          </figure>
-          <figure className="pub-photo-box">
             <img
               src="/marketing/service-reference-storage.webp"
               alt="Tamper-sealed Golden Sample stored in a barcoded grey reference custody bin on the QCWarehouse bench"
@@ -801,6 +829,49 @@ export function PublicServiceDetail({
               <span>How It Differs</span>
               <strong>{cfg.distinction}</strong>
             </div>
+          </div>
+
+          <div style={{ borderTop: "1px solid #e6edf6", paddingTop: 16, marginTop: 4, display: "grid", gap: 12 }}>
+            <p className="pub-eyebrow" style={{ marginBottom: 0 }}>
+              {serviceCode === "reference_match"
+                ? "SEALED VAULT CUSTODY & RESEALING"
+                : "DELIVERABLES & POST-REPORT ROUTING"}
+            </p>
+            {serviceCode === "reference_match" ? (
+              <>
+                <figure className="pub-photo-box ratio-3-2">
+                  <img
+                    src="/marketing/service-reference-storage.webp"
+                    alt="Tamper-sealed Golden Sample stored in a barcoded grey reference custody bin on the QCWarehouse bench"
+                    width={1200}
+                    height={900}
+                    loading="eager"
+                  />
+                </figure>
+                <p className="small" style={{ margin: 0, color: "#42566e", lineHeight: 1.55 }}>
+                  Approved Golden Samples stay sealed inside barcoded sleeves and dedicated custody bins (30 days complimentary storage; $5.00 / 30-day renewal). After each comparison, the reference unit is resealed and logged back into storage.
+                </p>
+              </>
+            ) : (
+              <ul className="pub-check-list" style={{ marginTop: 0 }}>
+                <li>
+                  <b className="mark-ok">✓</b>
+                  <span><strong>Traceable Item Barcodes:</strong> Every arriving unit receives a unique sample ID linking its intake scan, flat tape readings, and photos.</span>
+                </li>
+                <li>
+                  <b className="mark-ok">✓</b>
+                  <span><strong>Two-Pass Measurement Verification:</strong> Out-of-tolerance readings trigger an automatic second independent tape pass with both raw values logged.</span>
+                </li>
+                <li>
+                  <b className="mark-ok">✓</b>
+                  <span><strong>Non-Destructive Defect Overlays:</strong> Reviewer-verified red coordinate boxes highlight defects in the web UI without altering original camera files.</span>
+                </li>
+                <li>
+                  <b className="mark-ok">✓</b>
+                  <span><strong>Per-Item Post-Report Disposition:</strong> Choose per unit whether to return to the seller in China, retain as a Golden Sample, or forward to your freight forwarder.</span>
+                </li>
+              </ul>
+            )}
           </div>
         </section>
 

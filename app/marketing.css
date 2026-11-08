@@ -924,6 +924,16 @@
 .pub-service-detail.reverse {
   grid-template-columns: minmax(280px, 0.85fr) minmax(0, 1.2fr);
 }
+.pub-service-subrow {
+  grid-column: 1 / -1;
+  border-top: 1px solid #e6edf6;
+  padding-top: 24px;
+  margin-top: 4px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.85fr);
+  gap: 28px;
+  align-items: center;
+}
 .pub-service-photo-stack {
   display: grid;
   gap: 12px;
@@ -2024,6 +2034,7 @@
   .pub-page-hero-split,
   .pub-service-detail,
   .pub-service-detail.reverse,
+  .pub-service-subrow,
   .pub-apparel-top,
   .pub-calc-grid,
   .pub-boundary-grid,

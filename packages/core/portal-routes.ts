@@ -19,7 +19,7 @@ const warehouseTabs=[
   ["/wh/review","报告复核",warehouseOverview],
   ["/wh/dispatch","出库待办",warehouseOverview],
   ["/wh/stocktakes","库存盘点",warehouseOverview],
-  ["/wh/logistics","物流",staffAccess.tracking],
+  ["/wh/logistics","物流监控",staffAccess.tracking],
 ] as const;
 const adminTabs=[
   ["/admin","运营总览",staffAccess.administration],

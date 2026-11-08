@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 import { actorForSession } from "../../packages/core/auth";
@@ -6,8 +7,28 @@ import { signInMethods } from "../../packages/core/integrations";
 import { customerDestination, resolvePortalRoute, withDestination } from "../../packages/core/portal-routes";
 import { AccessShell, AccountRecovery, Login, Onboarding } from "../account-access";
 import { Portal } from "../portal";
+import { metadataForPath } from "../public-seo";
 
 type Search = Record<string,string|string[]|undefined>;
+
+const PUBLIC_MARKETING_VIEWS = new Set([
+  "catalog",
+  "how-it-works",
+  "faq",
+  "report-guide",
+  "public-inquiry",
+  "legal",
+]);
+
+export async function generateMetadata({params}:{params:Promise<{page:string[]}>}): Promise<Metadata> {
+  const {page} = await params;
+  if (page.some(segment => segment.includes("/"))) return {};
+  const path = "/" + page.join("/");
+  const route = resolvePortalRoute(path);
+  if (!route) return {};
+  const isMarketing = route.area === "public" && PUBLIC_MARKETING_VIEWS.has(route.view);
+  return metadataForPath(path, isMarketing);
+}
 
 export default async function Page({params,searchParams}:{params:Promise<{page:string[]}>;searchParams:Promise<Search>}) {
   const {page}=await params;

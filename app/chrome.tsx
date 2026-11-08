@@ -52,25 +52,161 @@ export function QuickSwitch({active,actor}:{active:"public"|"customer"|"warehous
   </div>;
 }
 
-export function PublicHeader({accountHref,accountAction,staff,path="/",actor,demo=false}:{
+const publicNavLinks: [string, string][] = [
+  ["/catalog", "Services"],
+  ["/categories", "Categories"],
+  ["/how-it-works", "How It Works"],
+  ["/report-guide", "Sample Reports"],
+  ["/pricing", "Pricing"],
+  ["/faq", "FAQ"],
+];
+
+export function PublicHeader({accountHref,accountAction,staff,path="/"}:{
   accountHref?:string;accountAction?:ReactNode;staff?:boolean;path?:string;actor?:Actor|null;demo?:boolean;
 }) {
-  return <header className="top">
-    <div className="workspace-brand"><Brand/><span className="workspace-context">INSPECTION PLATFORM</span></div>
-    <span className="topspacer"/>
-    <nav className="public-nav" aria-label="Primary">
-      {[
-        ["/catalog","Services"],["/categories","Product Categories"],["/how-it-works","How It Works"],
-        ["/report-guide","Reports"],["/pricing","Pricing"],
-      ].map(([href,label])=><Link key={href} href={href} aria-current={path===href||href==="/catalog"&&path.startsWith("/services/")?"page":undefined}>{label}</Link>)}
-    </nav>
-    <div className="public-header-actions">
-      {demo&&<QuickSwitch active="public" actor={actor}/>}
-      <Link className="button sm" href={accountHref??"/login"}>{staff?"员工工作区":accountHref?"My Workspace":"Sign In"}</Link>
-      {accountAction}
-      {!staff&&<Link className="button primary sm" href="/orders/new">Start Inspection</Link>}
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [path]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setMenuOpen(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [menuOpen]);
+
+  const isActive = (href: string) =>
+    path === href || (href === "/catalog" && path.startsWith("/services/"));
+
+  return <>
+    <a className="skip-link" href="#main-content">Skip to main content</a>
+    <header className="top public-top">
+      <div className="public-top-inner">
+        <div className="workspace-brand">
+          <Brand/>
+          <span className="workspace-context">CHINA INSPECTION STUDIO</span>
+        </div>
+        <nav className="public-nav" aria-label="Primary">
+          {publicNavLinks.map(([href,label])=>(
+            <Link key={href} href={href} aria-current={isActive(href)?"page":undefined}>{label}</Link>
+          ))}
+        </nav>
+        <div className="public-header-actions">
+          <Link className="button sm public-signin-btn" href={accountHref??"/login"}>
+            {staff?"员工工作区":accountHref?"My Workspace":"Sign In"}
+          </Link>
+          {accountAction}
+          {!staff&&(
+            <Link className="button primary sm public-cta-btn" href="/orders/new">
+              Start Inspection
+            </Link>
+          )}
+          <button
+            type="button"
+            className="public-menu-toggle"
+            aria-expanded={menuOpen}
+            aria-controls="public-mobile-drawer"
+            aria-label={menuOpen ? "Close navigation menu" : "Open navigation menu"}
+            onClick={() => setMenuOpen(v => !v)}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              {menuOpen ? <path d="M6 6l12 12M18 6L6 18"/> : <path d="M4 7h16M4 12h16M4 17h16"/>}
+            </svg>
+          </button>
+        </div>
+      </div>
+      {menuOpen && (
+        <div className="public-mobile-drawer" id="public-mobile-drawer">
+          <nav aria-label="Mobile Primary">
+            {publicNavLinks.map(([href,label])=>(
+              <Link
+                key={href}
+                href={href}
+                aria-current={isActive(href)?"page":undefined}
+                onClick={() => setMenuOpen(false)}
+              >
+                {label}
+              </Link>
+            ))}
+            <Link href="/contact" onClick={() => setMenuOpen(false)}>Contact Support</Link>
+          </nav>
+          <div className="public-mobile-actions">
+            <Link className="button full" href={accountHref??"/login"} onClick={() => setMenuOpen(false)}>
+              {staff?"员工工作区":accountHref?"My Workspace":"Sign In"}
+            </Link>
+            {!staff&&(
+              <Link className="button primary full" href="/orders/new" onClick={() => setMenuOpen(false)}>
+                Start Inspection
+              </Link>
+            )}
+          </div>
+        </div>
+      )}
+    </header>
+  </>;
+}
+
+export function PublicFooter() {
+  return <footer className="public-footer">
+    <div className="public-footer-inner">
+      <div className="public-footer-grid">
+        <div className="public-footer-brand">
+          <Brand/>
+          <p className="public-footer-lead">
+            China-based independent product inspection, supplier sample comparison, and post-inspection item handling for international e-commerce brands and small-batch buyers.
+          </p>
+          <p className="public-footer-boundary">
+            <strong>Service scope notice:</strong> QCWarehouse performs physical visual and dimensional checks on commissioned items received at our China facility. We are not a purchasing agent, factory-wide AQL audit agency, 3PL warehouse, customs broker, or accredited testing laboratory.
+          </p>
+        </div>
+        <div className="public-footer-col">
+          <h4>Services</h4>
+          <ul>
+            <li><Link href="/catalog">Services Overview</Link></li>
+            <li><Link href="/services/inspection">Product Inspection</Link></li>
+            <li><Link href="/services/compare">Sample Comparison</Link></li>
+            <li><Link href="/services/reference">Golden Sample Matching</Link></li>
+            <li><Link href="/categories">Product Categories</Link></li>
+            <li><Link href="/pricing">Pricing &amp; Estimator</Link></li>
+          </ul>
+        </div>
+        <div className="public-footer-col">
+          <h4>Process &amp; Evidence</h4>
+          <ul>
+            <li><Link href="/how-it-works">How It Works</Link></li>
+            <li><Link href="/report-guide">Sample Inspection Report</Link></li>
+            <li><Link href="/faq">FAQ &amp; Help Center</Link></li>
+            <li><Link href="/contact">Contact &amp; Custom Scope</Link></li>
+          </ul>
+        </div>
+        <div className="public-footer-col">
+          <h4>Account &amp; Policies</h4>
+          <ul>
+            <li><Link href="/login">Customer Sign In</Link></li>
+            <li><Link href="/orders/new">Start an Inspection</Link></li>
+            <li><Link href="/legal/terms">Terms of Service</Link></li>
+            <li><Link href="/legal/privacy">Privacy Policy</Link></li>
+            <li><Link href="/legal/restricted-items">Restricted Items</Link></li>
+            <li><Link href="/legal/report-notice">Report Limitations</Link></li>
+          </ul>
+        </div>
+      </div>
+      <div className="public-footer-bottom">
+        <span>© {new Date().getFullYear()} QCWarehouse · Independent Receiving-Center Inspection in China</span>
+        <div className="public-footer-meta">
+          <Link href="/legal">All Policies</Link>
+          <span aria-hidden="true">·</span>
+          <Link href="/contact">Commercial Inquiries</Link>
+          <span aria-hidden="true">·</span>
+          <Link href="/staff/login" prefetch={false}>Staff sign-in</Link>
+        </div>
+      </div>
     </div>
-  </header>;
+  </footer>;
 }
 
 export function SiteFooter() {

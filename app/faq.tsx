@@ -3,86 +3,325 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-const topics=[
-  ["Services",[
-    ["service-scope","What does QC Warehouse do?","We receive the products you buy from sellers, inspect each commissioned item and deliver a report with evidence. You can also order a side-by-side comparison."],
-    ["sourcing","Are you a sourcing agent?","You buy directly from the seller. Our work begins with receiving and checking the physical items."],
-    ["subscription","Do I need a subscription?","Standard inspection is ordered and priced per commission."],
-    ["supported-products","Which products do you check?","The service catalogue lists the product categories and checks currently available."],
-    ["sample-count","How many items can I send?","Compare two or three samples in a comparison service. With standard inspection, commission the actual quantity you need checked, from one item to several dozen."],
-  ]],
-  ["Receiving and turnaround",[
-    ["receiving-address","How do I send items to the warehouse?","After signing up, copy the warehouse address with your personal receiving code into the seller’s shipping details. Add the seller’s tracking number to your workspace once it ships."],
-    ["missing-receiving-code","What if the parcel has no receiving code?","Add the original seller tracking number to your workspace. A parcel may be held for identification until the warehouse verifies ownership."],
-    ["turnaround","How long does a report take?","Your quote shows the estimated turnaround for the selected service and quantity."],
-    ["timing-start","When does inspection timing start?","The turnaround starts after the warehouse receives and identifies all commissioned items, subject to the accepted quote."],
-    ["arrival-damage","What happens if items arrive damaged?","The warehouse records observed parcel or item damage and its supporting evidence for review."],
-  ]],
-  ["Checks and reports",[
-    ["measurements","What do you measure?","Measurements, units and methods depend on the selected category and service. The report records results and supporting evidence."],
-    ["fabric-testing","Do you test fabric composition or GSM?","Apparel checks can record garment weight when included in the checklist. Fabric composition and GSM require separate testing."],
-    ["color","Do you provide instrument color values?","The standard service records visual observations under the specified lighting conditions."],
-    ["certification","Is the report a lab test or certification?","The report records physical checks on the items received. Laboratory tests and certification require separate qualified providers."],
-    ["bulk-order","Does the report cover my bulk order?","The report applies to the actual items inspected. Use a separate sampling plan for any production batch."],
-    ["supplier-choice","Will you rank suppliers for me?","You decide using the recorded measurements, photos and observations."],
-    ["tolerances","Can I give you tolerances?","When the service supports customer-specified limits, the report records the supplied limits and the observed result."],
-  ]],
-  ["Storage and shipping",[
-    ["after-inspection","What happens to items after inspection?","Choose a handling instruction for each item. Options include storage, forwarding or returning the item to the seller."],
-    ["seller-returns","How do I return an item to the seller?","Request the return with your seller and provide their return address. You pay the quoted return shipping fee. The warehouse records the actual tracking number after handover."],
-    ["storage-period","How long can I store items?","Review the storage deadline shown for each item and the current terms before choosing an extension."],
-    ["forwarding","Can you send my items to a freight forwarder?","Provide the forwarder’s address and required member code. Approve and pay the shipping quote before the warehouse hands over the parcel."],
-    ["restricted-items","Which items are restricted?","Read the current Restricted items policy before arranging a delivery."],
-  ]],
-  ["Billing and support",[
-    ["refunds","Can I request a refund?","Inspection fee refunds depend on your order progress and the applicable terms. Ask the seller directly about refunds for the merchandise you purchased."],
-    ["payment","Who processes my payment?","Stripe processes card payments. The receipt and current terms identify the seller of record."],
-    ["contact","How do I contact support?","Sign in and open a support case. Include the relevant inspection order or tracking number so the team can locate the record."],
-  ]],
-] as const;
+type FaqEntry = {
+  id: string;
+  question: string;
+  answer: string;
+};
+
+type FaqCategory = {
+  key: string;
+  title: string;
+  items: FaqEntry[];
+};
+
+const FAQ_CATEGORIES: FaqCategory[] = [
+  {
+    key: "suppliers-receiving",
+    title: "Suppliers & Receiving",
+    items: [
+      {
+        id: "multi-supplier",
+        question: "Can I send items from multiple Chinese suppliers?",
+        answer:
+          "Yes. You purchase directly from any combination of 1688, Alibaba, Taobao, or direct factories in China and have each seller ship domestically to your QCWarehouse receiving address with your personal receiving code. Register each seller’s carrier tracking number in your workspace so our intake team can match split parcels accurately.",
+      },
+      {
+        id: "sourcing",
+        question: "Are you a sourcing or purchasing agent?",
+        answer:
+          "No. You purchase merchandise directly from your suppliers. QCWarehouse does not source factories, pay sellers, or negotiate merchandise prices—remaining independent ensures our inspection reports stay objective.",
+      },
+      {
+        id: "receiving-address",
+        question: "How do I send items to the QCWarehouse China receiving center?",
+        answer:
+          "Create a free account to receive our China warehouse address and your permanent personal receiving code. Paste both into your supplier’s shipping details, then add the domestic courier tracking number to your order in QCWarehouse.",
+      },
+      {
+        id: "missing-receiving-code",
+        question: "What happens if a seller forgets to write my receiving code on the label?",
+        answer:
+          "Add the seller’s original carrier tracking number in your workspace as soon as the parcel ships. Uncoded or mismatched parcels are held securely in quarantine until ownership is verified—never opened to other accounts.",
+      },
+      {
+        id: "arrival-damage",
+        question: "What happens if a parcel arrives damaged?",
+        answer:
+          "Our intake desk photographs visible outer-carton crushing, tearing, or moisture at arrival and logs an intake exception linked to the carrier waybill before unboxing, giving you timestamped evidence to review with your seller.",
+      },
+      {
+        id: "short-shipment",
+        question: "What if fewer items arrive than expected?",
+        answer:
+          "Every unboxed item is counted and tagged individually against your declared order quantity. If a parcel contains fewer or more units than declared, the system flags a quantity discrepancy with intake photos and pauses affected lines until you confirm how to proceed.",
+      },
+    ],
+  },
+  {
+    key: "services-scope",
+    title: "Services & Scope",
+    items: [
+      {
+        id: "service-scope",
+        question: "What is the difference between Product Inspection and Sample Comparison?",
+        answer:
+          "Product Inspection checks 1 to 100+ items individually (priced per physical item), giving each piece its own checklist record—ideal for prototypes or small-batch inventory. Sample Comparison evaluates 2 or 3 comparable items together as one set (priced per group) under identical camera framing and flat measurement landmarks so you can compare candidate suppliers or batches side by side.",
+      },
+      {
+        id: "piece-by-piece-batch",
+        question: "Can you inspect 30 or 50 items individually?",
+        answer:
+          "Yes. Standard Product Inspection supports 1 to 100 items self-serve online, checking every single unit piece by piece with its own barcode ID and defect log. Orders of 101 to 300 items are supported via a manual staff capacity quote.",
+      },
+      {
+        id: "golden-sample",
+        question: "Can you compare new items with my approved sample?",
+        answer:
+          "Yes—through Golden Sample / Reference Matching. After an item has been inspected in QCWarehouse, you can request its conversion into a Golden Sample; our staff seals it inside dedicated REF_SAFE storage. Future incoming samples can then be ordered under Reference Matching for direct physical side-by-side comparison.",
+      },
+      {
+        id: "measurements",
+        question: "What exactly do you measure and check?",
+        answer:
+          "Checkpoints follow the published template for your chosen category—for example, Tops & Knitwear records HPS length, flat chest width, shoulder, sleeve, hem, garment weight, label details, and zone workmanship. Measurements use calibrated metric tapes (0.1 cm precision) with automatic two-pass re-checks when readings exceed variance thresholds.",
+      },
+      {
+        id: "guarantee-boundaries",
+        question: "Do you guarantee that the items meet my specifications or are 100% defect-free?",
+        answer:
+          "No. QCWarehouse is an independent physical inspection service, not the manufacturer or an accredited laboratory. We document observable workmanship and flat measurements on the commissioned items received, and clearly state what was not tested (such as chemical fiber composition, wash shrinkage, safety certification, authenticity, or unreceived factory bulk stock).",
+      },
+      {
+        id: "certification",
+        question: "Is a QCWarehouse report a laboratory test or compliance certificate?",
+        answer:
+          "No. Reports document non-destructive physical observations and dimensional checks at our receiving studio. Chemical composition, GSM cut-swatch tests, flammability, CPSIA/REACH compliance, and formal certifications require accredited third-party laboratories.",
+      },
+    ],
+  },
+  {
+    key: "reports-pricing",
+    title: "Reports, Pricing & Turnaround",
+    items: [
+      {
+        id: "before-deciding",
+        question: "Can I see photos and measurements before deciding where items go?",
+        answer:
+          "Yes—that is the core purpose of QCWarehouse. We publish your online English report and matching downloadable PDF (complete with metric tape photos, re-measurement logs, and red defect bounding boxes) first. You review the evidence and only then submit item-by-item return, storage, or forwarding instructions.",
+      },
+      {
+        id: "fee-included",
+        question: "What is included in the inspection fee?",
+        answer:
+          "The inspection or comparison fee covers parcel arrival check-in, individual barcode tagging, execution of all checkpoints in the selected template, mandatory overview/measurement/defect photography, independent QA review, versioned English report + PDF, and the initial post-report decision custody window. Outbound domestic postage and extended storage are separate.",
+      },
+      {
+        id: "turnaround",
+        question: "How long does inspection take?",
+        answer:
+          "Active standard apparel packages estimate 3 business days. Turnaround timing starts only after all commissioned items for the order have physically arrived at our China facility, passed ownership/count check-in, and order payment is confirmed.",
+      },
+      {
+        id: "payment",
+        question: "How do billing and refunds work?",
+        answer:
+          "Orders are priced per commission (no monthly subscription) and processed in USD via Stripe. Inspection fee refund eligibility depends on whether physical warehouse work has started under our Terms of Service. Refunds for the merchandise itself must be requested directly from the seller you bought from.",
+      },
+    ],
+  },
+  {
+    key: "routing-returns",
+    title: "Returns, Storage & Forwarding",
+    items: [
+      {
+        id: "after-inspection",
+        question: "What happens to items after inspection?",
+        answer:
+          "Every inspected item stays tagged in organized staging until you issue an instruction in your workspace: Return to Seller (domestic China), Forward to your designated Freight Forwarder in China, Store for later consolidation, or Convert an approved item into a sealed Golden Sample.",
+      },
+      {
+        id: "seller-returns",
+        question: "Can you return defective items to the seller?",
+        answer:
+          "Yes. First request return approval from your Chinese seller and obtain their domestic return address and recipient phone number. Submit those details in QCWarehouse, approve and pay the domestic return courier quote, and our team will pack the selected items, hand them to the courier, and record the outbound tracking number. Note that courier dispatch does not guarantee the seller will issue a merchandise refund.",
+      },
+      {
+        id: "forwarding",
+        question: "Do you arrange international shipping or customs clearance?",
+        answer:
+          "QCWarehouse dispatches domestically within mainland China to your chosen international freight forwarder or consolidator warehouse (including your forwarder suite/member code) after you approve the domestic shipping quote. International air/sea linehaul and destination customs clearance are handled by your freight forwarder.",
+      },
+      {
+        id: "restricted-items",
+        question: "Which products are restricted from delivery to QCWarehouse?",
+        answer:
+          "Hazardous materials, batteries/electronics, liquids, cosmetics, food, pressurized containers, counterfeit branded goods, and unapproved product categories must not be shipped to our facility. Review the Restricted Items Policy before ordering from suppliers.",
+      },
+      {
+        id: "refunds",
+        question: "How do I get support for an active inspection order?",
+        answer:
+          "Sign in to your customer workspace and open a support case directly from the order or support desk, including your order number (QW-…) or carrier waybill so our operations team can inspect the exact chain-of-custody record.",
+      },
+    ],
+  },
+];
+
+function buildFaqJsonLd() {
+  return {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: FAQ_CATEGORIES.flatMap((cat) =>
+      cat.items.map((item) => ({
+        "@type": "Question",
+        name: item.question,
+        acceptedAnswer: {
+          "@type": "Answer",
+          text: item.answer,
+        },
+      }))
+    ),
+  };
+}
 
 export function FAQ() {
-  const [query,setQuery]=useState("");
-  useEffect(()=>{
-    const reveal=()=>{
-      const item=document.getElementById(location.hash.slice(1));
-      if(item instanceof HTMLDetailsElement) {
-        item.open=true;
-        item.scrollIntoView({block:"start"});
+  const [query, setQuery] = useState("");
+  const [activeCat, setActiveCat] = useState<string>("all");
+
+  useEffect(() => {
+    const reveal = () => {
+      const hashId = location.hash.slice(1);
+      if (!hashId) return;
+      const item = document.getElementById(hashId);
+      if (item instanceof HTMLDetailsElement) {
+        item.open = true;
+        item.scrollIntoView({ block: "start" });
       }
     };
     reveal();
-    window.addEventListener("hashchange",reveal);
-    return ()=>window.removeEventListener("hashchange",reveal);
-  },[]);
-  const term=query.trim().toLowerCase();
-  const groups=topics.map(([title,items])=>({title,items:items.filter(([,question,answer])=>
-    question.toLowerCase().includes(term)||answer.toLowerCase().includes(term))})).filter(group=>group.items.length);
-  return <div className="faq">
-    <div className="breadcrumb"><Link href="/">QCWarehouse</Link> &nbsp; › &nbsp; <b>Frequently Asked Questions</b></div>
-    <div className="page-head">
-      <div>
-        <p className="eyebrow">QCWAREHOUSE / INSPECTION</p>
-        <h1>Frequently Asked Questions</h1>
-        <p className="muted">Search by subject, and expand each answer.</p>
+    window.addEventListener("hashchange", reveal);
+    return () => window.removeEventListener("hashchange", reveal);
+  }, []);
+
+  const term = query.trim().toLowerCase();
+  const groups = FAQ_CATEGORIES.filter((cat) => activeCat === "all" || cat.key === activeCat)
+    .map((cat) => ({
+      ...cat,
+      items: cat.items.filter(
+        (item) =>
+          !term ||
+          item.question.toLowerCase().includes(term) ||
+          item.answer.toLowerCase().includes(term)
+      ),
+    }))
+    .filter((cat) => cat.items.length > 0);
+
+  return (
+    <div className="faq">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(buildFaqJsonLd()) }}
+      />
+
+      <div className="breadcrumb">
+        <Link href="/">QCWarehouse</Link>
+        <span aria-hidden="true">›</span>
+        <strong>FAQ &amp; Buyer Help Center</strong>
       </div>
-      <div className="head-actions">
-        <Link className="button primary" href="/contact">Ask a question</Link>
+
+      <section className="pub-page-hero">
+        <div className="row between flexwrap" style={{ gap: 16 }}>
+          <div>
+            <p className="pub-eyebrow">BUYER HELP CENTER · DECISION &amp; OPERATIONS FAQ</p>
+            <h1 style={{ marginBottom: 8 }}>Frequently Asked Questions</h1>
+            <p style={{ marginBottom: 0 }}>
+              Clear, policy-accurate answers on shipping from multiple Chinese suppliers, 1–100+ item piece-by-piece checks, sample comparisons, scope boundaries, seller returns, and freight-forwarder handoff.
+            </p>
+          </div>
+          <div className="row flexwrap" style={{ gap: 10 }}>
+            <Link className="button primary" href="/contact">
+              Ask a Question →
+            </Link>
+            <Link className="button" href="/orders/new">
+              Start Inspection
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      <div className="pub-filter-pills" role="tablist" aria-label="FAQ topic categories">
+        <button
+          type="button"
+          className={`pub-filter-pill${activeCat === "all" ? " active" : ""}`}
+          onClick={() => setActiveCat("all")}
+        >
+          All Topics ({FAQ_CATEGORIES.reduce((n, c) => n + c.items.length, 0)})
+        </button>
+        {FAQ_CATEGORIES.map((cat) => (
+          <button
+            key={cat.key}
+            type="button"
+            className={`pub-filter-pill${activeCat === cat.key ? " active" : ""}`}
+            onClick={() => setActiveCat(cat.key)}
+          >
+            {cat.title} ({cat.items.length})
+          </button>
+        ))}
+      </div>
+
+      <div className="card" style={{ marginBottom: 24 }}>
+        <div className="selectbar" style={{ marginBottom: 14 }}>
+          <div className="search">
+            <input
+              type="search"
+              aria-label="Search FAQ"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search e.g. multiple suppliers, 50 items, return to seller, forwarder, Golden Sample…"
+            />
+          </div>
+          {query && (
+            <button type="button" className="button sm" onClick={() => setQuery("")}>
+              Clear search
+            </button>
+          )}
+        </div>
+
+        {groups.length === 0 && (
+          <p role="status" className="notice">
+            No matching questions found. Try clearing your filter or{" "}
+            <Link href="/contact">send our inspection desk a direct inquiry</Link>.
+          </p>
+        )}
+
+        {groups.map((group) => (
+          <section className="faq-group" key={group.key} style={{ marginBottom: 18 }}>
+            <h2 style={{ fontSize: "1.08rem", margin: "10px 0 8px", color: "#15325c" }}>
+              {group.title}
+            </h2>
+            {group.items.map((item) => (
+              <details className="faq-item" key={item.id} id={item.id}>
+                <summary>
+                  <span>{item.question}</span>
+                  <span className="tag gray" style={{ flexShrink: 0 }}>{group.title}</span>
+                </summary>
+                <p style={{ fontSize: 13.5, lineHeight: 1.62, color: "#344861" }}>{item.answer}</p>
+                <a className="button sm" style={{ marginTop: 4 }} href={`#${item.id}`}>
+                  Direct link
+                </a>
+              </details>
+            ))}
+          </section>
+        ))}
+      </div>
+
+      <div className="actions">
+        <Link className="button primary" href="/catalog">Explore Services &amp; Packages</Link>
+        <Link className="button" href="/pricing">Estimate Inspection Fee</Link>
+        <Link className="button" href="/legal/restricted-items">Restricted Items Policy</Link>
+        <Link className="button" href="/legal/terms">Terms of Service</Link>
       </div>
     </div>
-    <div className="card">
-      <div className="selectbar">
-        <div className="search"><input type="search" aria-label="Search FAQ" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Search shipping, inspection, reports, payments…"/></div>
-        {query&&<button type="button" className="button sm" onClick={()=>setQuery("")}>Clear</button>}
-      </div>
-      {groups.length===0&&<p role="status" className="notice">No matching questions. Try a different search or open a <Link href="/support">support case</Link>.</p>}
-      {groups.map(({title,items})=><section className="faq-group" key={title}>
-        {items.map(([id,question,answer])=><details className="faq-item" key={id} id={id}>
-          <summary>{question} <span className="tag gray" style={{marginLeft:8}}>{title}</span></summary><p>{answer}</p>
-          <a className="button sm" style={{marginTop:6}} href={"#"+id}>Copy direct link</a>
-        </details>)}
-      </section>)}
-    </div>
-    <div className="actions"><Link className="button" href="/catalog">Browse services</Link><Link className="button" href="/legal/restricted-items">Restricted items</Link><Link className="button" href="/legal/terms">Terms of service</Link><Link className="button" href="/support">Open a support case</Link></div>
-  </div>;
+  );
 }

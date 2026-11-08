@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { Catalog, CustomerActions, CustomerDesk, DemoCheckout, HowItWorks, Legal, NewOrder, OrderFulfillment, OrderView, ReportView, TrackView } from "./customer";
+import { CustomerActions, CustomerDesk, DemoCheckout, NewOrder, OrderFulfillment, OrderView, ReportView, TrackView } from "./customer";
 import { AdminDesk, LogisticsConfiguration, LogisticsDesk, StaffOrder, TaskView, WarehouseDesk, WarehouseDispatchBatch, WarehouseItemView, WarehousePackageView, WarehouseScan } from "./staff";
 import { Action, request, Tag } from "./ui";
-import { Brand, PublicHeader, QuickSwitch, SiteFooter, switchDemoPortal, WorkspaceNavigation } from "./chrome";
+import { Brand, PublicFooter, PublicHeader, QuickSwitch, SiteFooter, switchDemoPortal, WorkspaceNavigation } from "./chrome";
 import { FAQ } from "./faq";
 import { PublicInquiry } from "./public-inquiry";
+import { PublicCatalogRouter, PublicHowItWorks, PublicLegal } from "./public-site";
 import { ReportGuide } from "./report-guide";
 import { StorageLocations, StorageMove } from "./storage-desk";
 import { CustomerCase, StaffTicket, StaffTicketQueue } from "./ticket-desk";
@@ -27,12 +28,12 @@ export function Portal({path,target,route,actor:a,demo=false}:{path:string;targe
   const adminLinks=a?.kind==="staff"?staffTabs("admin",a.roles):[];
   const links=route.area==="warehouse"?warehouseLinks:route.area==="admin"?adminLinks:a?.kind==="customer"?customerTabs:[];
   let content;
-  if(route.view==="catalog") content=<Catalog path={path}/>;
-  else if(route.view==="how-it-works") content=<HowItWorks/>;
+  if(route.view==="catalog") content=<PublicCatalogRouter path={path}/>;
+  else if(route.view==="how-it-works") content=<PublicHowItWorks/>;
   else if(route.view==="faq") content=<FAQ/>;
   else if(route.view==="public-inquiry") content=<PublicInquiry/>;
   else if(route.view==="report-guide") content=<ReportGuide/>;
-  else if(route.view==="legal") content=<Legal path={path}/>;
+  else if(route.view==="legal") content=<PublicLegal path={path}/>;
   else if(!a) content=null;
   else if(isStaff && a.kind!=="staff") content=<section className="panel narrow"><h1>需要员工权限</h1>
     <p>{demo?"请使用已分配权限的员工账号登录，或在本地演示环境下直接切换角色。":"请使用已分配权限的员工账号登录。"}</p>
@@ -93,7 +94,7 @@ export function Portal({path,target,route,actor:a,demo=false}:{path:string;targe
   if(publicPage||!a||links.length===0) return <>
     <PublicHeader path={path} accountHref={homeLink} staff={a?.kind==="staff"} accountAction={signOut} actor={a} demo={demo}/>
     <main className={`public-shell view-${route.view}`} id="main-content" lang={locale}>{content}</main>
-    <SiteFooter/>
+    {publicPage ? <PublicFooter/> : <SiteFooter/>}
   </>;
 
   const section=route.area==="admin"?"运营总览":route.area==="warehouse"?"仓库总览":"Workspace";

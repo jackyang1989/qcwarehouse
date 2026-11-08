@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { legalPages, servicePages } from "../packages/core/portal-routes";
-import { InspectionSpecPanel, type SpecFrameTone, type SpecIconKind } from "./public-media";
 import { Empty, ErrorBlock, Panel, Tabs, usd, useLoad } from "./ui";
 
 export type CatalogCheck = {
@@ -486,16 +485,15 @@ export function PublicServicesOverview() {
               loading="eager"
             />
           </figure>
-          <InspectionSpecPanel
-            slotId="PH-10"
-            eyebrow="Protected Reference Storage Protocol"
-            title="Tamper-Sealed Sleeves & Shelf Custody Between Reorders"
-            summary="Approved Golden Samples stay sealed inside individually barcoded storage sleeves and controlled bins so subsequent pre-production checks compare against the exact original physical garment."
-            highlights={["Sealed Sleeve Custody", "Location Bin Tracked", "Reseal Logged on Return"]}
-            icon="storage"
-            tone="amber"
-            compact
-          />
+          <figure className="pub-photo-box">
+            <img
+              src="/marketing/service-reference-storage.webp"
+              alt="Tamper-sealed Golden Sample stored in a barcoded grey reference custody bin on the QCWarehouse bench"
+              width={1200}
+              height={900}
+              loading="eager"
+            />
+          </figure>
         </div>
       </section>
 
@@ -963,12 +961,8 @@ export function PublicCategories() {
       title: "Tops, T-Shirts, Hoodies & Knitwear",
       examples: "Crewneck tees, oversized hoodies, polo shirts, sweaters, zip jackets",
       checks: "HPS length, chest width (1/2), shoulder, sleeve, hem sweep, collar rib & seams",
-      slotId: "PH-11",
-      specEyebrow: "Dedicated Tops Template",
-      specTitle: "Upper-Body Dimensional & Seam Construction Suite",
-      specSummary: "Measured flat without tension along high-point shoulder, armhole-offset chest, shoulder slope, sleeve, and collar rib.",
-      specHighlights: ["HPS Length", "1/2 Chest Width", "Sleeve & Shoulder", "Collar & Hem Stitch"],
-      specTone: "blue" as SpecFrameTone,
+      image: "/marketing/category-tops-knitwear.webp",
+      imageAlt: "Flat-lay inspection of a heather-gray crewneck T-shirt on a white studio bench",
       diagramId: "tops" as const,
       offer: topsOffer,
     },
@@ -976,12 +970,8 @@ export function PublicCategories() {
       title: "Leggings, Pants, Joggers & Shorts",
       examples: "Activewear leggings, woven trousers, denim, sweatpants, athletic shorts",
       checks: "Relaxed waistband, hip width, front/back rise, inseam, outseam, leg opening & gusset",
-      slotId: "PH-12",
-      specEyebrow: "Dedicated Bottoms Template",
-      specTitle: "Relaxed Waistband, Rise, Inseam & Gusset Suite",
-      specSummary: "Records relaxed waistband, hip width, front/back rise, inseam, outseam, ankle opening, and crotch-gusset seam alignment.",
-      specHighlights: ["1/2 Waistband", "Front & Back Rise", "Inseam & Outseam", "Gusset Construction"],
-      specTone: "slate" as SpecFrameTone,
+      image: "/marketing/category-bottoms-leggings.webp",
+      imageAlt: "Flat-lay inspection of charcoal athletic leggings with waist and inseam measurement landmarks",
       diagramId: "bottoms" as const,
       offer: bottomsOffer,
     },
@@ -989,12 +979,8 @@ export function PublicCategories() {
       title: "Sports Bras & Intimate Activewear",
       examples: "Medium/high-support sports bras, crop tanks, moulded-cup bralettes",
       checks: "Underband width, bust width, strap symmetry, removable pad/lining check & seams",
-      slotId: "PH-13",
-      specEyebrow: "Dedicated Activewear Template",
-      specTitle: "Underband, Strap Symmetry & Lining Check Suite",
-      specSummary: "Documents unstrained underband width, upper bust flat span, strap symmetry, removable pad pocket finish, and overlock bindings.",
-      specHighlights: ["Underband Width", "Bust Flat Span", "Strap Symmetry", "Pad & Lining Finish"],
-      specTone: "blue" as SpecFrameTone,
+      image: "/marketing/category-sports-bra.webp",
+      imageAlt: "Flat-lay inspection of an athletic sports bra with underband, strap, and cup symmetry checks",
       diagramId: "sports_bra" as const,
       offer: braOffer,
     },
@@ -1002,12 +988,9 @@ export function PublicCategories() {
       title: "General Apparel & Mixed Garments",
       examples: "Dresses, skirts, light outerwear, scarves, or standard visual + flat-width checks",
       checks: "Key workmanship zones, flat width, size/care label check & mandatory overview photos",
-      slotId: "PH-14",
-      specEyebrow: "Standard Apparel Template",
-      specTitle: "Flexible Visual, Label & Flat-Dimension Inspection",
-      specSummary: "Applies mandatory front/back overview photography, weight check, core flat dimensions, care-label inspection, and zone workmanship scans.",
-      specHighlights: ["Overview Angles", "Garment Mass (g)", "Size & Care Label", "Visible Seam Zones"],
-      specTone: "slate" as SpecFrameTone,
+      image: "/marketing/category-general-apparel.webp",
+      imageAlt:
+        "Apparel inspection workbench with everyday slate-navy and oatmeal garments, measurement clipboard, care labels, L-square ruler, and measuring tape",
       diagramId: null,
       offer: generalOffer,
     },
@@ -1022,12 +1005,40 @@ export function PublicCategories() {
       </div>
 
       <section className="pub-page-hero">
-        <div>
-          <p className="pub-eyebrow">SUPPORTED MERCHANDISE · WHAT CAN YOU INSPECT TODAY?</p>
-          <h1>What Products Can You Inspect Today?</h1>
-          <p style={{ marginBottom: 0 }}>
-            <strong>Apparel is open for orders today.</strong> Rather than claiming generic checks on every category, QCWarehouse launches a category only after dedicated templates, lighting, and flat-lay measurement benchmarks are active on our bench.
-          </p>
+        <div className="pub-page-hero-split">
+          <div>
+            <p className="pub-eyebrow">SUPPORTED MERCHANDISE · WHAT CAN YOU INSPECT TODAY?</p>
+            <h1>What Products Can You Inspect Today?</h1>
+            <p style={{ marginBottom: 18 }}>
+              <strong>Apparel is open for orders today.</strong> Rather than claiming generic checks on every category, QCWarehouse launches a category only after dedicated templates, lighting, and flat-lay measurement benchmarks are active on our bench.
+            </p>
+            <div className="row flexwrap" style={{ gap: 10 }}>
+              <Link className="button primary" href="/orders/new">
+                Start Apparel Inspection →
+              </Link>
+              <Link className="button" href="/report-guide">
+                View Sample Apparel Report
+              </Link>
+            </div>
+          </div>
+          <div className="pub-meta-grid" style={{ margin: 0 }}>
+            <div className="pub-meta-cell">
+              <span>Live Category</span>
+              <strong>Apparel · 4 Template Tracks</strong>
+            </div>
+            <div className="pub-meta-cell">
+              <span>Measurement Standard</span>
+              <strong>Flat-Lay Metric Tape (0.1 cm)</strong>
+            </div>
+            <div className="pub-meta-cell">
+              <span>Inspection Scope</span>
+              <strong>1–100+ Units · 2–3 Sample Compare</strong>
+            </div>
+            <div className="pub-meta-cell">
+              <span>Roadmap Categories</span>
+              <strong>Footwear, Bags &amp; Home Goods</strong>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -1082,15 +1093,12 @@ export function PublicCategories() {
             return (
               <article className="pub-subcat-card" key={track.title}>
                 <div className="pub-subcat-media">
-                  <InspectionSpecPanel
-                    slotId={track.slotId}
-                    eyebrow={track.specEyebrow}
-                    title={track.specTitle}
-                    summary={track.specSummary}
-                    highlights={track.specHighlights}
-                    icon="garment"
-                    tone={track.specTone}
-                    compact
+                  <img
+                    src={track.image}
+                    alt={track.imageAlt}
+                    width={1200}
+                    height={900}
+                    loading="eager"
                   />
                 </div>
                 <div className="row between flexwrap" style={{ gap: 8 }}>
@@ -1217,18 +1225,9 @@ type JourneyStep = {
   youDo: string;
   weDo: string;
   outcome: string;
-  photo?: string;
-  photoAlt?: string;
+  photo: string;
+  photoAlt: string;
   uiCropTop?: boolean;
-  specCard?: {
-    slotId: string;
-    eyebrow: string;
-    title: string;
-    summary: string;
-    highlights: readonly string[];
-    icon: SpecIconKind;
-    tone: SpecFrameTone;
-  };
 };
 
 const JOURNEY_STEPS: JourneyStep[] = [
@@ -1260,15 +1259,8 @@ const JOURNEY_STEPS: JourneyStep[] = [
     youDo: "Wait for our physical check-in notice rather than relying solely on automated courier ‘Delivered’ alerts.",
     weDo: "Scan the domestic waybill at the dock, weigh incoming cartons, and photograph any exterior crushing or dampness.",
     outcome: "Timestamped arrival record confirming physical parcel custody inside the studio.",
-    specCard: {
-      slotId: "PH-15",
-      eyebrow: "Dock Check-In Protocol",
-      title: "Waybill Scan, Parcel Weight & Exterior Carton Check",
-      summary: "Physical arrival timestamps only record after barcode dock scanning, carton scale logging, and exterior condition verification.",
-      highlights: ["Waybill Matched", "Carton Weight Logged", "Damage Check"],
-      icon: "intake",
-      tone: "blue",
-    },
+    photo: "/marketing/workflow-parcel-receiving.webp",
+    photoAlt: "Warehouse intake operator scanning a domestic courier parcel waybill with a handheld barcode scanner at the QCWarehouse receiving bench",
   },
   {
     num: "04",
@@ -1277,15 +1269,8 @@ const JOURNEY_STEPS: JourneyStep[] = [
     youDo: "Confirm resolution only if an arriving parcel differs from expected count or arrived without a receiving code.",
     weDo: "Open parcels, match unit counts, attach a unique sample tag to every piece, and stage units in numbered bins.",
     outcome: "Full 1-to-1 physical traceability before measurements or photography begin.",
-    specCard: {
-      slotId: "PH-16",
-      eyebrow: "1-to-1 Unit Chain of Custody",
-      title: "Unique Barcode ID & Numbered Staging Bin Allocation",
-      summary: "Every garment inside the parcel receives its own barcode label and bin location; discrepancies pause before bench inspection.",
-      highlights: ["Unit Count Verified", "Sample ID Attached", "Numbered Bin Staged"],
-      icon: "barcode",
-      tone: "slate",
-    },
+    photo: "/marketing/workflow-sample-registration.webp",
+    photoAlt: "Unbagging and registering individual apparel samples on the intake bench with serialized barcode labels and grey sorting totes",
   },
   {
     num: "05",
@@ -1294,15 +1279,8 @@ const JOURNEY_STEPS: JourneyStep[] = [
     youDo: "Supply optional size tolerances or special focus zones up front so the bench enforces your criteria.",
     weDo: "Lay items flat under neutral lighting, shoot mandatory angles & metric tape photos, weigh units, and re-measure outliers.",
     outcome: "Unedited original bench photos and double-checked millimeter-grade data linked per barcode.",
-    specCard: {
-      slotId: "PH-17",
-      eyebrow: "5600K Inspection Bench",
-      title: "Flat Metric Tape Readings, 1 g Weighing & Zone Workmanship Scan",
-      summary: "Out-of-tolerance variance triggers automatic independent second readings with both raw measurements preserved.",
-      highlights: ["0.1 cm Tape Proof", "Two-Pass Re-Checks", "Unaltered Raw Photos"],
-      icon: "bench",
-      tone: "blue",
-    },
+    photo: "/marketing/workflow-inspection-station.webp",
+    photoAlt: "Inspector in white cotton gloves measuring a dark navy sweatshirt on a daylight-calibrated studio table beneath softbox lighting and an overhead camera",
   },
   {
     num: "06",
@@ -1322,15 +1300,8 @@ const JOURNEY_STEPS: JourneyStep[] = [
     youDo: "Decide item by item: authorize domestic returns to sellers, convert an approved unit into a Golden Sample, or ship good stock to your forwarder.",
     weDo: "Pack approved items per your authorization, quote exact domestic courier postage, dispatch cartons, and upload return or outbound tracking numbers.",
     outcome: "Only approved merchandise leaves China while defects stay behind for domestic resolution.",
-    specCard: {
-      slotId: "PH-18",
-      eyebrow: "Buyer-Controlled Routing",
-      title: "Split Dispatch: Seller Returns, Vault Hold & Forwarder Consolidation",
-      summary: "Every individual barcode accepts its own post-report instruction before domestic courier dispatch or sealing.",
-      highlights: ["Return to Seller", "Golden Sample Seal", "Forwarder Carton"],
-      icon: "packing",
-      tone: "amber",
-    },
+    photo: "/marketing/workflow-outbound-routing.webp",
+    photoAlt: "Outbound sorting and packing bench with neatly folded garments in clear polybags, export carton, digital scale, and numbered disposition bins",
   },
 ];
 
@@ -1394,22 +1365,9 @@ export function PublicHowItWorks() {
       <ol className="pub-journey" aria-label="Seven-stage inspection workflow">
         {JOURNEY_STEPS.map((st, idx) => {
           const reverseRow = idx % 2 === 1;
-          const mediaEl = st.specCard ? (
-            <div className="pub-photo-box" style={{ background: "transparent", border: "0" }}>
-              <InspectionSpecPanel
-                slotId={st.specCard.slotId}
-                eyebrow={st.specCard.eyebrow}
-                title={st.specCard.title}
-                summary={st.specCard.summary}
-                highlights={st.specCard.highlights}
-                icon={st.specCard.icon}
-                tone={st.specCard.tone}
-                compact
-              />
-            </div>
-          ) : (
+          const mediaEl = (
             <figure className={`pub-photo-box ratio-3-2${st.uiCropTop ? " ui-shot" : ""}`}>
-              <img src={st.photo} alt={st.photoAlt ?? st.title} width={1350} height={900} loading="eager" />
+              <img src={st.photo} alt={st.photoAlt} width={1350} height={900} loading="eager" />
             </figure>
           );
 
@@ -1694,12 +1652,43 @@ export function PublicPricing() {
       </div>
 
       <section className="pub-page-hero">
-        <div>
-          <p className="pub-eyebrow">TRANSPARENT COMMERCIAL PRICING · USD</p>
-          <h1>How Much Will I Pay, What Is Included, and What Costs Extra?</h1>
-          <p style={{ marginBottom: 0 }}>
-            QCWarehouse charges a clear, upfront fee for physical inspection or sample comparison—with zero subscription fees and zero supplier commissions. Post-inspection domestic courier shipping and extended storage are billed separately only when you request them.
-          </p>
+        <div className="pub-page-hero-split">
+          <div>
+            <p className="pub-eyebrow">TRANSPARENT COMMERCIAL PRICING · USD</p>
+            <h1>How Much Will I Pay, What Is Included, and What Costs Extra?</h1>
+            <p style={{ marginBottom: 18 }}>
+              QCWarehouse charges a clear, upfront fee for physical inspection or sample comparison—with zero subscription fees and zero supplier commissions. Post-inspection domestic courier shipping and extended storage are billed separately only when you request them.
+            </p>
+            <div className="row flexwrap" style={{ gap: 10 }}>
+              <Link className="button primary" href="/orders/new">
+                Start an Inspection →
+              </Link>
+              <a className="button" href="#pricing-calculator">
+                Estimate Order Cost
+              </a>
+              <Link className="button" href="/report-guide">
+                View Sample Report
+              </Link>
+            </div>
+          </div>
+          <div className="pub-meta-grid" style={{ margin: 0 }}>
+            <div className="pub-meta-cell">
+              <span>Product Inspection</span>
+              <strong>{summarizeRate(inspOffers, "/ item")}</strong>
+            </div>
+            <div className="pub-meta-cell">
+              <span>Sample Comparison</span>
+              <strong>{summarizeRate(compOffers, "/ group")}</strong>
+            </div>
+            <div className="pub-meta-cell">
+              <span>Golden Sample Match</span>
+              <strong>{summarizeRate(refOffers, "/ match")}</strong>
+            </div>
+            <div className="pub-meta-cell">
+              <span>Online Self-Service</span>
+              <strong>1–100 Units Instant Quote</strong>
+            </div>
+          </div>
         </div>
       </section>
 

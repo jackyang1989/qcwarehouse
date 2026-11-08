@@ -48,12 +48,40 @@ export function PublicInquiry() {
       </div>
 
       <section className="pub-page-hero">
-        <div>
-          <p className="pub-eyebrow">COMMERCIAL INQUIRY &amp; SUPPORT DESK</p>
-          <h1>Contact QCWarehouse Inspection Support</h1>
-          <p style={{ marginBottom: 0 }}>
-            Ask pre-order questions about apparel checkpoints, request custom batch pricing for 100+ items, inquire about planned product categories, or connect with support regarding an active order.
-          </p>
+        <div className="pub-page-hero-split">
+          <div>
+            <p className="pub-eyebrow">COMMERCIAL INQUIRY &amp; SUPPORT DESK</p>
+            <h1>Contact QCWarehouse Inspection Support</h1>
+            <p style={{ marginBottom: 18 }}>
+              Ask pre-order questions about apparel checkpoints, request custom batch pricing for 100+ items, inquire about planned product categories, or connect with support regarding an active order.
+            </p>
+            <div className="row flexwrap" style={{ gap: 10 }}>
+              <Link className="button primary" href="/orders/new">
+                Start Self-Serve Order →
+              </Link>
+              <Link className="button" href="/faq">
+                Browse Buyer FAQ
+              </Link>
+            </div>
+          </div>
+          <div className="pub-meta-grid" style={{ margin: 0 }}>
+            <div className="pub-meta-cell">
+              <span>Response Target</span>
+              <strong>Within 1 Business Day</strong>
+            </div>
+            <div className="pub-meta-cell">
+              <span>Self-Serve Online</span>
+              <strong>1–100 Units Instant Quote</strong>
+            </div>
+            <div className="pub-meta-cell">
+              <span>Custom Batch Desk</span>
+              <strong>101–300+ Units Scheduled</strong>
+            </div>
+            <div className="pub-meta-cell">
+              <span>Operating Hub</span>
+              <strong>China Receiving Studio</strong>
+            </div>
+          </div>
         </div>
       </section>
 

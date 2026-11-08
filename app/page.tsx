@@ -7,7 +7,6 @@ import { isDemo } from "../packages/core/common";
 import { catalog } from "../packages/core/orders";
 import { staffHome } from "../packages/core/portal-routes";
 import { PlatformIcon, PublicFooter, PublicHeader } from "./chrome";
-import { InspectionSpecPanel, type SpecFrameTone, type SpecIconKind } from "./public-media";
 import { homeJsonLd, metadataForPath } from "./public-seo";
 import { SampleReportPreview } from "./report-guide";
 
@@ -67,22 +66,13 @@ const TRUST_CAPABILITIES = [
   ],
 ] as const;
 
-type ScenarioSpecMeta = {
-  slotId: string;
-  eyebrow: string;
-  title: string;
-  summary: string;
-  highlights: readonly string[];
-  icon: SpecIconKind;
-  tone: SpecFrameTone;
-};
-
 type BuyerScenario = {
   tag: string;
   title: string;
   body: string;
   wide: boolean;
-  specCard?: ScenarioSpecMeta;
+  image?: string;
+  imageAlt?: string;
 };
 
 const BUYER_SCENARIOS: BuyerScenario[] = [
@@ -91,45 +81,27 @@ const BUYER_SCENARIOS: BuyerScenario[] = [
     title: "Compare supplier samples before choosing a factory",
     body: "Order samples from two or three 1688, Alibaba, or direct factories and compare fabric hand-feel, stitching, weight, and flat dimensions under one camera before placing inventory orders.",
     wide: false,
-    specCard: {
-      slotId: "PH-02",
-      eyebrow: "2–3 Sample Matrix",
-      title: "Unified Bench Evaluation Across Shortlisted Factories",
-      summary: "Side-by-side flat dimensions, gram weight, and collar/seam construction checks recorded in a single delta report.",
-      highlights: ["Identical 5600K Lighting", "1 g Scale Read", "Flat Delta Log"],
-      icon: "compare",
-      tone: "blue",
-    },
+    image: "/marketing/home-supplier-comparison.webp",
+    imageAlt:
+      "Three supplier crewneck T-shirt samples in oatmeal, slate, and olive laid side by side on a white inspection bench with a digital gram scale and yellow measuring tape",
   },
   {
     tag: "Small-Batch QC",
     title: "Inspect small-batch orders item by item",
     body: "Traditional factory AQL agencies rarely visit for 15, 40, or 80 garments. Send small-batch stock to our studio so every individual unit gets its own ID, checklist, and defect log.",
     wide: false,
-    specCard: {
-      slotId: "PH-03",
-      eyebrow: "1–100+ Unit Verification",
-      title: "Individual Barcode Traceability on Every Garment",
-      summary: "Each physical unit receives a unique sample ID linking its overview photos, tape readings, and disposition status.",
-      highlights: ["Unique Sample IDs", "Two-Pass Re-Checks", "Zone Defect Log"],
-      icon: "barcode",
-      tone: "slate",
-    },
+    image: "/marketing/home-small-batch-inspection.webp",
+    imageAlt:
+      "Overhead view of a small-batch garment inspection station with folded T-shirts, opened courier polybags, and a white-gloved inspector measuring a sample",
   },
   {
     tag: "Restock Consistency",
     title: "Match new items against approved reference samples",
     body: "Seal an approved Golden Sample at QCWarehouse and benchmark future pre-production or restock units directly against your physical standard to catch silent fabric or sizing drift.",
     wide: false,
-    specCard: {
-      slotId: "PH-04",
-      eyebrow: "Golden Sample Control",
-      title: "Direct Physical Benchmark Against Your Retained Standard",
-      summary: "Approved prototypes stay tamper-sealed between shipments for direct side-by-side restock variance verification.",
-      highlights: ["Sealed Vault Custody", "Shade & Rib Check", "Dimensional Variance"],
-      icon: "reference",
-      tone: "amber",
-    },
+    image: "/marketing/home-reference-comparison.webp",
+    imageAlt:
+      "Approved reference navy sweatshirt emerging from a protective polybag on the left compared against an incoming restock sweatshirt measured by a white-gloved inspector",
   },
   {
     tag: "Pre-Freight Protection",
@@ -329,17 +301,14 @@ export default async function Home() {
                   key={item.title}
                   className={`pub-scenario-card${item.wide ? " wide" : ""}`}
                 >
-                  {item.specCard && (
+                  {item.image && (
                     <div className="pub-scenario-media">
-                      <InspectionSpecPanel
-                        slotId={item.specCard.slotId}
-                        eyebrow={item.specCard.eyebrow}
-                        title={item.specCard.title}
-                        summary={item.specCard.summary}
-                        highlights={item.specCard.highlights}
-                        icon={item.specCard.icon}
-                        tone={item.specCard.tone}
-                        compact
+                      <img
+                        src={item.image}
+                        alt={item.imageAlt ?? item.title}
+                        width={1350}
+                        height={900}
+                        loading="eager"
                       />
                     </div>
                   )}
@@ -435,17 +404,26 @@ export default async function Home() {
             <div className="pub-evidence-layout">
               <div className="pub-evidence-mosaic stacked">
                 <figure className="pub-evidence-card span-2">
-                  <div className="pub-evidence-frame">
-                    <InspectionSpecPanel
-                      slotId="PH-05"
-                      eyebrow="Non-Destructive Defect Logging"
-                      title="UI-Layer Coordinate Bounding Boxes Over Untouched Raw Photos"
-                      summary="On live orders, original bench photos stay unmodified in storage while reviewers attach exact bounding coordinates and English explanations on defective zones."
-                      highlights={["Untouched Raw Capture", "x/y Coordinate Record", "zh → EN QA Translation"]}
-                      icon="defect"
-                      tone="amber"
-                      footerNote="Interactive defect overlay demonstration is available inside the Sample Report"
+                  <div className="pub-evidence-frame ratio-4-3">
+                    <img
+                      src="/marketing/home-seam-defect.webp"
+                      alt="Macro close-up of a loose overlock seam stitch loop on a dark navy sweatshirt side seam"
+                      width={1200}
+                      height={900}
+                      loading="eager"
                     />
+                    <svg className="pub-bbox-svg" viewBox="0 0 1200 900" aria-hidden="true">
+                      <rect
+                        x="615"
+                        y="385"
+                        width="135"
+                        height="145"
+                        rx="8"
+                        fill="rgba(220, 38, 38, 0.10)"
+                        stroke="#dc2626"
+                        strokeWidth="4"
+                      />
+                    </svg>
                   </div>
                   <figcaption>
                     <div>
@@ -457,15 +435,12 @@ export default async function Home() {
 
                 <figure className="pub-evidence-card span-2">
                   <div className="pub-evidence-frame">
-                    <InspectionSpecPanel
-                      slotId="PH-06"
-                      eyebrow="Per-Item Post-Report Fulfillment"
-                      title="Separated Seller Returns, Held References & Forwarder Consolidation"
-                      summary="Approved pieces and rejected seller-return units remain segregated by barcode from bench checkout until you submit outbound dispatch or return authorization."
-                      highlights={["Seller Return Waybill", "Sealed Reference Hold", "Forwarder Carton Consolidation"]}
-                      icon="packing"
-                      tone="blue"
-                      footerNote="Domestic postage & consolidation quotes appear only after you choose items"
+                    <img
+                      src="/marketing/home-sorting-dispatch.webp"
+                      alt="Outbound sorting and dispatch bench with folded garments, export shipping carton, and digital parcel scale"
+                      width={1350}
+                      height={760}
+                      loading="eager"
                     />
                   </div>
                   <figcaption>

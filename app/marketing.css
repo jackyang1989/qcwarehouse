@@ -372,9 +372,11 @@
   overflow: hidden;
   border: 1px solid #dce6f2;
   background: #f3f6fb;
+  aspect-ratio: 3 / 2;
   margin-bottom: 4px;
 }
 .pub-scenario-media:has(.pub-spec-panel) {
+  aspect-ratio: auto;
   overflow: visible;
   border: 0;
   background: transparent;
@@ -382,7 +384,7 @@
 .pub-scenario-media img {
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: cover;
   display: block;
 }
 .pub-scenario-tag {
@@ -633,6 +635,10 @@
 .pub-evidence-card .pub-evidence-frame.ratio-16-10,
 .pub-evidence-gallery .pub-evidence-card.span-2 .pub-evidence-frame {
   aspect-ratio: 16 / 10;
+  background: #e9eaed;
+}
+.pub-evidence-gallery .pub-evidence-card.span-2 .pub-evidence-frame img {
+  object-fit: contain;
 }
 .pub-evidence-card .pub-evidence-frame.ratio-4-3 {
   aspect-ratio: 4 / 3;
@@ -839,6 +845,11 @@
   font-size: 14px;
 }
 
+.marketing .row:not(.between),
+.public-shell .row:not(.between) {
+  justify-content: flex-start;
+}
+
 /* 11. Interior Public Page Masthead & Deep Sections */
 .pub-page-hero {
   background: #ffffff;
@@ -851,6 +862,12 @@
 .pub-page-hero-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.9fr);
+  gap: 28px;
+  align-items: center;
+}
+.pub-page-hero-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.32fr) minmax(300px, 0.92fr);
   gap: 28px;
   align-items: center;
 }
@@ -1465,7 +1482,19 @@
   gap: 10px;
 }
 .pub-subcat-media {
+  position: relative;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid #dce6f2;
+  background: #f3f6fb;
+  aspect-ratio: 4 / 3;
   margin-bottom: 4px;
+}
+.pub-subcat-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 .pub-subcat-card h3 {
   margin: 0;
@@ -1992,6 +2021,7 @@
   .pub-evidence-layout,
   .pub-split-2,
   .pub-page-hero-grid,
+  .pub-page-hero-split,
   .pub-service-detail,
   .pub-service-detail.reverse,
   .pub-apparel-top,

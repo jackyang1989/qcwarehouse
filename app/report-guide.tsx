@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { InspectionSpecPanel, type SpecFrameTone, type SpecIconKind } from "./public-media";
 
 export function ApparelIllustration({ kind = "shirt" }: { kind?: "shirt" | "bag" | "shoe" }) {
   return (
@@ -163,17 +162,8 @@ type LightboxItem = {
   title: string;
   caption: string;
   span2?: boolean;
-  src?: string;
-  alt?: string;
-  specCard?: {
-    slotId: string;
-    eyebrow: string;
-    title: string;
-    summary: string;
-    highlights: readonly string[];
-    icon: SpecIconKind;
-    tone: SpecFrameTone;
-  };
+  src: string;
+  alt: string;
 };
 
 const DEMO_SAMPLES = [
@@ -279,59 +269,38 @@ const PHOTO_EVIDENCE: LightboxItem[] = [
   {
     code: "FRM-01 · FRONT OVERVIEW",
     title: "S-DEMO-204A · Front Overview (Heather-Gray Crewneck, Size L)",
+    src: "/marketing/report-sample-a-front.webp",
+    alt: "Overhead flat-lay front overview of Sample A heather-gray cotton crewneck T-shirt on the QCWarehouse inspection bench",
     caption: "Mandatory flat front frame linking Sample A to collar rib, cuffs, and printed care label records.",
-    specCard: {
-      slotId: "PH-19",
-      eyebrow: "Mandatory Angle 01 · Front",
-      title: "Full Garment Front Flat-Lay Overview Specification",
-      summary: "Captured square to the bench under 5600K studio illumination to document collar rib, sleeve set, hem symmetry, and garment drape before tape placement.",
-      highlights: ["90° Overhead Camera", "Untouched Raw File", "Linked to Sample ID"],
-      icon: "garment",
-      tone: "slate",
-    },
   },
   {
     code: "FRM-02 · BACK OVERVIEW",
     title: "S-DEMO-204A · Back Overview & Half-Moon Yoke",
+    src: "/marketing/report-sample-a-back.webp",
+    alt: "Overhead flat-lay back overview of Sample A heather-gray cotton crewneck T-shirt on the QCWarehouse inspection bench",
     caption: "Rear flat view captured on the identical garment, camera plane, and bench setup to confirm back jersey construction and hem finish.",
-    specCard: {
-      slotId: "PH-20",
-      eyebrow: "Mandatory Angle 02 · Rear",
-      title: "Full Garment Back Flat-Lay Overview Specification",
-      summary: "Identical lighting and lens distance documenting back shoulder seam balance, neck yoke stitching, and lower rear jersey surface.",
-      highlights: ["Matching Bench Scale", "Rear Seam Check", "Care/Size Label Cross-Check"],
-      icon: "garment",
-      tone: "slate",
-    },
   },
   {
     code: "FRM-03 · CHEST TAPE PROOF",
-    title: "S-DEMO-204A · Chest Width Tape Measurement (Illustrative Example)",
+    title: "S-DEMO-204A · Chest Width Tape Measurement (55.1 cm)",
     src: "/marketing/report-sample-a-chest-measure.webp",
-    alt: "Overhead illustrative studio photo showing a yellow metric tape measuring horizontal chest width across a heather-gray cotton crewneck T-shirt",
-    caption: "Illustrative studio frame showing unstrained seam-to-seam chest measurement with readable metric endpoints across the gray tee.",
+    alt: "Overhead studio photo showing a yellow metric tape measuring horizontal chest width (55.1 cm) across Sample A heather-gray cotton crewneck T-shirt",
+    caption: "Studio frame showing unstrained seam-to-seam chest measurement (55.1 cm) with readable metric endpoints across the gray tee.",
   },
   {
     code: "FRM-04 · HPS LENGTH PROOF",
-    title: "S-DEMO-204A · Front Body Length HPS-to-Hem (Illustrative Example)",
+    title: "S-DEMO-204A · Front Body Length HPS-to-Hem (72.0 cm)",
     src: "/marketing/report-sample-a-body-length.webp",
-    alt: "Overhead illustrative studio photo showing a yellow metric tape measuring front body length vertically from high point shoulder to bottom hem on a heather-gray cotton crewneck T-shirt",
-    caption: "Illustrative vertical tape proof from High Point Shoulder (HPS) to bottom hem edge captured under the identical gray tee setup.",
+    alt: "Overhead studio photo showing a yellow metric tape measuring front body length vertically (72.0 cm) from high point shoulder to bottom hem on Sample A heather-gray cotton crewneck T-shirt",
+    caption: "Vertical tape proof (72.0 cm) from High Point Shoulder (HPS) to bottom hem edge captured under the identical gray tee setup.",
   },
   {
     code: "FRM-05 · GROUP OVERHEAD (A / B / C)",
     title: "Side-by-Side Comparison Frame (Samples A, B & C)",
+    src: "/marketing/report-three-samples-comparison.webp",
+    alt: "Synchronized overhead studio comparison of three heather-gray crewneck T-shirt samples (Samples A, B, and C) laid side by side on a calibrated table",
     caption: "Synchronized single-frame overhead comparison grouping all three candidate samples on one bench for direct visual comparison.",
     span2: true,
-    specCard: {
-      slotId: "PH-23",
-      eyebrow: "Synchronized Comparison Frame",
-      title: "Three Candidate Samples Aligned Side by Side on One Studio Table",
-      summary: "Places Supplier A, Supplier B, and Supplier C samples in parallel under unified 5600K LED illumination so drape, collar rib recovery, shade consistency, and outline width can be evaluated in one view.",
-      highlights: ["Unified Camera Plane", "Matched Garment Placement", "Zero Exposure Distortion", "Cross-Linked to Delta Table"],
-      icon: "compare",
-      tone: "blue",
-    },
   },
 ];
 
@@ -358,11 +327,11 @@ export function ReportGuide() {
 
       {/* Page Masthead */}
       <section className="pub-page-hero">
-        <div className="row between flexwrap" style={{ gap: 20, alignItems: "flex-end" }}>
+        <div className="pub-page-hero-split">
           <div>
             <p className="pub-eyebrow">DELIVERABLE PREVIEW · REPORT STRUCTURE</p>
             <h1>Sample Inspection &amp; Comparison Report</h1>
-            <p style={{ marginBottom: 16 }}>
+            <p style={{ marginBottom: 18 }}>
               Inspect the exact structure, measurement traceability, non-destructive defect annotations, and scope boundaries you receive before deciding whether to return, store, or ship your items from China.
             </p>
             <div className="row flexwrap no-print" style={{ gap: 10 }}>
@@ -381,14 +350,22 @@ export function ReportGuide() {
               </Link>
             </div>
           </div>
-          <div className="pub-meta-grid" style={{ margin: 0, minWidth: "min(340px, 100%)" }}>
-            <div className="def">
-              <dt>Demo Garment Identity</dt>
-              <dd>Heather-Gray Crewneck · Size L</dd>
+          <div className="pub-meta-grid" style={{ margin: 0 }}>
+            <div className="pub-meta-cell">
+              <span>Demo Garment Identity</span>
+              <strong>Heather-Gray Crewneck · Size L</strong>
             </div>
-            <div className="def">
-              <dt>Report Snapshot</dt>
-              <dd>RPT-DEMO-204 · Immutable v2</dd>
+            <div className="pub-meta-cell">
+              <span>Report Snapshot</span>
+              <strong>RPT-DEMO-204 · Immutable v2</strong>
+            </div>
+            <div className="pub-meta-cell">
+              <span>Samples Compared</span>
+              <strong>3 Units (S-DEMO-204A / B / C)</strong>
+            </div>
+            <div className="pub-meta-cell">
+              <span>Evidence Scope</span>
+              <strong>8 Studio Frames · 5 Checkpoints</strong>
             </div>
           </div>
         </div>
@@ -552,17 +529,9 @@ export function ReportGuide() {
                   onClick={() => setLightbox(item)}
                   aria-label={`Inspect ${item.title}`}
                 >
-                  {item.src ? (
-                    <div className="pub-evidence-frame">
-                      <img src={item.src} alt={item.alt ?? item.title} width={1200} height={900} loading="eager" />
-                    </div>
-                  ) : (
-                    item.specCard && (
-                      <div className="pub-evidence-frame" style={{ background: "transparent" }}>
-                        <InspectionSpecPanel {...item.specCard} compact />
-                      </div>
-                    )
-                  )}
+                  <div className="pub-evidence-frame">
+                    <img src={item.src} alt={item.alt} width={1200} height={900} loading="eager" />
+                  </div>
                 </button>
                 <figcaption>
                   <div>
@@ -597,28 +566,55 @@ export function ReportGuide() {
           </div>
 
           <div className="pub-defect-grid">
-            <figure className="pub-evidence-card" data-asset-slot="PH-24">
+            <figure className="pub-evidence-card">
               <div className={`pub-callout-bar${showAnnotations ? "" : " is-muted"}`}>
                 <span>{showAnnotations ? "COORDINATE OVERLAY ACTIVE · UI LAYER DEMO" : "RAW CAPTURE MODE · OVERLAY HIDDEN"}</span>
                 <span className="code">B-DEF-01</span>
               </div>
+              <button
+                type="button"
+                className="pub-zoom-trigger"
+                onClick={() =>
+                  setLightbox({
+                    code: "B-DEF-01 · SIDE SEAM WORKMANSHIP",
+                    title: "S-DEMO-204B · Unsecured Overlock Stitch Loop on Left Side Seam",
+                    src: "/marketing/report-sample-b-seam-defect.webp",
+                    alt: "Macro close-up of an unsecured overlock stitch loop along the left side seam of Sample B heather-gray cotton T-shirt",
+                    caption: "Raw macro photograph stays untouched in storage; UI coordinate box (x:0.66 y:0.47) highlights the ~14 mm thread loop.",
+                  })
+                }
+                aria-label="Inspect B-DEF-01 macro seam photo"
+              >
+                <div className="pub-evidence-frame ratio-4-3">
+                  <img
+                    src="/marketing/report-sample-b-seam-defect.webp"
+                    alt="Macro close-up of an unsecured overlock stitch loop along the left side seam of Sample B heather-gray cotton T-shirt"
+                    width={1200}
+                    height={900}
+                    loading="eager"
+                  />
+                  {showAnnotations && (
+                    <svg className="pub-bbox-svg" viewBox="0 0 1200 900" aria-hidden="true">
+                      <rect
+                        x="795"
+                        y="420"
+                        width="110"
+                        height="135"
+                        rx="8"
+                        fill="rgba(220, 38, 38, 0.12)"
+                        stroke="#dc2626"
+                        strokeWidth="4"
+                      />
+                    </svg>
+                  )}
+                </div>
+              </button>
               <div className="pub-defect-schema-card">
-                <InspectionSpecPanel
-                  slotId="PH-24"
-                  eyebrow="Side-Seam Workmanship Record Format"
-                  title="Sample B — Side-Seam Macro Schema"
-                  summary="On inspected garments, reviewers attach bounding coordinates and bilingual issue notes onto the macro side-seam photograph without touching source pixels."
-                  icon="defect"
-                  tone={showAnnotations ? "amber" : "slate"}
-                  compact
-                />
-                {showAnnotations && (
-                  <div className="pub-defect-coords">
-                    <div><span>Garment Zone</span><strong>Left Side Seam</strong></div>
-                    <div><span>UI Coordinate Box</span><strong className="mono">x:0.74 y:0.36</strong></div>
-                    <div><span>Example Dimension</span><strong>~14 mm thread loop</strong></div>
-                  </div>
-                )}
+                <div className="pub-defect-coords">
+                  <div><span>Garment Zone</span><strong>Left Side Seam</strong></div>
+                  <div><span>UI Coordinate Box</span><strong className="mono">x:0.66 y:0.47</strong></div>
+                  <div><span>Example Dimension</span><strong>~14 mm thread loop</strong></div>
+                </div>
               </div>
               <figcaption>
                 <div>
@@ -631,28 +627,55 @@ export function ReportGuide() {
               </figcaption>
             </figure>
 
-            <figure className="pub-evidence-card" data-asset-slot="PH-25">
+            <figure className="pub-evidence-card">
               <div className={`pub-callout-bar${showAnnotations ? "" : " is-muted"}`}>
                 <span>{showAnnotations ? "COORDINATE OVERLAY ACTIVE · UI LAYER DEMO" : "RAW CAPTURE MODE · OVERLAY HIDDEN"}</span>
                 <span className="code">B-DEF-02</span>
               </div>
+              <button
+                type="button"
+                className="pub-zoom-trigger"
+                onClick={() =>
+                  setLightbox({
+                    code: "B-DEF-02 · FABRIC SURFACE",
+                    title: "S-DEMO-204B · Localized Surface Spot on Lower Front Panel",
+                    src: "/marketing/report-sample-b-fabric-stain.webp",
+                    alt: "Macro close-up of a localized brownish surface stain on the heather-gray cotton jersey knit of Sample B",
+                    caption: "Raw macro photograph stays untouched in storage; UI coordinate box (x:0.36 y:0.44) highlights the ~8 mm surface spot.",
+                  })
+                }
+                aria-label="Inspect B-DEF-02 macro fabric stain photo"
+              >
+                <div className="pub-evidence-frame ratio-4-3">
+                  <img
+                    src="/marketing/report-sample-b-fabric-stain.webp"
+                    alt="Macro close-up of a localized brownish surface stain on the heather-gray cotton jersey knit of Sample B"
+                    width={1200}
+                    height={900}
+                    loading="eager"
+                  />
+                  {showAnnotations && (
+                    <svg className="pub-bbox-svg" viewBox="0 0 1200 900" aria-hidden="true">
+                      <rect
+                        x="425"
+                        y="395"
+                        width="110"
+                        height="85"
+                        rx="8"
+                        fill="rgba(220, 38, 38, 0.12)"
+                        stroke="#dc2626"
+                        strokeWidth="4"
+                      />
+                    </svg>
+                  )}
+                </div>
+              </button>
               <div className="pub-defect-schema-card">
-                <InspectionSpecPanel
-                  slotId="PH-25"
-                  eyebrow="Surface Contamination Record Format"
-                  title="Sample B — Front Jersey Mark Schema"
-                  summary="Localized surface marks are isolated with coordinate boxes alongside objective millimeter dimensions so buyers can decide between seller return or spot-cleaning."
-                  icon="defect"
-                  tone={showAnnotations ? "amber" : "slate"}
-                  compact
-                />
-                {showAnnotations && (
-                  <div className="pub-defect-coords">
-                    <div><span>Garment Zone</span><strong>Lower Front Panel</strong></div>
-                    <div><span>UI Coordinate Box</span><strong className="mono">x:0.74 y:0.36</strong></div>
-                    <div><span>Example Dimension</span><strong>~8 mm surface spot</strong></div>
-                  </div>
-                )}
+                <div className="pub-defect-coords">
+                  <div><span>Garment Zone</span><strong>Lower Front Panel</strong></div>
+                  <div><span>UI Coordinate Box</span><strong className="mono">x:0.36 y:0.44</strong></div>
+                  <div><span>Example Dimension</span><strong>~8 mm surface spot</strong></div>
+                </div>
               </div>
               <figcaption>
                 <div>
@@ -682,18 +705,15 @@ export function ReportGuide() {
                 </Link>
               </div>
             </div>
-            <div className="pub-photo-box" style={{ background: "transparent", border: "0" }}>
-              <InspectionSpecPanel
-                slotId="PH-26"
-                eyebrow="Restock Verification Protocol"
-                title="Side-by-Side Retained Golden Sample vs. Incoming Unit"
-                summary="Sealed reference garment is checked out from protected vault custody, aligned beside the incoming shipment item on the 5600K bench, measured for variance, and resealed after photo lock."
-                highlights={["Vault Seal Log", "Dimensional Delta", "Shade & Rib Check"]}
-                icon="reference"
-                tone="amber"
-                compact
+            <figure className="pub-photo-box">
+              <img
+                src="/marketing/report-reference-followup.webp"
+                alt="Approved heather-gray Golden Sample T-shirt in a sealed protective bag beside an incoming restock T-shirt"
+                width={1200}
+                height={900}
+                loading="eager"
               />
-            </div>
+            </figure>
           </div>
         </section>
 
@@ -801,15 +821,7 @@ export function ReportGuide() {
             </button>
           </div>
           <div className="lightbox-stage" onClick={(e) => e.stopPropagation()}>
-            {lightbox.src ? (
-              <img className="lightbox-img" src={lightbox.src} alt={lightbox.alt ?? lightbox.title} />
-            ) : (
-              lightbox.specCard && (
-                <div className="lightbox-pending-wrap">
-                  <InspectionSpecPanel {...lightbox.specCard} />
-                </div>
-              )
-            )}
+            <img className="lightbox-img" src={lightbox.src} alt={lightbox.alt} />
           </div>
           <div style={{ textAlign: "center", fontSize: 12.5, color: "#cbd8ea" }} onClick={(e) => e.stopPropagation()}>
             {lightbox.caption}

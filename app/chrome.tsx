@@ -61,7 +61,7 @@ const publicNavLinks: [string, string][] = [
   ["/faq", "FAQ"],
 ];
 
-export function PublicHeader({accountHref,accountAction,staff,path="/"}:{
+export function PublicHeader({accountHref,accountAction,staff,path="/",actor}:{
   accountHref?:string;accountAction?:ReactNode;staff?:boolean;path?:string;actor?:Actor|null;demo?:boolean;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -82,6 +82,10 @@ export function PublicHeader({accountHref,accountAction,staff,path="/"}:{
   const isActive = (href: string) =>
     path === href || (href === "/catalog" && path.startsWith("/services/"));
 
+  const isCustomer = actor?.kind === "customer" || (!staff && Boolean(accountHref));
+  const customerHref = isCustomer ? (accountHref ?? "/account") : "/login";
+  const customerLabel = isCustomer ? "My Workspace" : "Sign In";
+
   return <>
     <a className="skip-link" href="#main-content">Skip to main content</a>
     <header className="top public-top">
@@ -96,15 +100,13 @@ export function PublicHeader({accountHref,accountAction,staff,path="/"}:{
           ))}
         </nav>
         <div className="public-header-actions">
-          <Link className="button sm public-signin-btn" href={accountHref??"/login"}>
-            {staff?"员工工作区":accountHref?"My Workspace":"Sign In"}
+          <Link className="button sm public-signin-btn" href={customerHref}>
+            {customerLabel}
           </Link>
-          {accountAction}
-          {!staff&&(
-            <Link className="button primary sm public-cta-btn" href="/orders/new">
-              Start Inspection
-            </Link>
-          )}
+          {isCustomer && accountAction}
+          <Link className="button primary sm public-cta-btn" href="/orders/new">
+            Start Inspection
+          </Link>
           <button
             type="button"
             className="public-menu-toggle"
@@ -135,14 +137,12 @@ export function PublicHeader({accountHref,accountAction,staff,path="/"}:{
             <Link href="/contact" onClick={() => setMenuOpen(false)}>Contact Support</Link>
           </nav>
           <div className="public-mobile-actions">
-            <Link className="button full" href={accountHref??"/login"} onClick={() => setMenuOpen(false)}>
-              {staff?"员工工作区":accountHref?"My Workspace":"Sign In"}
+            <Link className="button full" href={customerHref} onClick={() => setMenuOpen(false)}>
+              {customerLabel}
             </Link>
-            {!staff&&(
-              <Link className="button primary full" href="/orders/new" onClick={() => setMenuOpen(false)}>
-                Start Inspection
-              </Link>
-            )}
+            <Link className="button primary full" href="/orders/new" onClick={() => setMenuOpen(false)}>
+              Start Inspection
+            </Link>
           </div>
         </div>
       )}
@@ -160,7 +160,7 @@ export function PublicFooter() {
             China-based independent product inspection, supplier sample comparison, and post-inspection item handling for international e-commerce brands and small-batch buyers.
           </p>
           <p className="public-footer-boundary">
-            <strong>Service scope notice:</strong> QCWarehouse performs physical visual and dimensional checks on commissioned items received at our China facility. We are not a purchasing agent, factory-wide AQL audit agency, 3PL warehouse, customs broker, or accredited testing laboratory.
+            <strong>Service scope:</strong> QCWarehouse inspects and photographs physical samples at our China facility before international dispatch. Supplier sourcing, factory AQL audits, and laboratory certification sit outside our scope.
           </p>
         </div>
         <div className="public-footer-col">

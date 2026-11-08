@@ -19,7 +19,7 @@ const PUBLIC_ROUTE_SEO: Record<string, RouteSeoConfig> = {
     title: "Product Inspection & Sample Comparison in China | QCWarehouse",
     description:
       "Independent China receiving-center product inspection, 2–3 supplier sample comparison, and Golden Sample matching for e-commerce brands and small-batch buyers. Inspect item by item before shipping internationally.",
-    ogImage: "/marketing/qcw-01-home-hero.webp",
+    ogImage: "/marketing/home-inspection-studio.webp",
   },
   "/catalog": {
     title: "Inspection Services in China — Piece-by-Piece, Comparison & Reference",
@@ -31,55 +31,55 @@ const PUBLIC_ROUTE_SEO: Record<string, RouteSeoConfig> = {
     title: "Piece-by-Piece Product Inspection in China (1 to 100+ Items)",
     description:
       "Individual physical product inspection at our China receiving center. Every item gets a unique traceable ID, flat-lay measurements with tape photos, workmanship checks, and per-item routing.",
-    ogImage: "/marketing/qcw-02-tshirt-chest-measurement.webp",
+    ogImage: "/marketing/service-item-inspection.webp",
   },
   "/services/compare": {
     title: "Supplier Sample Comparison Service in China (2–3 Samples)",
     description:
       "Compare 2 or 3 candidate supplier samples side by side under identical lighting and measurement methods in China before committing to inventory.",
-    ogImage: "/brand/inspection-hero.webp",
+    ogImage: "/marketing/service-three-samples.webp",
   },
   "/services/reference": {
     title: "Golden Sample & Reference Matching Service in China",
     description:
       "Retain your approved Golden Sample in sealed storage in China and inspect new supplier samples or restock units directly against your physical benchmark.",
-    ogImage: "/brand/inspection-hero.webp",
+    ogImage: "/marketing/service-golden-matching.webp",
   },
   "/categories": {
     title: "Supported Product Categories — Apparel Inspection Live Today",
     description:
-      "See what products QCWarehouse inspects today in China: approved templates for Tops & T-Shirts, Leggings & Bottoms, Sports Bras & Activewear, plus planned and restricted category policies.",
-    ogImage: "/marketing/qcw-03-tshirt-length-measurement.webp",
+      "See what products QCWarehouse inspects today in China: approved templates for Tops & Knitwear, Leggings & Bottoms, Sports Bras & Activewear, plus planned and restricted category policies.",
+    ogImage: "/brand/inspection-hero.webp",
   },
   "/how-it-works": {
     title: "How It Works — China Receiving, Item Inspection & Post-QC Routing",
     description:
       "Step-by-step chain of custody from your Chinese supplier shipment to parcel check-in, piece-by-piece inspection, independent report review, and return, storage, or freight-forwarder dispatch.",
-    ogImage: "/marketing/qcw-01-home-hero.webp",
+    ogImage: "/marketing/workflow-create-order-ui.webp",
   },
   "/report-guide": {
     title: "Sample Inspection Report — Photos, Measurements & Defect Proof",
     description:
       "Explore an interactive demonstration QCWarehouse inspection report featuring metric tape photos, re-measurement logs, UI defect bounding boxes, side-by-side sample comparison, and scope boundaries.",
-    ogImage: "/marketing/qcw-03-tshirt-length-measurement.webp",
+    ogImage: "/marketing/report-sample-a-chest-measure.webp",
   },
   "/pricing": {
     title: "Transparent Product Inspection Pricing & Fee Estimator",
     description:
       "View live per-item inspection, sample comparison, and Golden Sample matching rates in USD. Estimate your exact inspection fee and understand post-inspection domestic shipping and storage charges.",
-    ogImage: "/marketing/qcw-02-tshirt-chest-measurement.webp",
+    ogImage: "/marketing/home-inspection-studio.webp",
   },
   "/faq": {
     title: "FAQ & Buyer Help Center — China Product Inspection Questions",
     description:
       "Answers for international buyers: multi-supplier parcels, 30–50 item piece-by-piece checks, inspection vs comparison, seller returns, forwarder handoff, turnaround times, and inspection scope boundaries.",
-    ogImage: "/marketing/qcw-01-home-hero.webp",
+    ogImage: "/marketing/home-inspection-studio.webp",
   },
   "/contact": {
     title: "Contact Inspection Support & Request Custom Scope",
     description:
       "Ask QCWarehouse about apparel inspection scope, custom small-batch quantities (100+ items), category availability, or pre-order feasibility in China.",
-    ogImage: "/marketing/qcw-01-home-hero.webp",
+    ogImage: "/marketing/home-inspection-studio.webp",
   },
   "/legal": {
     title: "Terms, Privacy & Inspection Policies",
@@ -120,7 +120,7 @@ export function metadataForPath(path: string, isPublicMarketing: boolean): Metad
   }
 
   const canonicalUrl = path === "/" ? origin : `${origin}${path}`;
-  const ogImage = seo.ogImage ?? "/marketing/qcw-01-home-hero.webp";
+  const ogImage = seo.ogImage ?? "/marketing/home-inspection-studio.webp";
 
   return {
     title: path === "/" ? { absolute: seo.title } : seo.title,

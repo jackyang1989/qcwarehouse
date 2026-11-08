@@ -1,35 +1,73 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1350 900" width="1350" height="900" fill="none">
   <defs>
     <pattern id="grid24" width="24" height="24" patternUnits="userSpaceOnUse">
-      <path d="M24 0H0v24" stroke="#e3ebf5" stroke-width="1"/>
+      <path d="M24 0H0v24" stroke="#e4ecf5" stroke-width="1"/>
     </pattern>
-    <pattern id="heather" width="8" height="8" patternUnits="userSpaceOnUse">
-      <rect width="8" height="8" fill="#bfc6cf"/>
-      <circle cx="2" cy="2" r="0.9" fill="#aeb6c0"/>
-      <circle cx="6" cy="5" r="0.8" fill="#cfd5dd"/>
-      <path d="M0 6h4M4 2h4" stroke="#b4bcc6" stroke-width="0.6"/>
-    </pattern>
-    <pattern id="heatherLight" width="8" height="8" patternUnits="userSpaceOnUse">
-      <rect width="8" height="8" fill="#cfd5dd"/>
-      <circle cx="2" cy="3" r="0.8" fill="#bec6d0"/>
-      <circle cx="6" cy="6" r="0.8" fill="#dde2e8"/>
-    </pattern>
-    <pattern id="heatherDark" width="8" height="8" patternUnits="userSpaceOnUse">
-      <rect width="8" height="8" fill="#adb5c0"/>
-      <circle cx="3" cy="2" r="0.9" fill="#9ca5b1"/>
-      <circle cx="6" cy="6" r="0.8" fill="#bec6d0"/>
-    </pattern>
-    <filter id="shadow" x="-8%" y="-8%" width="116%" height="120%">
-      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0f213b" flood-opacity="0.10"/>
+    <filter id="cardShadow" x="-8%" y="-8%" width="116%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#0f213b" flood-opacity="0.08"/>
     </filter>
-    <filter id="softShadow" x="-6%" y="-6%" width="112%" height="116%">
-      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0f213b" flood-opacity="0.08"/>
-    </filter>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#2563eb"/>
+    </marker>
   </defs>
-  <rect width="1350" height="900" fill="#f3f6fb"/>
+
+  <rect width="1350" height="900" fill="#f5f8fc"/>
   <rect width="1350" height="900" fill="url(#grid24)"/>
-  <rect x="0" y="0" width="1350" height="52" fill="#0f213b"/>
-  <circle cx="28" cy="26" r="6" fill="#3b82f6"/>
-  <text x="44" y="31" fill="#93b8ff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="700" letter-spacing="0.06em">STEP 02 · SUPPLIER DOMESTIC SHIPPING</text>
-  <text x="1322" y="31" text-anchor="end" fill="#dce8f8" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="600">Buy Directly from Chinese Sellers &amp; Ship Domestic Parcels</text>
-<rect x="100" y="110" width="440" height="190" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#softShadow)"/><text x="128" y="154" fill="#1e3a8a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="800">SUPPLIER A · GUANGZHOU</text><text x="128" y="188" fill="#0f213b" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="20" font-weight="800">1688 Apparel Factory</text><rect x="128" y="216" width="320" height="46" rx="8" fill="#eff6ff"/><text x="146" y="245" fill="#1d4ed8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="700">SF Express · SF-8810</text><path d="M 550 205 C 680 205, 720 470, 825 470" stroke="#2563eb" stroke-width="3.5" stroke-dasharray="9 5"/><rect x="100" y="380" width="440" height="190" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#softShadow)"/><text x="128" y="424" fill="#1e3a8a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="800">SUPPLIER B · DONGGUAN</text><text x="128" y="458" fill="#0f213b" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="20" font-weight="800">Alibaba Knitwear Mill</text><rect x="128" y="486" width="320" height="46" rx="8" fill="#eff6ff"/><text x="146" y="515" fill="#1d4ed8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="700">ZTO Express · ZTO-4192</text><path d="M 550 475 C 680 475, 720 470, 825 470" stroke="#2563eb" stroke-width="3.5" stroke-dasharray="9 5"/><rect x="100" y="650" width="440" height="190" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#softShadow)"/><text x="128" y="694" fill="#1e3a8a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="800">SUPPLIER C · NINGBO</text><text x="128" y="728" fill="#0f213b" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="20" font-weight="800">Direct Cut-and-Sew Studio</text><rect x="128" y="756" width="320" height="46" rx="8" fill="#eff6ff"/><text x="146" y="785" fill="#1d4ed8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="700">YTO Express · YTO-6057</text><path d="M 550 745 C 680 745, 720 470, 825 470" stroke="#2563eb" stroke-width="3.5" stroke-dasharray="9 5"/><polygon points="822,460 842,470 822,480" fill="#2563eb"/><rect x="850" y="210" width="410" height="520" rx="18" fill="#0f213b" stroke="#2563eb" stroke-width="3" filter="url(#shadow)"/><text x="1055" y="276" text-anchor="middle" fill="#93c5fd" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="800">QCWAREHOUSE RECEIVING HUB</text><text x="1055" y="320" text-anchor="middle" fill="#ffffff" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="26" font-weight="800">Foshan Intake Desk</text><rect x="925" y="366" width="260" height="176" rx="12" fill="#d97706" fill-opacity="0.22" stroke="#fbbf24" stroke-width="2.5"/><rect x="955" y="396" width="200" height="116" rx="8" fill="#f59e0b" fill-opacity="0.28" stroke="#fde047" stroke-width="2"/><text x="1055" y="462" text-anchor="middle" fill="#ffffff" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="800">QCW-8F2K5</text><text x="1055" y="616" text-anchor="middle" fill="#cbd5e1" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16">Zero sourcing commission · Split parcels</text><text x="1055" y="644" text-anchor="middle" fill="#cbd5e1" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16">matched by tracking number + code</text></svg>
+
+  <!-- Header Strip -->
+  <rect x="0" y="0" width="1350" height="58" fill="#0f213b"/>
+  <circle cx="32" cy="29" r="6" fill="#3b82f6"/>
+  <text x="50" y="34" fill="#93c5fd" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="700" letter-spacing="0.06em">PROCESS SCHEMATIC · MULTI-SUPPLIER DOMESTIC RECEIVING</text>
+  <text x="1316" y="34" text-anchor="end" fill="#e2ecf8" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="600">Buy Direct · Ship Split Seller Parcels to One Studio</text>
+
+  <!-- Supplier 1 -->
+  <rect x="78" y="116" width="446" height="196" rx="14" fill="#ffffff" stroke="#cdd8e7" stroke-width="2" filter="url(#cardShadow)"/>
+  <text x="108" y="160" fill="#1d4ed8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5" font-weight="800">SUPPLIER A · GUANGZHOU</text>
+  <text x="108" y="196" fill="#0f213b" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="22" font-weight="800">Apparel Sourcing / 1688 Seller</text>
+  <rect x="108" y="224" width="386" height="52" rx="9" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+  <text x="128" y="256" fill="#1e40af" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14.5" font-weight="700">Domestic Parcel #1 · Seller Waybill Linked</text>
+
+  <!-- Supplier 2 -->
+  <rect x="78" y="372" width="446" height="196" rx="14" fill="#ffffff" stroke="#cdd8e7" stroke-width="2" filter="url(#cardShadow)"/>
+  <text x="108" y="416" fill="#1d4ed8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5" font-weight="800">SUPPLIER B · DONGGUAN</text>
+  <text x="108" y="452" fill="#0f213b" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="22" font-weight="800">Knitwear Mill / Alibaba Factory</text>
+  <rect x="108" y="480" width="386" height="52" rx="9" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+  <text x="128" y="512" fill="#1e40af" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14.5" font-weight="700">Domestic Parcel #2 · Seller Waybill Linked</text>
+
+  <!-- Supplier 3 -->
+  <rect x="78" y="628" width="446" height="196" rx="14" fill="#ffffff" stroke="#cdd8e7" stroke-width="2" filter="url(#cardShadow)"/>
+  <text x="108" y="672" fill="#1d4ed8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5" font-weight="800">SUPPLIER C · NINGBO</text>
+  <text x="108" y="708" fill="#0f213b" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="22" font-weight="800">Direct Cut &amp; Sew Workshop</text>
+  <rect x="108" y="736" width="386" height="52" rx="9" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5"/>
+  <text x="128" y="768" fill="#1e40af" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14.5" font-weight="700">Domestic Parcel #3 · Seller Waybill Linked</text>
+
+  <!-- Directional Parcel Connectors -->
+  <path d="M 524 214 C 670 214, 670 430, 818 452" stroke="#2563eb" stroke-width="3.5" stroke-dasharray="10 6" marker-end="url(#arrowBlue)"/>
+  <path d="M 524 470 L 818 470" stroke="#2563eb" stroke-width="3.5" stroke-dasharray="10 6" marker-end="url(#arrowBlue)"/>
+  <path d="M 524 726 C 670 726, 670 510, 818 488" stroke="#2563eb" stroke-width="3.5" stroke-dasharray="10 6" marker-end="url(#arrowBlue)"/>
+
+  <!-- Hub Node label -->
+  <rect x="572" y="428" width="214" height="84" rx="12" fill="#ffffff" stroke="#93c5fd" stroke-width="2" filter="url(#cardShadow)"/>
+  <text x="679" y="463" text-anchor="middle" fill="#0f213b" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14.5" font-weight="800">Tracking Number Match</text>
+  <text x="679" y="488" text-anchor="middle" fill="#475569" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12.5" font-weight="600">Parcel Advice ↔ Order ID</text>
+
+  <!-- Right Destination Card -->
+  <rect x="838" y="168" width="438" height="604" rx="18" fill="#0f213b" stroke="#2563eb" stroke-width="3" filter="url(#cardShadow)"/>
+  <text x="1057" y="232" text-anchor="middle" fill="#93c5fd" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="800" letter-spacing="0.06em">QCWAREHOUSE RECEIVING HUB</text>
+  <text x="1057" y="276" text-anchor="middle" fill="#ffffff" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="27" font-weight="800">China Intake Facility</text>
+  <text x="1057" y="308" text-anchor="middle" fill="#94a3b8" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14.5" font-weight="500">Consolidates arrivals under one order</text>
+
+  <!-- Permanent Code Box -->
+  <rect x="892" y="346" width="330" height="172" rx="14" fill="#172f52" stroke="#38bdf8" stroke-width="2"/>
+  <text x="1057" y="392" text-anchor="middle" fill="#bae6fd" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="700" letter-spacing="0.05em">BUYER PERMANENT PARCEL CODE</text>
+  <rect x="932" y="414" width="250" height="58" rx="9" fill="#f59e0b" fill-opacity="0.16" stroke="#fbbf24" stroke-width="2"/>
+  <text x="1057" y="451" text-anchor="middle" fill="#fef08a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="21" font-weight="800">Format: QCW-XXXXX</text>
+  <text x="1057" y="500" text-anchor="middle" fill="#cbd5e1" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="12.5">Printed in supplier recipient line</text>
+
+  <!-- Key Rules List -->
+  <rect x="892" y="548" width="330" height="178" rx="12" fill="#132949" stroke="#284772" stroke-width="1.5"/>
+  <text x="916" y="588" fill="#ffffff" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15" font-weight="700">✓  Zero sourcing commission</text>
+  <text x="916" y="624" fill="#e2e8f0" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14.5" font-weight="600">✓  Any supplier or 1688 mill welcome</text>
+  <text x="916" y="660" fill="#e2e8f0" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14.5" font-weight="600">✓  Uncoded parcels quarantined safely</text>
+  <text x="916" y="696" fill="#93c5fd" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="14" font-weight="600">✓  Counts verified upon physical intake</text>
+</svg>

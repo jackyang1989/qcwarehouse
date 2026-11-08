@@ -7,6 +7,7 @@ import { isDemo } from "../packages/core/common";
 import { catalog } from "../packages/core/orders";
 import { staffHome } from "../packages/core/portal-routes";
 import { PlatformIcon, PublicFooter, PublicHeader } from "./chrome";
+import { StudioAssetPending, type PendingAssetRatio } from "./public-media";
 import { homeJsonLd, metadataForPath } from "./public-seo";
 import { SampleReportPreview } from "./report-guide";
 
@@ -65,14 +66,21 @@ const TRUST_CAPABILITIES = [
   ],
 ] as const;
 
+type PendingSlotMeta = {
+  slotId: string;
+  filename: string;
+  title: string;
+  brief: string;
+  dimensions: string;
+  ratio: PendingAssetRatio;
+};
+
 type BuyerScenario = {
   tag: string;
   title: string;
   body: string;
   wide: boolean;
-  image?: string;
-  imageAlt?: string;
-  mediaBadge?: string;
+  pendingPhoto?: PendingSlotMeta;
 };
 
 const BUYER_SCENARIOS: BuyerScenario[] = [
@@ -81,27 +89,42 @@ const BUYER_SCENARIOS: BuyerScenario[] = [
     title: "Compare supplier samples before choosing a factory",
     body: "Order samples from two or three 1688, Alibaba, or direct factories and compare fabric hand-feel, stitching, weight, and flat dimensions under one camera before placing inventory orders.",
     wide: false,
-    image: "/marketing/scenes/home-supplier-compare.svg",
-    imageAlt: "Technical schematic comparing three candidate factory crewneck samples side by side under uniform studio framing",
-    mediaBadge: "Studio Schematic · Pending Photo",
+    pendingPhoto: {
+      slotId: "PH-02",
+      filename: "home-supplier-comparison.webp",
+      title: "3 Candidate Cotton Tees Under 5600K Bench Lighting",
+      brief: "Overhead frame comparing three comparable plain tees side by side with subtle collar & stitch differences beside a bench scale.",
+      dimensions: "1350 × 900 · 3:2",
+      ratio: "3-2",
+    },
   },
   {
     tag: "Small-Batch QC",
     title: "Inspect small-batch orders item by item",
     body: "Traditional factory AQL agencies rarely visit for 15, 40, or 80 garments. Send small-batch stock to our studio so every individual unit gets its own ID, checklist, and defect log.",
     wide: false,
-    image: "/marketing/scenes/home-small-batch-qc.svg",
-    imageAlt: "Technical schematic showing 40 capsule apparel units unboxed, barcoded, weighed, and logged individually",
-    mediaBadge: "Studio Schematic · Pending Photo",
+    pendingPhoto: {
+      slotId: "PH-03",
+      filename: "home-small-batch-inspection.webp",
+      title: "Small-Batch Apparel Barcoding at Inspection Bench",
+      brief: "Inspector scanning individual sample labels across ~12 folded garments in clear numbered sleeves on a compact studio table.",
+      dimensions: "1350 × 900 · 3:2",
+      ratio: "3-2",
+    },
   },
   {
     tag: "Restock Consistency",
     title: "Match new items against approved reference samples",
     body: "Seal an approved Golden Sample at QCWarehouse and benchmark future pre-production or restock units directly against your physical standard to catch silent fabric or sizing drift.",
     wide: false,
-    image: "/marketing/scenes/home-restock-reference.svg",
-    imageAlt: "Technical schematic showing an approved Golden Sample from REF_SAFE matched side by side with a new restock arrival",
-    mediaBadge: "Studio Schematic · Pending Photo",
+    pendingPhoto: {
+      slotId: "PH-04",
+      filename: "home-reference-comparison.webp",
+      title: "Approved Reference vs. Incoming Restock Pair",
+      brief: "Two distinct same-model activewear garments aligned side by side as inspector compares construction against the sealed Golden Sample.",
+      dimensions: "1350 × 900 · 3:2",
+      ratio: "3-2",
+    },
   },
   {
     tag: "Pre-Freight Protection",
@@ -205,7 +228,7 @@ export default async function Home() {
       whatWeCheck:
         "Side-by-side dimensional variance, visual shade & rib alignment, seam construction consistency, and weight difference against your retained reference.",
       whatYouReceive:
-        "Paired Reference-vs-Incoming photos, exact dimensional variance records, and protected resealing of your Golden Sample in REF_SAFE storage.",
+        "Paired Reference-vs-Incoming photos, exact dimensional variance records, and protected resealing of your Golden Sample in dedicated reference storage.",
     },
   ] as const;
 
@@ -222,7 +245,7 @@ export default async function Home() {
         <section className="pub-hero" aria-labelledby="home-title">
           <div className="pub-hero-bg" aria-hidden="true">
             <img
-              src="/marketing/qcw-01-home-hero.webp"
+              src="/marketing/home-inspection-studio.webp"
               alt=""
               width={1920}
               height={1080}
@@ -253,7 +276,7 @@ export default async function Home() {
               <li><span aria-hidden="true">✓</span>Per-item return, storage, or forwarding</li>
             </ul>
           </div>
-          <span className="pub-hero-caption">AI studio scene · China receiving &amp; inspection bench</span>
+          <span className="pub-hero-caption">AI Studio Illustration · China inspection workbench</span>
         </section>
 
         {/* TRUST STRIP */}
@@ -295,16 +318,9 @@ export default async function Home() {
                   key={item.title}
                   className={`pub-scenario-card${item.wide ? " wide" : ""}`}
                 >
-                  {item.image && (
+                  {item.pendingPhoto && (
                     <div className="pub-scenario-media">
-                      <img
-                        src={item.image}
-                        alt={item.imageAlt ?? item.title}
-                        width={1200}
-                        height={750}
-                        loading="lazy"
-                      />
-                      {item.mediaBadge && <span className="pub-media-badge">{item.mediaBadge}</span>}
+                      <StudioAssetPending {...item.pendingPhoto} compact />
                     </div>
                   )}
                   <span className="pub-scenario-tag">{item.tag}</span>
@@ -397,76 +413,59 @@ export default async function Home() {
             </div>
 
             <div className="pub-evidence-layout">
-              <div className="pub-evidence-mosaic">
-                <figure className="pub-evidence-card">
-                  <div className="pub-evidence-frame">
-                    <img
-                      src="/marketing/qcw-02-tshirt-chest-measurement.webp"
-                      alt="Overhead inspection photo of a cotton T-shirt laid flat with a flexible metric tape measuring chest width from seam to seam"
-                      width={1200}
-                      height={900}
-                      loading="lazy"
+              <div className="pub-evidence-mosaic stacked">
+                <figure className="pub-evidence-card span-2">
+                  <div className="pub-evidence-frame ratio-16-10">
+                    <StudioAssetPending
+                      slotId="PH-05"
+                      filename="home-seam-defect.webp"
+                      title="Macro Side-Seam Workmanship Flaw"
+                      brief="Close-up studio macro of a navy athletic side seam with a loose stitching thread loop. Raw photo remains unaltered while UI renders non-destructive bounding coordinates."
+                      dimensions="1200 × 900 · 4:3"
+                      ratio="16-10"
+                      overlay={
+                        <svg className="pub-bbox-svg" viewBox="0 0 1200 750" aria-hidden="true">
+                          <rect
+                            x="930"
+                            y="265"
+                            width="175"
+                            height="145"
+                            rx="10"
+                            fill="rgba(217, 45, 32, 0.12)"
+                            stroke="#d92d20"
+                            strokeWidth="6"
+                          />
+                          <rect x="775" y="214" width="330" height="40" rx="6" fill="#d92d20" />
+                          <text x="790" y="240" fill="#ffffff" fontSize="19" fontWeight="700" fontFamily="ui-monospace, monospace">
+                            DEF-01 · UI Overlay Demo
+                          </text>
+                        </svg>
+                      }
                     />
-                    <span className="pub-media-badge">AI Studio Illustration</span>
                   </div>
                   <figcaption>
                     <div>
-                      <strong>Tape-in-Frame Flat Measurement</strong>
-                      <span>Unstrained seam-to-seam metric tape photo with two-pass re-check rules.</span>
-                    </div>
-                  </figcaption>
-                </figure>
-
-                <figure className="pub-evidence-card">
-                  <div className="pub-evidence-frame">
-                    <img
-                      src="/marketing/scenes/home-defect-closeup.svg"
-                      alt="Studio macro schematic of a navy raglan sleeve seam highlighting an unsecured stitching thread loop"
-                      width={1200}
-                      height={900}
-                      loading="lazy"
-                    />
-                    <svg className="pub-bbox-svg" viewBox="0 0 1200 900" aria-hidden="true">
-                      <rect
-                        x="755"
-                        y="370"
-                        width="175"
-                        height="165"
-                        rx="10"
-                        fill="rgba(217, 45, 32, 0.14)"
-                        stroke="#d92d20"
-                        strokeWidth="7"
-                      />
-                      <rect x="645" y="318" width="285" height="42" rx="6" fill="#d92d20" />
-                      <text x="660" y="346" fill="#ffffff" fontSize="22" fontWeight="700" fontFamily="ui-monospace, monospace">
-                        DEF-01 · Seam Thread
-                      </text>
-                    </svg>
-                    <span className="pub-media-badge">Schematic + UI Overlay</span>
-                  </div>
-                  <figcaption>
-                    <div>
-                      <strong>Annotated Workmanship Close-Up</strong>
-                      <span>Non-destructive UI bounding boxes keep raw studio photos intact.</span>
+                      <strong>Annotated Workmanship Close-Up (UI Layer Preview)</strong>
+                      <span>Non-destructive coordinate bounding boxes highlight localized seam issues without editing raw studio captures.</span>
                     </div>
                   </figcaption>
                 </figure>
 
                 <figure className="pub-evidence-card span-2">
                   <div className="pub-evidence-frame">
-                    <img
-                      src="/marketing/scenes/home-sorting-forwarding.svg"
-                      alt="Technical schematic showing inspected garments sorted by individual barcode into seller return, REF_SAFE retention, and forwarder packing lanes"
-                      width={1350}
-                      height={760}
-                      loading="lazy"
+                    <StudioAssetPending
+                      slotId="PH-06"
+                      filename="home-sorting-dispatch.webp"
+                      title="Customer-Directed Post-Inspection Sorting Bench"
+                      brief="Compact studio packing station separating customer-approved outbound cartons on the left and individually bagged domestic seller-return items on the right."
+                      dimensions="1350 × 760 · 16:9"
+                      ratio="16-9"
                     />
-                    <span className="pub-media-badge">Studio Schematic · Pending Photo</span>
                   </div>
                   <figcaption>
                     <div>
                       <strong>Traceable Post-Inspection Sorting &amp; Packing</strong>
-                      <span>Approved items and seller-return items stay separated by individual sample barcode until your dispatch instructions are executed.</span>
+                      <span>Approved stock and seller-return pieces stay separated by individual sample barcode until your dispatch instructions are executed.</span>
                     </div>
                   </figcaption>
                 </figure>

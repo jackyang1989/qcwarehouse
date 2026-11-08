@@ -78,7 +78,7 @@ const FAQ_CATEGORIES: FaqCategory[] = [
         id: "golden-sample",
         question: "Can you compare new items with my approved sample?",
         answer:
-          "Yes—through Golden Sample / Reference Matching. After an item has been inspected in QCWarehouse, you can request its conversion into a Golden Sample; our staff seals it inside dedicated REF_SAFE storage. Future incoming samples can then be ordered under Reference Matching for direct physical side-by-side comparison.",
+          "Yes—through Golden Sample / Reference Matching. After an item has been inspected in QCWarehouse, you can request its conversion into a Golden Sample; our staff seals it inside dedicated tamper-sealed reference storage. Future incoming samples can then be ordered under Reference Matching for direct physical side-by-side comparison.",
       },
       {
         id: "measurements",

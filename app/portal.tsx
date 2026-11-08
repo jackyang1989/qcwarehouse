@@ -90,9 +90,9 @@ export function Portal({path,target,route,actor:a,demo=false}:{path:string;targe
   else content=<CustomerDesk path={path}/>;
   const locale=isStaff?"zh-CN":"en";
   const signOut=a?<Action run={async()=>{await request("/auth/logout","POST",{});location.assign(a.kind==="staff"?"/staff/login":"/login");}}>{a.kind==="staff"?"退出登录":"Sign out"}</Action>:undefined;
-  const homeLink=a?.kind==="customer"?"/account":a?staffHome(a.roles):undefined;
+  const homeLink=a?.kind==="customer"?"/account":undefined;
   if(publicPage||!a||links.length===0) return <>
-    <PublicHeader path={path} accountHref={homeLink} staff={a?.kind==="staff"} accountAction={signOut} actor={a} demo={demo}/>
+    <PublicHeader path={path} accountHref={homeLink} staff={a?.kind==="staff"} accountAction={a?.kind==="customer"?signOut:undefined} actor={a} demo={demo}/>
     <main className={`public-shell view-${route.view}`} id="main-content" lang={locale}>{content}</main>
     {publicPage ? <PublicFooter/> : <SiteFooter/>}
   </>;

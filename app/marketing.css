@@ -3,6 +3,28 @@
    Zero impact on .workspace, .workspace-sidebar, .workspace-main, or internal desks.
    ========================================================================== */
 
+/* 0. Public-site scroll behaviour.
+   The global `html { scroll-behavior: smooth }` (styles.css) animates every programmatic
+   window.scrollTo(). On long marketing pages that makes scroll-and-stitch capture tools and
+   assistive "scroll to section" features read the viewport mid-animation (measured lag up to
+   4,355px per frame on /), producing captures where sections appear cut off or missing.
+   Public pages therefore scroll instantly; the sticky header height is reserved for anchors
+   (#packages, #pricing-calculator, #full-schedule, FAQ deep links) so headings are not hidden. */
+html:has(.public-top) {
+  scroll-behavior: auto;
+  scroll-padding-top: 88px;
+}
+@media (max-width: 1023px) {
+  html:has(.public-top) {
+    scroll-padding-top: 120px;
+  }
+}
+@media (max-width: 767px) {
+  html:has(.public-top) {
+    scroll-padding-top: 84px;
+  }
+}
+
 /* 1. Public Header & Mobile Navigation */
 .public-top {
   display: block;

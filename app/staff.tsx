@@ -1510,11 +1510,16 @@ export function AdminDesk({actor,path}:{actor:Row;path:string}) {
         }}><Field name="slug" label="类目编码"/><Field name="zh" label="中文名称"/><Field name="en" label="英文名称"/></Form>}
       </Panel>
       {superAdmin&&<Panel title="可售套餐与版本价格" subtitle="生产价格调整生成新版本并由服务端签发，旧订单保留原始价格快照。">
-        <Table headers={["SKU","名称","价格版本","计价规则","状态"]} rows={(data.offers??[]).map((o:Row)=>[
+        <Table headers={["SKU","名称","价格版本","生效时间","计价规则","状态","操作"]} rows={(data.offers??[]).map((o:Row)=>[
           <span className="code">{o.sku_code}</span>,o.title?.["zh-CN"]??o.title?.en??o.sku_code,
           o.price_version?`v${o.price_version}`:"—",
+          o.effective_from?new Date(String(o.effective_from)).toISOString().slice(0,16).replace("T"," "):"—",
           o.rules?`${o.rules.minimum}–${o.rules.maximum} 件 · ${usd(o.rules.package_cents??o.rules.unit_cents)} · ${o.rules.business_days} 工作日`:"—",
           <Tag>{o.enabled?"可售":"已停用"}</Tag>,
+          <Action run={async()=>{
+            await request("/staff/admin/skus/"+o.sku_code+"/status","POST",{enabled:!o.enabled});
+            reload();
+          }}>{o.enabled?"停用可售":"恢复可售"}</Action>,
         ])} empty="暂无可售套餐。"/>
         {!!(data.offers??[]).length&&<Form inline label="发布新价格版本" run={async f=>{
           const sku=text(f,"sku"),offer=(data.offers??[]).find((o:Row)=>o.sku_code===sku);

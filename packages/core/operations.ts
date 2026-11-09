@@ -492,10 +492,20 @@ export async function publishSkuPrice(db:DB,actor:Actor,skuCode:string,input:{ru
   const offer=await one<{id:string;sku_code:string}>(db,"select id,sku_code from service_offers where sku_code=$1 for update",[skuCode]);
   const next=await one<{n:number}>(db,"select coalesce(max(version),0)::int+1 n from sku_prices where offer_id=$1",[offer.id]);
   await db.query("update sku_prices set effective_to=now() where offer_id=$1 and (effective_to is null or effective_to>now())",[offer.id]);
-  const price=await one<{id:string;version:number}>(db,`insert into sku_prices(id,offer_id,version,currency,rules,effective_from)
-    values($1,$2,$3,'USD',$4,now()) returning id,version`,[uuid(),offer.id,next.n,rules]);
+  const price=await one<{id:string;version:number;effective_from:Date}>(db,`insert into sku_prices(id,offer_id,version,currency,rules,effective_from)
+    values($1,$2,$3,'USD',$4,now()) returning id,version,effective_from`,[uuid(),offer.id,next.n,rules]);
   await audit(db,actor,"publish_sku_price","service_offers",offer.id,{code:offer.sku_code,version:price.version});
-  return {id:price.id,offer_id:offer.id,sku_code:offer.sku_code,version:price.version,rules};
+  return {id:price.id,offer_id:offer.id,sku_code:offer.sku_code,version:price.version,effective_from:price.effective_from,rules};
+}
+export async function setOfferEnabled(db:DB,actor:Actor,skuCode:string,input:{enabled:boolean}) {
+  role(actor,"super_admin");
+  const offer=await one<{id:string;sku_code:string;enabled:boolean}>(
+    db,
+    "update service_offers set enabled=$2 where sku_code=$1 returning id,sku_code,enabled",
+    [skuCode,input.enabled]
+  );
+  await audit(db,actor,"update_offer_status","service_offers",offer.id,{code:offer.sku_code,enabled:offer.enabled});
+  return offer;
 }
 export async function upsertOffer(db:DB,actor:Actor,input:{
   sku_code:string;category_id:string;service_type_id:string;template_version_id:string;

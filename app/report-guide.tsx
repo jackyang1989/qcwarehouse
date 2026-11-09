@@ -609,10 +609,10 @@ export function ReportGuide() {
         <section className="pub-report-section" id="defect-annotations">
           <div className="row between flexwrap">
             <div>
-              <p className="pub-eyebrow">07 · DEFECT ANNOTATIONS (INTERACTIVE SCHEMA PREVIEW)</p>
-              <h3>Illustrative Workmanship &amp; Surface Callout Format</h3>
+              <p className="pub-eyebrow">07 · DEFECT CALLOUT OVERLAYS</p>
+              <h3>Workmanship &amp; Fabric Surface Defect Callouts</h3>
               <p className="small muted" style={{ margin: 0 }}>
-                Raw inspection photos remain unaltered in storage; reviewer-verified bounding coordinates and English defect labels render non-destructively in the UI layer. Entries below illustrate data schema only.
+                Original studio photos remain untouched in storage; reviewer-verified red callout boxes and English defect notes can be toggled on or off in your report view.
               </p>
             </div>
             <button
@@ -621,14 +621,14 @@ export function ReportGuide() {
               onClick={() => setShowAnnotations((v) => !v)}
               aria-pressed={showAnnotations}
             >
-              {showAnnotations ? "Hide Coordinate Callouts" : "Show Coordinate Callouts"}
+              {showAnnotations ? "Hide Red Callout Boxes" : "Show Red Callout Boxes"}
             </button>
           </div>
 
           <div className="pub-defect-grid">
             <figure className="pub-evidence-card">
               <div className={`pub-callout-bar${showAnnotations ? "" : " is-muted"}`}>
-                <span>{showAnnotations ? "COORDINATE OVERLAY ACTIVE · UI LAYER ANNOTATION" : "RAW CAPTURE MODE · OVERLAY HIDDEN"}</span>
+                <span>{showAnnotations ? "RED-BOX CALLOUT ACTIVE" : "ORIGINAL PHOTO · CALLOUT HIDDEN"}</span>
                 <span className="code">B-DEF-01</span>
               </div>
               <button
@@ -640,7 +640,7 @@ export function ReportGuide() {
                     title: "S-8H2K4B · Unsecured Overlock Stitch Loop on Left Side Seam",
                     src: "/marketing/report-sample-b-seam-defect.webp",
                     alt: "Macro close-up of an unsecured overlock stitch loop along the left side seam of Sample B heather-gray cotton T-shirt",
-                    caption: "Raw macro photograph stays untouched in storage; UI coordinate box (x:0.23 y:0.41) highlights the ~14 mm thread loop.",
+                    caption: "Original macro photograph stays untouched in storage; red callout box highlights the ~14 mm unsecured thread loop.",
                   })
                 }
                 aria-label="Inspect B-DEF-01 macro seam photo"
@@ -672,24 +672,24 @@ export function ReportGuide() {
               <div className="pub-defect-schema-card">
                 <div className="pub-defect-coords">
                   <div><span>Garment Zone</span><strong>Left Side Seam</strong></div>
-                  <div><span>UI Coordinate Box</span><strong className="mono">x:0.23 y:0.41</strong></div>
-                  <div><span>Example Dimension</span><strong>~14 mm thread loop</strong></div>
+                  <div><span>Callout Position</span><strong className="mono">Lower-Left Seam</strong></div>
+                  <div><span>Observed Size</span><strong>~14 mm thread loop</strong></div>
                 </div>
               </div>
               <figcaption>
                 <div>
                   <span className="code" style={{ color: "#b24046", fontWeight: 800, fontSize: 11 }}>
-                    ILLUSTRATIVE ENTRY · SIDE SEAM WORKMANSHIP
+                    DEFECT RECORD · SIDE SEAM WORKMANSHIP
                   </span>
-                  <strong>Example defect format: Unsecured ~14 mm overlock loop along side seam</strong>
-                  <span>Example bench translation format (zh → EN): Reviewer verifies coordinate box + objective description without subjective pass/fail verdicts.</span>
+                  <strong>Sample B (S-8H2K4B): Unsecured ~14 mm overlock loop along left side seam</strong>
+                  <span>QA-reviewed English note describing the exact location and extent of the workmanship issue for supplier return claims.</span>
                 </div>
               </figcaption>
             </figure>
 
             <figure className="pub-evidence-card">
               <div className={`pub-callout-bar${showAnnotations ? "" : " is-muted"}`}>
-                <span>{showAnnotations ? "COORDINATE OVERLAY ACTIVE · UI LAYER ANNOTATION" : "RAW CAPTURE MODE · OVERLAY HIDDEN"}</span>
+                <span>{showAnnotations ? "RED-BOX CALLOUT ACTIVE" : "ORIGINAL PHOTO · CALLOUT HIDDEN"}</span>
                 <span className="code">B-DEF-02</span>
               </div>
               <button
@@ -701,7 +701,7 @@ export function ReportGuide() {
                     title: "S-8H2K4B · Localized Surface Spot on Lower Front Panel",
                     src: "/marketing/report-sample-b-fabric-stain.webp",
                     alt: "Macro close-up of a localized brownish surface stain on the heather-gray cotton jersey knit of Sample B",
-                    caption: "Raw macro photograph stays untouched in storage; UI coordinate box (x:0.18 y:0.33) highlights the ~8 mm surface spot.",
+                    caption: "Original macro photograph stays untouched in storage; red callout box highlights the ~8 mm surface spot.",
                   })
                 }
                 aria-label="Inspect B-DEF-02 macro fabric stain photo"
@@ -733,17 +733,17 @@ export function ReportGuide() {
               <div className="pub-defect-schema-card">
                 <div className="pub-defect-coords">
                   <div><span>Garment Zone</span><strong>Lower Front Panel</strong></div>
-                  <div><span>UI Coordinate Box</span><strong className="mono">x:0.18 y:0.33</strong></div>
-                  <div><span>Example Dimension</span><strong>~8 mm surface spot</strong></div>
+                  <div><span>Callout Position</span><strong className="mono">Front Jersey Panel</strong></div>
+                  <div><span>Observed Size</span><strong>~8 mm surface spot</strong></div>
                 </div>
               </div>
               <figcaption>
                 <div>
                   <span className="code" style={{ color: "#b24046", fontWeight: 800, fontSize: 11 }}>
-                    ILLUSTRATIVE ENTRY · FABRIC SURFACE
+                    DEFECT RECORD · FABRIC SURFACE
                   </span>
-                  <strong>Example defect format: Localized ~8 mm brownish spot on lower front panel</strong>
-                  <span>Original zh-CN field observation remains preserved on audit record while customer view displays reviewed English text.</span>
+                  <strong>Sample B (S-8H2K4B): Localized ~8 mm brownish spot on lower front panel</strong>
+                  <span>Reviewed English observation paired with the original studio macro frame so you can share clear visual proof with your supplier.</span>
                 </div>
               </figcaption>
             </figure>

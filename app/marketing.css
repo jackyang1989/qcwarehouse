@@ -13,21 +13,26 @@
   border-bottom: 1px solid #dce5f0;
 }
 .public-top-inner {
-  max-width: 1280px;
+  max-width: 1380px;
   margin: 0 auto;
   min-height: 72px;
-  padding: 0 clamp(16px, 3vw, 36px);
+  padding: 0 clamp(16px, 2.5vw, 32px);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
+  gap: 12px;
+}
+.public-top .workspace-brand {
+  min-width: 0;
+  flex-shrink: 0;
 }
 .public-top .workspace-context {
   font-size: 9.5px;
   letter-spacing: 0.08em;
   padding-left: 10px;
+  white-space: nowrap;
 }
-@media (max-width: 1360px) {
+@media (max-width: 1380px) {
   .public-top .workspace-context {
     display: none;
   }
@@ -37,14 +42,25 @@
   align-items: center;
   gap: 4px;
   margin-inline: auto;
+  min-width: 0;
 }
 .public-top .public-nav a {
   color: #31455d;
   font-size: 13.5px;
   font-weight: 650;
-  padding: 8px 12px;
+  padding: 8px 11px;
   border-radius: 8px;
+  white-space: nowrap;
   transition: background-color 0.15s ease, color 0.15s ease;
+}
+@media (max-width: 1180px) {
+  .public-top .public-nav {
+    gap: 2px;
+  }
+  .public-top .public-nav a {
+    font-size: 13px;
+    padding: 7px 8px;
+  }
 }
 .public-top .public-nav a:hover {
   background: #f1f6fd;
@@ -58,15 +74,85 @@
 .public-top .public-header-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-shrink: 0;
 }
 .public-top .public-header-actions .button {
   min-height: 38px;
-  padding: 8px 15px;
+  padding: 8px 14px;
   font-size: 13px;
   font-weight: 680;
   border-radius: 8px;
+  white-space: nowrap;
+}
+.public-user-menu {
+  position: relative;
+}
+.public-user-menu > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.public-user-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.public-top .public-header-actions .public-user-trigger {
+  padding: 8px 9px;
+  min-width: 34px;
+  justify-content: center;
+}
+.public-user-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 90;
+  min-width: 196px;
+  background: #ffffff;
+  border: 1px solid #d5e0ee;
+  border-radius: 10px;
+  padding: 6px;
+  box-shadow: 0 14px 32px rgba(15, 30, 52, 0.14);
+  display: grid;
+  gap: 2px;
+}
+.public-user-popover a,
+.public-user-signout {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 11px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #1e314b;
+  font-size: 13px;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+.public-user-popover a:hover,
+.public-user-signout:hover {
+  background: #f1f6fd;
+  color: #1c4ed8;
+  transform: none;
+}
+.public-user-divider {
+  height: 1px;
+  background: #e6edf6;
+  margin: 4px 2px;
+}
+.public-user-signout {
+  color: #b42318;
+}
+.public-user-signout:hover {
+  background: #fef3f2;
+  color: #912018;
+}
+.public-mobile-signout {
+  grid-column: 1 / -1;
+  color: #b42318;
+  border-color: #f3c6c3;
+  background: #fffafa;
 }
 .public-menu-toggle {
   display: none;
@@ -120,7 +206,6 @@
 .marketing {
   background: #f6f8fb;
   color: #16243a;
-  overflow-x: clip;
 }
 .public-shell {
   max-width: 1240px;
@@ -754,9 +839,9 @@
   margin: 0;
 }
 .pub-step-card p {
-  font-size: 12.8px;
-  line-height: 1.55;
-  color: #c2d4ec;
+  font-size: 13.5px;
+  line-height: 1.58;
+  color: #c6d7ee;
   margin: 0;
 }
 
@@ -1393,25 +1478,41 @@
   background: #ffffff;
   border: 1px solid #dae4f0;
   border-radius: 12px;
-  padding: 18px 20px;
+  padding: 20px 22px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 18px;
+  gap: 20px;
   align-items: center;
   box-shadow: 0 3px 12px rgba(15, 32, 58, 0.03);
 }
 .pub-package-card h3 {
-  font-size: 1.05rem;
+  font-size: 1.08rem;
   color: #11233b;
   margin: 0 0 6px;
+}
+.pub-package-usecase {
+  margin: 0 0 8px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: #263b54;
 }
 .pub-package-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 14px;
-  font-size: 12.5px;
+  font-size: 12.8px;
   color: #556980;
+}
+.pub-package-scope-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: #eff4ff;
+  color: #1c4ed8;
+  font-size: 11.8px;
+  font-weight: 720;
 }
 .pub-sku-ref {
   font-family: var(--mono);
@@ -1630,17 +1731,17 @@
   align-items: baseline;
 }
 .pub-step-triple dt {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: #51667f;
+  color: #465b74;
 }
 .pub-step-triple dd {
   margin: 0;
-  font-size: 13px;
-  line-height: 1.5;
-  color: #22364f;
+  font-size: 13.5px;
+  line-height: 1.56;
+  color: #1e324b;
 }
 .pub-journey-badge {
   width: 48px;
@@ -1664,18 +1765,18 @@
   border: 1px solid #dce6f2;
   border-left: 3px solid #245de4;
   border-radius: 10px;
-  padding: 16px 18px;
+  padding: 18px 20px;
 }
 .pub-rule-card h3 {
-  font-size: 0.98rem;
+  font-size: 1.02rem;
   margin: 0 0 6px;
   color: #12243c;
 }
 .pub-rule-card p {
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 13.5px;
+  line-height: 1.58;
   margin: 0;
-  color: #50647c;
+  color: #455971;
 }
 
 /* Pricing Calculator */
@@ -2008,12 +2109,15 @@
 }
 
 /* 13. Responsive Breakpoints (1280 / 1024 / 960 / 768 / 540) */
+@media (max-width: 1280px) {
+  .pub-steps-5 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 1120px) {
   .pub-evidence-layout {
     grid-template-columns: 1fr;
-  }
-  .pub-steps-5 {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   .pub-trust-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2036,6 +2140,9 @@
   }
   .public-menu-toggle {
     display: inline-flex;
+  }
+  .pub-steps-5 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .pub-service-pillars,
   .pub-evidence-layout,
@@ -2146,7 +2253,8 @@
   .public-top .public-header-actions {
     gap: 6px;
   }
-  .public-top .public-signin-btn {
+  .public-top .public-signin-btn,
+  .public-top .public-user-menu {
     display: none;
   }
   .public-top .public-header-actions .public-cta-btn {

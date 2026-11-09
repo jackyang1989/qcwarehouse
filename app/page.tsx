@@ -79,7 +79,7 @@ const BUYER_SCENARIOS: BuyerScenario[] = [
   {
     tag: "Supplier Selection",
     title: "Compare supplier samples before choosing a factory",
-    body: "Order samples from two or three 1688, Alibaba, or direct factories and compare fabric hand-feel, stitching, weight, and flat dimensions under one camera before placing inventory orders.",
+    body: "Receive one synchronized comparison report with side-by-side overhead photos, a landmark measurement delta table, and weight and workmanship notes across 2 or 3 candidate factories.",
     wide: false,
     image: "/marketing/home-supplier-comparison.webp",
     imageAlt:
@@ -88,7 +88,7 @@ const BUYER_SCENARIOS: BuyerScenario[] = [
   {
     tag: "Small-Batch QC",
     title: "Inspect small-batch orders item by item",
-    body: "Traditional factory AQL agencies rarely visit for 15, 30, or 80 garments. Whether you need a detailed check on 1–3 prototype samples or piece-by-piece screening across 10–100+ stock items, every unit gets its own ID, checklist, and defect log.",
+    body: "Every unit receives its own traceable sample ID, flat-lay metric tape photos, workmanship check, and coordinate-tagged defect record—so you can separate clean stock from returnable defects.",
     wide: false,
     image: "/marketing/home-small-batch-inspection.webp",
     imageAlt:
@@ -97,23 +97,11 @@ const BUYER_SCENARIOS: BuyerScenario[] = [
   {
     tag: "Restock Consistency",
     title: "Match new items against approved reference samples",
-    body: "Keep an approved Golden Sample in secure reference sample storage at QCWarehouse and benchmark future pre-production or restock units directly against your physical standard to catch silent fabric or sizing drift.",
+    body: "Seal your approved Golden Sample in our China vault and receive paired Reference-vs-Incoming photos plus exact dimensional and shade variance records on every reorder.",
     wide: false,
     image: "/marketing/home-reference-comparison.webp",
     imageAlt:
       "Approved reference navy sweatshirt emerging from a protective polybag on the left compared against an incoming restock sweatshirt measured by a white-gloved inspector",
-  },
-  {
-    tag: "Pre-Freight Protection",
-    title: "Identify documented issues before international forwarding",
-    body: "Once parcels leave China by air express, returning defective items becomes cost-prohibitive. Catch wrong sizes, stains, and open seams with clear visual proof while domestic returns are still practical.",
-    wide: true,
-  },
-  {
-    tag: "Item-Level Routing",
-    title: "Return or forward individual items based on your instructions",
-    body: "You stay in control of every unit: instruct us to send defective pieces back to the seller’s domestic return address, hold an approved reference, and consolidate the remaining items to your freight forwarder.",
-    wide: true,
   },
 ];
 
@@ -152,7 +140,7 @@ const PROCESS_STAGES = [
 
 export default async function Home() {
   const actor = await actorForSession((await cookies()).get("session")?.value);
-  const accountHref = actor?.kind === "customer" ? "/account" : actor ? staffHome(actor.roles) : undefined;
+  const accountHref = actor?.kind === "customer" ? "/account" : undefined;
   const offers = (await transaction(catalog).catch(() => [])) as LiveOffer[];
 
   const inspOffers = offers.filter((o) => o.service === "inspection");

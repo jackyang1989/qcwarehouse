@@ -576,9 +576,9 @@ export async function adminDesk(db:DB,actor:Actor) {
     capabilities:templates?(await db.query("select id,code,method from capabilities where approved_by is not null and revoked_at is null order by code")).rows:[],
     allCapabilities:templates?(await db.query("select id,code,method,approval,approved_by,revoked_at from capabilities order by code")).rows:[],
     offers:templates?(await db.query(`select o.id,o.sku_code,o.title,o.enabled,o.service_type_id,ot.category_id,ot.template_version_id,
-      p.version price_version,p.rules from service_offers o
+      p.version price_version,p.rules,p.effective_from from service_offers o
       left join offer_templates ot on ot.offer_id=o.id
-      left join lateral(select version,rules from sku_prices sp where sp.offer_id=o.id and effective_from<=now()
+      left join lateral(select version,rules,effective_from from sku_prices sp where sp.offer_id=o.id and effective_from<=now()
         and (effective_to is null or effective_to>now()) order by effective_from desc,version desc limit 1) p on true
       order by o.sku_code`)).rows:[],
     jobErrors:actor.roles.includes("super_admin")?(await db.query("select id,type,attempts,last_error,next_attempt_at from outbox_events where processed_at is null and attempts>0 order by id desc limit 50")).rows:[],

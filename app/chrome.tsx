@@ -82,9 +82,17 @@ export function PublicHeader({accountHref,accountAction,staff,path="/",actor}:{
   const isActive = (href: string) =>
     path === href || (href === "/catalog" && path.startsWith("/services/"));
 
-  const isCustomer = actor?.kind === "customer" || (!staff && Boolean(accountHref));
+  const isCustomer = actor ? actor.kind === "customer" : (!staff && Boolean(accountHref));
   const customerHref = isCustomer ? (accountHref ?? "/account") : "/login";
   const customerLabel = isCustomer ? "My Workspace" : "Sign In";
+
+  async function handleSignOut() {
+    try {
+      await request("/auth/logout", "POST");
+    } finally {
+      location.assign("/login");
+    }
+  }
 
   return <>
     <a className="skip-link" href="#main-content">Skip to main content</a>
@@ -103,7 +111,25 @@ export function PublicHeader({accountHref,accountAction,staff,path="/",actor}:{
           <Link className="button sm public-signin-btn" href={customerHref}>
             {customerLabel}
           </Link>
-          {isCustomer && accountAction}
+          {isCustomer && (
+            <details className="public-user-menu">
+              <summary className="button sm public-user-trigger" aria-label="Account menu" title="Account & Sign Out">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="m6 9 6 6 6-6"/>
+                </svg>
+              </summary>
+              <div className="public-user-popover" role="menu">
+                <Link href="/account" role="menuitem">My Workspace</Link>
+                <Link href="/orders" role="menuitem">Inspections &amp; Reports</Link>
+                <div className="public-user-divider" role="separator"/>
+                {accountAction ?? (
+                  <button type="button" className="public-user-signout" role="menuitem" onClick={() => void handleSignOut()}>
+                    Sign Out
+                  </button>
+                )}
+              </div>
+            </details>
+          )}
           <Link className="button primary sm public-cta-btn" href="/orders/new">
             Start Inspection
           </Link>
@@ -143,6 +169,15 @@ export function PublicHeader({accountHref,accountAction,staff,path="/",actor}:{
             <Link className="button primary full" href="/orders/new" onClick={() => setMenuOpen(false)}>
               Start Inspection
             </Link>
+            {isCustomer && (
+              <button
+                type="button"
+                className="button full public-mobile-signout"
+                onClick={() => { setMenuOpen(false); void handleSignOut(); }}
+              >
+                Sign Out
+              </button>
+            )}
           </div>
         </div>
       )}

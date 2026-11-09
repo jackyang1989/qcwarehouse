@@ -112,23 +112,9 @@ export function PublicHeader({accountHref,accountAction,staff,path="/",actor}:{
             {customerLabel}
           </Link>
           {isCustomer && (
-            <details className="public-user-menu">
-              <summary className="button sm public-user-trigger" aria-label="Account menu" title="Account & Sign Out">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="m6 9 6 6 6-6"/>
-                </svg>
-              </summary>
-              <div className="public-user-popover" role="menu">
-                <Link href="/account" role="menuitem">My Workspace</Link>
-                <Link href="/orders" role="menuitem">Inspections &amp; Reports</Link>
-                <div className="public-user-divider" role="separator"/>
-                {accountAction ?? (
-                  <button type="button" className="public-user-signout" role="menuitem" onClick={() => void handleSignOut()}>
-                    Sign Out
-                  </button>
-                )}
-              </div>
-            </details>
+            <button type="button" className="button sm public-signout-btn" onClick={() => void handleSignOut()}>
+              Sign Out
+            </button>
           )}
           <Link className="button primary sm public-cta-btn" href="/orders/new">
             Start Inspection

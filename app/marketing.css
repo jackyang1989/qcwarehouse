@@ -20,7 +20,17 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
+  gap: 14px;
+}
+.public-top .workspace-context {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  padding-left: 10px;
+}
+@media (max-width: 1360px) {
+  .public-top .workspace-context {
+    display: none;
+  }
 }
 .public-top .public-nav {
   display: flex;

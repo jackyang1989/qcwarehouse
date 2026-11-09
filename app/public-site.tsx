@@ -344,15 +344,15 @@ export function PublicServicesOverview() {
       {/* 2. Product Inspection */}
       <section className="pub-service-detail" id="product-inspection" aria-labelledby="svc-inspection-title">
         <div>
-          <p className="pub-eyebrow">02 · SERVICE 01 — PIECE-BY-PIECE VERIFICATION</p>
+          <p className="pub-eyebrow">02 · SERVICE 01 — INDIVIDUAL SAMPLE &amp; SMALL-BATCH VERIFICATION</p>
           <h2 id="svc-inspection-title" className="pub-h2">Product Inspection (1 to 100+ Items)</h2>
           <p className="pub-lead" style={{ fontSize: 14.5, marginBottom: 14 }}>
-            Built for single pre-order samples as well as small-batch runs (15, 40, or 80 units) where every garment matters and random factory sampling leaves defects undetected.
+            Built for both <strong>detailed sample inspection (1–3 prototype units)</strong> and <strong>small-batch piece-by-piece screening (10, 30, 50, or 100 stock units)</strong> where random factory AQL sampling leaves defects undetected.
           </p>
           <div className="pub-meta-grid">
             <div className="pub-meta-cell">
               <span>Ideal Scenarios</span>
-              <strong>First sample check, capsule drops, Shopify &amp; TikTok small batches</strong>
+              <strong>1–3 sample prototype checks &amp; 10–100+ unit Shopify / TikTok small batches</strong>
             </div>
             <div className="pub-meta-cell">
               <span>Item Quantity</span>
@@ -487,12 +487,12 @@ export function PublicServicesOverview() {
 
         <div className="pub-service-subrow">
           <div>
-            <p className="pub-eyebrow">PROTECTED REFERENCE STORAGE &amp; CUSTODY LIFECYCLE</p>
+            <p className="pub-eyebrow">SECURE REFERENCE SAMPLE STORAGE &amp; CUSTODY</p>
             <h3 style={{ fontSize: "1.22rem", color: "#0f213a", margin: "0 0 10px" }}>
-              Tamper-Sealed Reference Storage Between Reorders
+              Secure Reference Sample Storage Between Reorders
             </h3>
             <p className="pub-lead" style={{ fontSize: 14, marginBottom: 14 }}>
-              After any inspection or comparison order, convert an approved unit into your retained Golden Sample. We seal it inside an individually barcoded sleeve and dedicated storage bin so future restock shipments are checked against the exact physical garment you signed off.
+              After any inspection or comparison order, convert an approved unit into your retained Golden Sample. We seal it inside an individually barcoded protective bag in our lockable reference sample storage cabinet so future restock shipments are checked against the exact physical garment you signed off.
             </p>
             <div className="pub-meta-grid" style={{ margin: 0 }}>
               <div className="pub-meta-cell">
@@ -505,18 +505,18 @@ export function PublicServicesOverview() {
               </div>
               <div className="pub-meta-cell">
                 <span>Chain of Custody</span>
-                <strong>Tamper-evident seal + barcoded bin location tracking</strong>
+                <strong>Tamper-evident seal + lockable reference cabinet tracking</strong>
               </div>
               <div className="pub-meta-cell">
                 <span>Post-Match Handling</span>
-                <strong>Automatically resealed &amp; returned to vault after each check</strong>
+                <strong>Automatically resealed &amp; returned to cabinet after each check</strong>
               </div>
             </div>
           </div>
           <figure className="pub-photo-box ratio-3-2">
             <img
               src="/marketing/service-reference-storage.webp"
-              alt="Tamper-sealed Golden Sample stored in a barcoded grey reference custody bin on the QCWarehouse bench"
+              alt="Dedicated lockable steel reference sample storage cabinet with tamper-sealed clear garment sleeves and white-gloved custody handling"
               width={1200}
               height={900}
               loading="eager"
@@ -532,7 +532,7 @@ export function PublicServicesOverview() {
             <p className="pub-eyebrow">05 · DELIVERABLES &amp; SERVICE BOUNDARIES</p>
             <h2 id="deliverables-boundaries-title">What You Receive—and What We Never Claim</h2>
             <p className="pub-lead" style={{ fontSize: 14.5 }}>
-              Every published report separates verified bench observations from laboratory testing or on-site factory audits—giving commercial buyers clean evidence before shipping from China.
+              Every reviewed inspection report separates verified bench observations from laboratory testing or on-site factory audits—giving commercial buyers clean evidence before shipping from China.
             </p>
           </div>
           <Link className="button primary sm" href="/report-guide">
@@ -548,14 +548,14 @@ export function PublicServicesOverview() {
               <p>Outer parcel condition notes plus unique barcodes tying every photo back to one piece.</p>
             </div>
             <div className="pub-deliverable-mini">
-              <span className="code">02 · TAPE &amp; DEFECT PROOF</span>
+              <span className="code">02 · MEASUREMENTS &amp; PHOTOS</span>
               <strong>0.1 cm Readings &amp; Red-Box Overlays</strong>
               <p>Two-pass re-checks on variances plus coordinate overlays over untouched raw captures.</p>
             </div>
             <div className="pub-deliverable-mini">
-              <span className="code">03 · IMMUTABLE SNAPSHOT</span>
+              <span className="code">03 · REVIEWED INSPECTION REPORT</span>
               <strong>English QA Review, PDF &amp; Routing</strong>
-              <p>Locked online report version and matching PDF synced with item-by-item return or dispatch choices.</p>
+              <p>Reviewed online inspection report (locked version) and matching PDF synced with item-by-item routing choices.</p>
             </div>
           </div>
           <Link className="button sm" href="/report-guide" style={{ flexShrink: 0 }}>
@@ -570,7 +570,7 @@ export function PublicServicesOverview() {
               <li><b className="mark-ok">✓</b><span>Mandatory garment overview, care-label, and metric tape-in-frame measurement photos</span></li>
               <li><b className="mark-ok">✓</b><span>Recorded flat dimensions (0.1 cm precision) with automatic two-pass re-measurement logs</span></li>
               <li><b className="mark-ok">✓</b><span>Non-destructive UI red bounding boxes and English reviewer translations on observed defects</span></li>
-              <li><b className="mark-ok">✓</b><span>Immutable versioned online report + matching downloadable PDF + post-report routing controls</span></li>
+              <li><b className="mark-ok">✓</b><span>Reviewed online inspection report (locked version history) + matching PDF + post-report routing controls</span></li>
             </ul>
           </div>
           <div className="pub-boundary-box excluded">
@@ -703,13 +703,13 @@ export function PublicServicesOverview() {
    ========================================================================== */
 const SERVICE_HERO_CONFIG = {
   inspection: {
-    eyebrow: "SERVICE DETAIL · PIECE-BY-PIECE INSPECTION",
+    eyebrow: "SERVICE DETAIL · INDIVIDUAL SAMPLE & SMALL-BATCH INSPECTION",
     title: "Product Inspection in China (1 to 100+ Items)",
-    lead: "Send single prototypes or small-batch apparel orders to our China receiving center. Every physical garment gets its own barcode ID, approved template measurements, workmanship check, and documented photo proof.",
+    lead: "Send 1–3 prototype samples for detailed evaluation or 10–100+ small-batch stock garments for piece-by-piece screening at our China receiving center. Every physical unit gets its own barcode ID, approved template measurements, workmanship check, and documented photo proof.",
     image: "/marketing/service-item-inspection.webp",
     imageAlt: "QCWarehouse inspector wearing white cotton gloves measuring a slate-blue cotton sweatshirt with a yellow metric tape and sample card",
     ratioClass: "",
-    idealFor: "Single pre-order samples, capsule drops (10–100 pcs), high-ASP garments where defective returns abroad destroy margin.",
+    idealFor: "Detailed sample checks (1–3 prototypes) and small-batch inventory screening (10–100+ pcs) before international shipping.",
     quantities: "1–100 items self-serve online · 101–300 items via manual staff capacity quote.",
     method: "Individual item check-in, unstrained flat-lay metric tape measurements (0.1 cm precision + two-pass re-checks), digital garment weight, and zone-by-zone visual workmanship scan.",
     distinction: "Unlike Sample Comparison, each item is evaluated individually rather than grouped into a 2–3 supplier comparison matrix.",
@@ -729,7 +729,7 @@ const SERVICE_HERO_CONFIG = {
   reference_match: {
     eyebrow: "SERVICE DETAIL · BENCHMARK CONSISTENCY",
     title: "Golden Sample & Reference Matching in China",
-    lead: "Keep your approved Golden Sample sealed in QCWarehouse’s protected reference storage and benchmark new pre-production or reorder samples directly against your physical standard.",
+    lead: "Keep your approved Golden Sample sealed in QCWarehouse’s secure reference sample storage and benchmark new pre-production or reorder samples directly against your physical standard.",
     image: "/marketing/service-golden-matching.webp",
     imageAlt: "Side-by-side comparison showing an approved navy Golden Sample beside a sealed clear storage sleeve and an incoming production sample",
     ratioClass: "",
@@ -834,7 +834,7 @@ export function PublicServiceDetail({
           <div style={{ borderTop: "1px solid #e6edf6", paddingTop: 16, marginTop: 4, display: "grid", gap: 12 }}>
             <p className="pub-eyebrow" style={{ marginBottom: 0 }}>
               {serviceCode === "reference_match"
-                ? "SEALED VAULT CUSTODY & RESEALING"
+                ? "SECURE REFERENCE SAMPLE STORAGE & RESEALING"
                 : "DELIVERABLES & POST-REPORT ROUTING"}
             </p>
             {serviceCode === "reference_match" ? (
@@ -842,14 +842,14 @@ export function PublicServiceDetail({
                 <figure className="pub-photo-box ratio-3-2">
                   <img
                     src="/marketing/service-reference-storage.webp"
-                    alt="Tamper-sealed Golden Sample stored in a barcoded grey reference custody bin on the QCWarehouse bench"
+                    alt="Dedicated lockable steel reference sample storage cabinet with tamper-sealed clear garment sleeves and white-gloved custody handling"
                     width={1200}
                     height={900}
                     loading="eager"
                   />
                 </figure>
                 <p className="small" style={{ margin: 0, color: "#42566e", lineHeight: 1.55 }}>
-                  Approved Golden Samples stay sealed inside barcoded sleeves and dedicated custody bins (30 days complimentary storage; $5.00 / 30-day renewal). After each comparison, the reference unit is resealed and logged back into storage.
+                  Approved Golden Samples stay sealed inside tamper-evident protective sleeves in our lockable reference sample storage cabinet (30 days complimentary storage; $5.00 / 30-day renewal). After each comparison, the reference unit is resealed and logged back into storage.
                 </p>
               </>
             ) : (
@@ -1061,7 +1061,7 @@ export function PublicCategories() {
       checks: "Key workmanship zones, flat width, size/care label check & mandatory overview photos",
       image: "/marketing/category-general-apparel.webp",
       imageAlt:
-        "Apparel inspection workbench with everyday slate-navy and oatmeal garments, measurement clipboard, care labels, L-square ruler, and measuring tape",
+        "Overhead flat-lay of general apparel including a sage-green woven dress, oatmeal midi skirt, and slate-navy lightweight jacket beside a yellow metric tape and L-square ruler",
       diagramId: null,
       offer: generalOffer,
     },
@@ -1318,7 +1318,7 @@ const JOURNEY_STEPS: JourneyStep[] = [
     owner: "Direct Supplier Dispatch",
     title: "Buy Directly from Suppliers & Ship Domestic Parcels",
     youDo: "Order from 1688, Alibaba, or direct factories and paste your personal code into the recipient block, then enter tracking numbers.",
-    weDo: "Accept separate domestic parcels from one or multiple Chinese sellers with zero purchasing commissions.",
+    weDo: "Accept separate domestic parcels from one or multiple Chinese sellers—we don't source or sell products.",
     outcome: "Every incoming parcel tracking number pre-linked cleanly to your open order.",
     photo: "/marketing/scenes/hiw-02-supplier-dispatch.svg",
     photoAlt: "Clean schematic showing three domestic supplier parcels routed with personal buyer receiving code to the QCWarehouse intake facility",
@@ -1356,10 +1356,10 @@ const JOURNEY_STEPS: JourneyStep[] = [
   {
     num: "06",
     owner: "Independent QA Review",
-    title: "QA Verification & English Report Publication",
+    title: "QA Verification & Reviewed Inspection Report",
     youDo: "Receive instant workspace and email notification once the reviewed report version goes live.",
     weDo: "An independent QA reviewer verifies readings, checks defect coordinate boxes, translates bench notes into English, and locks the PDF.",
-    outcome: "Immutable versioned English web report and downloadable PDF ready for your buying decision.",
+    outcome: "Reviewed English inspection report (locked version) and downloadable PDF ready for your buying decision.",
     photo: "/marketing/workflow-qa-review-ui.webp",
     photoAlt: "Sanitized screenshot of the QCWarehouse QA review workbench verifying measurements, Chinese field notes, and English translations",
     uiCropTop: true,
@@ -1378,8 +1378,8 @@ const JOURNEY_STEPS: JourneyStep[] = [
 
 const OPERATIONAL_RULES = [
   {
-    title: "1. You purchase directly from sellers",
-    body: "We do not source suppliers, place orders on marketplaces, pay factories, or negotiate prices. Keeping QCWarehouse 100% independent ensures unbiased reporting.",
+    title: "1. Independent from your suppliers",
+    body: "We don't source or sell products, place orders on marketplaces, or pay factories. Staying independent from your suppliers ensures every report is objective.",
   },
   {
     title: "2. Multi-supplier & split shipments are welcome",
@@ -1728,7 +1728,7 @@ export function PublicPricing() {
             <p className="pub-eyebrow">TRANSPARENT COMMERCIAL PRICING · USD</p>
             <h1>How Much Will I Pay, What Is Included, and What Costs Extra?</h1>
             <p style={{ marginBottom: 18 }}>
-              QCWarehouse charges a clear, upfront fee for physical inspection or sample comparison—with zero subscription fees and zero supplier commissions. Post-inspection domestic courier shipping and extended storage are billed separately only when you request them.
+              QCWarehouse charges a clear, upfront fee for physical inspection or sample comparison—with zero subscription fees. Because we don&apos;t source or sell products, our findings stay independent from your suppliers. Post-inspection domestic courier shipping and extended storage are billed separately only when you request them.
             </p>
             <div className="row flexwrap" style={{ gap: 10 }}>
               <Link className="button primary" href="/orders/new">
@@ -1854,7 +1854,7 @@ export function PublicPricing() {
       </div>
 
       {/* Interactive Server-Consistent Fee Calculator */}
-      <section className="pub-surface-box pub-block" id="calculator" aria-labelledby="calc-heading">
+      <section className="pub-surface-box pub-block" id="pricing-calculator" aria-labelledby="calc-heading">
         <div>
           <p className="pub-eyebrow">SERVER-CONSISTENT FEE ESTIMATOR</p>
           <h2 id="calc-heading" className="pub-h2">Estimate Your Exact Inspection Fee</h2>
@@ -2091,49 +2091,12 @@ export function PublicPricing() {
         </div>
       </section>
 
-      {/* Pricing & Billing FAQ */}
-      <section className="card pub-block" aria-labelledby="pricing-faq-heading">
-        <div className="card-head">
-          <div>
-            <p className="pub-eyebrow" style={{ marginBottom: 4 }}>PRICING &amp; BILLING FAQ</p>
-            <h2 id="pricing-faq-heading">Common Cost &amp; Quotation Questions</h2>
-          </div>
-          <Link className="button sm" href="/faq">Full Buyer FAQ →</Link>
-        </div>
-        <div className="faq-group">
-          <details className="faq-item" open>
-            <summary>Why are inspection fees charged separately from domestic shipping and extended storage?</summary>
-            <p>
-              Until physical items arrive, are weighed, and you decide whether to return defects to a supplier or forward stock to a freight forwarder, final carton weight and destination do not exist. Keeping fees separate avoids inflated flat shipping markups.
-            </p>
-          </details>
-          <details className="faq-item">
-            <summary>What does the “Pre-launch / Demo Rate” catalog notice mean?</summary>
-            <p>
-              Displayed prices read live from the current catalog schedule carrying pre-launch / demo pricing flags. Whenever you place an order, QCWarehouse locks your verified service quote before Stripe checkout so fees never surprise you.
-            </p>
-          </details>
-          <details className="faq-item">
-            <summary>When should I choose a 2- or 3-item comparison package vs. individual inspection?</summary>
-            <p>
-              Use <strong>Sample Comparison</strong> when comparing 2 or 3 comparable candidate items from shortlisted suppliers in one unified matrix. Choose <strong>Product Inspection</strong> when checking a single unit or 4–100+ stock garments individually.
-            </p>
-          </details>
-          <details className="faq-item">
-            <summary>How are orders of 101–300 items billed?</summary>
-            <p>
-              Draft orders between 101 and 300 units save without payment first so our operations desk can confirm bench capacity and issue a manual quote before you pay.
-            </p>
-          </details>
-        </div>
-      </section>
-
-      {/* Collapsible Technical Catalog Reference Table */}
-      <details className="card pub-block pub-schedule-drawer" id="full-schedule">
+      {/* 5. Detailed Active Packages (Complete Template Schedule) */}
+      <details className="card pub-block pub-schedule-drawer" id="full-schedule" open>
         <summary className="pub-schedule-summary">
           <div>
             <span className="pub-eyebrow" style={{ marginBottom: 2 }}>COMPLETE TEMPLATE SCHEDULE</span>
-            <strong>View Published Package &amp; Template Rate Directory ({offers.length} active offers)</strong>
+            <strong>Published Package &amp; Template Rate Directory ({offers.length} active offers)</strong>
           </div>
           <span className="button sm">Toggle Rate Schedule</span>
         </summary>
@@ -2189,6 +2152,55 @@ export function PublicPricing() {
           </table>
         </div>
       </details>
+
+      {/* 6. Pricing & Billing FAQ */}
+      <section className="card pub-block" aria-labelledby="pricing-faq-heading">
+        <div className="card-head">
+          <div>
+            <p className="pub-eyebrow" style={{ marginBottom: 4 }}>PRICING &amp; BILLING FAQ</p>
+            <h2 id="pricing-faq-heading">Common Cost &amp; Quotation Questions</h2>
+          </div>
+          <Link className="button sm" href="/faq">Full Buyer FAQ →</Link>
+        </div>
+        <div className="faq-group">
+          <details className="faq-item" open>
+            <summary>Why are inspection fees charged separately from domestic shipping and extended storage?</summary>
+            <p>
+              Until physical items arrive, are weighed, and you decide whether to return defects to a supplier or forward stock to a freight forwarder, final carton weight and destination do not exist. Keeping fees separate avoids inflated flat shipping markups.
+            </p>
+          </details>
+          <details className="faq-item">
+            <summary>How does pricing work for 1–3 prototype samples vs. 10–100 small-batch stock items?</summary>
+            <p>
+              Under the current active catalog, <strong>Product Inspection</strong> bills per physical item from 1 to 100 units online ({summarizeRate(inspOffers, "/ item")}) using the same approved template checklist. If you are comparing 2 or 3 candidate supplier prototypes side by side in one unified matrix, choose <strong>Sample Comparison</strong> ({summarizeRate(compOffers, "/ group")}). For 30–100+ unit stock batches requiring customized screening checkpoints, contact our team for a tailored batch scope.
+            </p>
+          </details>
+          <details className="faq-item">
+            <summary>What does the “Pre-launch / Demo Rate” catalog notice mean?</summary>
+            <p>
+              Displayed prices read live from the current catalog schedule carrying pre-launch / demo pricing flags. Whenever you place an order, QCWarehouse locks your verified service quote before Stripe checkout so fees never surprise you.
+            </p>
+          </details>
+          <details className="faq-item">
+            <summary>How are orders of 101–300 items billed?</summary>
+            <p>
+              Draft orders between 101 and 300 units save without payment first so our operations desk can confirm bench capacity and issue a manual quote before you pay.
+            </p>
+          </details>
+        </div>
+      </section>
+
+      {/* 7. Final CTA Banner */}
+      <div className="pub-cta-banner">
+        <div>
+          <h2>Ready to Lock Your Inspection Quote or Estimate a Custom Batch?</h2>
+          <p>Select any active package above to configure your order online, or message our operations team if you are planning a multi-carton small-batch shipment.</p>
+        </div>
+        <div className="pub-cta-actions">
+          <Link className="button primary" href="/orders/new">Start an Inspection →</Link>
+          <Link className="button pub-btn-ghost" href="/contact?topic=quote">Request Custom Batch Quote</Link>
+        </div>
+      </div>
     </>
   );
 }

@@ -92,7 +92,7 @@ export function PublicHeader({accountHref,accountAction,staff,path="/",actor}:{
       <div className="public-top-inner">
         <div className="workspace-brand">
           <Brand/>
-          <span className="workspace-context">CHINA INSPECTION STUDIO</span>
+          <span className="workspace-context">INDEPENDENT PRODUCT INSPECTION IN CHINA</span>
         </div>
         <nav className="public-nav" aria-label="Primary">
           {publicNavLinks.map(([href,label])=>(
@@ -157,10 +157,10 @@ export function PublicFooter() {
         <div className="public-footer-brand">
           <Brand/>
           <p className="public-footer-lead">
-            China-based independent product inspection, supplier sample comparison, and post-inspection item handling for international e-commerce brands and small-batch buyers.
+            Independent product inspection in China, supplier sample comparison, and post-inspection item routing for international e-commerce brands and small-batch buyers.
           </p>
           <p className="public-footer-boundary">
-            <strong>Service scope:</strong> QCWarehouse inspects and photographs physical samples at our China facility before international dispatch. Supplier sourcing, factory AQL audits, and laboratory certification sit outside our scope.
+            <strong>Service scope:</strong> QCWarehouse inspects and photographs physical samples at our China facility before international dispatch. We don&apos;t source or sell products, and factory AQL audits or laboratory certifications sit outside our scope.
           </p>
         </div>
         <div className="public-footer-col">
@@ -196,7 +196,7 @@ export function PublicFooter() {
         </div>
       </div>
       <div className="public-footer-bottom">
-        <span>© {new Date().getFullYear()} QCWarehouse · Independent Receiving-Center Inspection in China</span>
+        <span>© {new Date().getFullYear()} QCWarehouse · Independent Product Inspection in China</span>
         <div className="public-footer-meta">
           <Link href="/legal">All Policies</Link>
           <span aria-hidden="true">·</span>
@@ -211,7 +211,7 @@ export function PublicFooter() {
 
 export function SiteFooter() {
   return <footer className="site-footer">
-    <div><strong>QCWarehouse</strong> · Independent Product Inspection &amp; Sample Comparison in China</div>
+    <div><strong>QCWarehouse</strong> · Independent Product Inspection in China</div>
     <nav aria-label="Footer">
       <Link href="/faq">FAQ</Link>
       <Link href="/contact">Contact</Link>

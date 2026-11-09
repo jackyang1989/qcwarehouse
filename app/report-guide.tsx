@@ -265,7 +265,7 @@ const MEASUREMENT_ROWS = [
   },
 ] as const;
 
-const PHOTO_EVIDENCE: LightboxItem[] = [
+const ORIGINAL_PHOTO_EVIDENCE: LightboxItem[] = [
   {
     code: "FRM-01 · FRONT OVERVIEW",
     title: "S-8H2K4A · Front Overview (Heather-Gray Crewneck, Size L)",
@@ -294,15 +294,16 @@ const PHOTO_EVIDENCE: LightboxItem[] = [
     alt: "Overhead studio photo showing a yellow metric tape measuring front body length vertically (72.0 cm) from high point shoulder to bottom hem on Sample A heather-gray cotton crewneck T-shirt",
     caption: "Vertical tape proof (72.0 cm) from High Point Shoulder (HPS) to bottom hem edge captured under the identical gray tee setup.",
   },
-  {
-    code: "FRM-05 · GROUP OVERHEAD (A / B / C)",
-    title: "Side-by-Side Comparison Frame (Samples A, B & C)",
-    src: "/marketing/report-three-samples-comparison.webp",
-    alt: "Synchronized overhead studio comparison of three heather-gray crewneck T-shirt samples (Samples A, B, and C) laid side by side on a calibrated table",
-    caption: "Synchronized single-frame overhead comparison grouping all three candidate samples on one bench for direct visual comparison.",
-    span2: true,
-  },
 ];
+
+const COMPARISON_GROUP_FRAME: LightboxItem = {
+  code: "FRM-05 · GROUP OVERHEAD (A / B / C)",
+  title: "Side-by-Side Comparison Frame (Samples A, B & C)",
+  src: "/marketing/report-three-samples-comparison.webp",
+  alt: "Synchronized overhead studio comparison of three heather-gray crewneck T-shirt samples (Samples A, B, and C) laid side by side on a calibrated table",
+  caption: "Synchronized single-frame overhead comparison grouping all three candidate samples on one bench for direct visual comparison.",
+  span2: true,
+};
 
 export function ReportGuide() {
   const [showAnnotations, setShowAnnotations] = useState(true);
@@ -357,7 +358,7 @@ export function ReportGuide() {
             </div>
             <div className="pub-meta-cell">
               <span>Report Snapshot</span>
-              <strong>RPT-10482 · Immutable v2</strong>
+              <strong>RPT-10482 · Reviewed v2</strong>
             </div>
             <div className="pub-meta-cell">
               <span>Samples Compared</span>
@@ -382,11 +383,11 @@ export function ReportGuide() {
         <header className="pub-report-banner">
           <div>
             <div className="pub-eyebrow" style={{ color: "#93b8ff", marginBottom: 4 }}>
-              QCWAREHOUSE · INDEPENDENT RECEIVING-CENTER REPORT
+              QCWAREHOUSE · INDEPENDENT PRODUCT INSPECTION IN CHINA
             </div>
             <h2>Apparel Sample Comparison &amp; Workmanship Report</h2>
             <p>
-              Report <span className="code">RPT-10482</span> · Published Version <span className="code">v2</span> · Order <span className="code">QW-10482</span> · Category: <strong>Apparel / Tops &amp; Knitwear</strong>
+              Report <span className="code">RPT-10482</span> · Reviewed Version <span className="code">v2</span> · Order <span className="code">QW-10482</span> · Category: <strong>Apparel / Tops &amp; Knitwear</strong>
             </p>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -471,9 +472,43 @@ export function ReportGuide() {
           </div>
         </section>
 
-        {/* 4. Measurement Comparison & Re-measurement Traceability */}
+        {/* 4. Original Photo Evidence */}
+        <section className="pub-report-section" id="photo-evidence">
+          <div className="row between flexwrap">
+            <div>
+              <p className="pub-eyebrow">04 · ORIGINAL PHOTO EVIDENCE</p>
+              <h3>Mandatory Angle &amp; Tape-in-Frame Documentation</h3>
+            </div>
+            <span className="small muted no-print">Click any frame to inspect full-resolution details</span>
+          </div>
+          <div className="pub-evidence-gallery">
+            {ORIGINAL_PHOTO_EVIDENCE.map((item) => (
+              <figure className={`pub-evidence-card${item.span2 ? " span-2" : ""}`} key={item.code}>
+                <button
+                  type="button"
+                  className="pub-zoom-trigger"
+                  onClick={() => setLightbox(item)}
+                  aria-label={`Inspect ${item.title}`}
+                >
+                  <div className="pub-evidence-frame">
+                    <img src={item.src} alt={item.alt} width={1200} height={900} loading="eager" />
+                  </div>
+                </button>
+                <figcaption>
+                  <div>
+                    <span className="code" style={{ fontSize: 11, color: "#1f56c8", fontWeight: 700 }}>{item.code}</span>
+                    <strong>{item.title}</strong>
+                    <span>{item.caption}</span>
+                  </div>
+                </figcaption>
+              </figure>
+            ))}
+          </div>
+        </section>
+
+        {/* 5. Measurement Comparison & Re-measurement Traceability */}
         <section className="pub-report-section" id="measurement-comparison">
-          <p className="pub-eyebrow">04 · MEASUREMENT COMPARISON &amp; RE-MEASUREMENT LOG</p>
+          <p className="pub-eyebrow">05 · MEASUREMENT COMPARISON &amp; RE-MEASUREMENT LOG</p>
           <h3>Side-by-Side Flat Measurements &amp; Two-Pass Verification</h3>
           <p className="small muted" style={{ marginBottom: 12 }}>
             When an observed measurement deviates beyond the buyer’s supplied tolerance or shows inter-pass variance above 0.3 cm, QCWarehouse’s workbench requires a second independent tape reading and logs both raw readings in the published snapshot.
@@ -511,45 +546,70 @@ export function ReportGuide() {
           </div>
         </section>
 
-        {/* 5. Original Photo Evidence */}
-        <section className="pub-report-section" id="photo-evidence">
-          <div className="row between flexwrap">
-            <div>
-              <p className="pub-eyebrow">05 · ORIGINAL PHOTO EVIDENCE</p>
-              <h3>Mandatory Angle &amp; Tape-in-Frame Documentation</h3>
-            </div>
-            <span className="small muted no-print">Click any frame to inspect full-resolution details</span>
+        {/* 6. Side-by-Side Comparison & Golden Sample Matching */}
+        <section className="pub-report-section" id="side-by-side-comparison">
+          <p className="pub-eyebrow">06 · SIDE-BY-SIDE &amp; GOLDEN SAMPLE COMPARISON</p>
+          <h3>Synchronized Multi-Sample Overhead &amp; Golden Sample Benchmark</h3>
+          <div className="pub-evidence-gallery" style={{ marginTop: 12, marginBottom: 18 }}>
+            <figure className="pub-evidence-card span-2">
+              <button
+                type="button"
+                className="pub-zoom-trigger"
+                onClick={() => setLightbox(COMPARISON_GROUP_FRAME)}
+                aria-label={`Inspect ${COMPARISON_GROUP_FRAME.title}`}
+              >
+                <div className="pub-evidence-frame">
+                  <img
+                    src={COMPARISON_GROUP_FRAME.src}
+                    alt={COMPARISON_GROUP_FRAME.alt}
+                    width={1200}
+                    height={900}
+                    loading="eager"
+                  />
+                </div>
+              </button>
+              <figcaption>
+                <div>
+                  <span className="code" style={{ fontSize: 11, color: "#1f56c8", fontWeight: 700 }}>{COMPARISON_GROUP_FRAME.code}</span>
+                  <strong>{COMPARISON_GROUP_FRAME.title}</strong>
+                  <span>{COMPARISON_GROUP_FRAME.caption}</span>
+                </div>
+              </figcaption>
+            </figure>
           </div>
-          <div className="pub-evidence-gallery">
-            {PHOTO_EVIDENCE.map((item) => (
-              <figure className={`pub-evidence-card${item.span2 ? " span-2" : ""}`} key={item.code}>
-                <button
-                  type="button"
-                  className="pub-zoom-trigger"
-                  onClick={() => setLightbox(item)}
-                  aria-label={`Inspect ${item.title}`}
-                >
-                  <div className="pub-evidence-frame">
-                    <img src={item.src} alt={item.alt} width={1200} height={900} loading="eager" />
-                  </div>
-                </button>
-                <figcaption>
-                  <div>
-                    <span className="code" style={{ fontSize: 11, color: "#1f56c8", fontWeight: 700 }}>{item.code}</span>
-                    <strong>{item.title}</strong>
-                    <span>{item.caption}</span>
-                  </div>
-                </figcaption>
-              </figure>
-            ))}
+
+          <div className="pub-service-detail" id="golden-sample-comparison" style={{ margin: 0, padding: 20, background: "#f8fafd" }}>
+            <div>
+              <p className="pub-eyebrow" style={{ marginBottom: 4 }}>FOLLOW-ON BENCHMARK WORKFLOW</p>
+              <h4 style={{ fontSize: "1.06rem", color: "#0f213a", margin: "0 0 8px" }}>
+                How Approved Samples Become Your Retained Reference Benchmark
+              </h4>
+              <p style={{ color: "#22364f", fontSize: 13.5, lineHeight: 1.6, margin: 0 }}>
+                After reviewing a comparison or inspection report, you can instruct QCWarehouse to seal an approved item (for example, <span className="code">S-8H2K4A</span>) inside secure reference sample storage. When your supplier ships a restock or pre-production piece weeks later, you order <strong>Golden Sample Matching</strong> so our inspector lays the sealed reference next to the incoming garment (<span className="code">S-9K3M7A</span>) and records any dimensional or shade drift.
+              </p>
+              <div className="row flexwrap no-print" style={{ gap: 8, marginTop: 12 }}>
+                <Link className="button sm" href="/services/reference">
+                  Explore Golden Sample Matching →
+                </Link>
+              </div>
+            </div>
+            <figure className="pub-photo-box">
+              <img
+                src="/marketing/report-reference-followup.webp"
+                alt="Approved heather-gray Golden Sample T-shirt in a sealed protective bag beside an incoming restock T-shirt"
+                width={1200}
+                height={900}
+                loading="eager"
+              />
+            </figure>
           </div>
         </section>
 
-        {/* 6. Defect Annotations */}
+        {/* 7. Defect Annotations */}
         <section className="pub-report-section" id="defect-annotations">
           <div className="row between flexwrap">
             <div>
-              <p className="pub-eyebrow">06 · DEFECT ANNOTATIONS (INTERACTIVE SCHEMA PREVIEW)</p>
+              <p className="pub-eyebrow">07 · DEFECT ANNOTATIONS (INTERACTIVE SCHEMA PREVIEW)</p>
               <h3>Illustrative Workmanship &amp; Surface Callout Format</h3>
               <p className="small muted" style={{ margin: 0 }}>
                 Raw inspection photos remain unaltered in storage; reviewer-verified bounding coordinates and English defect labels render non-destructively in the UI layer. Entries below illustrate data schema only.
@@ -690,33 +750,6 @@ export function ReportGuide() {
           </div>
         </section>
 
-        {/* 7. Golden Sample Comparison Excerpt */}
-        <section className="pub-report-section" id="golden-sample-comparison">
-          <p className="pub-eyebrow">07 · GOLDEN SAMPLE MATCHING (FOLLOW-ON WORKFLOW)</p>
-          <h3>How Approved Samples Become Your Retained Reference Benchmark</h3>
-          <div className="pub-service-detail" style={{ margin: "14px 0 0", padding: 20, background: "#f8fafd" }}>
-            <div>
-              <p style={{ color: "#22364f", fontSize: 13.5, lineHeight: 1.6 }}>
-                After reviewing a comparison or inspection report, you can instruct QCWarehouse to seal an approved item (for example, <span className="code">S-8H2K4A</span>) inside dedicated tamper-sealed reference storage. When your supplier ships a restock or pre-production piece weeks later, you order <strong>Golden Sample Matching</strong> so our inspector lays the sealed reference next to the incoming garment (<span className="code">S-9K3M7A</span>) and records any dimensional or shade drift.
-              </p>
-              <div className="row flexwrap no-print" style={{ gap: 8, marginTop: 12 }}>
-                <Link className="button sm" href="/services/reference">
-                  Explore Golden Sample Matching →
-                </Link>
-              </div>
-            </div>
-            <figure className="pub-photo-box">
-              <img
-                src="/marketing/report-reference-followup.webp"
-                alt="Approved heather-gray Golden Sample T-shirt in a sealed protective bag beside an incoming restock T-shirt"
-                width={1200}
-                height={900}
-                loading="eager"
-              />
-            </figure>
-          </div>
-        </section>
-
         {/* 8. Findings, Buyer Routing & Limitations */}
         <section className="pub-report-section" id="findings-limitations">
           <p className="pub-eyebrow">08 · FINDINGS, ITEM ROUTING &amp; LIMITATIONS</p>
@@ -734,7 +767,7 @@ export function ReportGuide() {
                 <tr>
                   <td className="mono"><strong>S-8H2K4A</strong></td>
                   <td>Measurements within target tolerance; 238 g garment mass; clean seams.</td>
-                  <td><span className="tag green">Convert to Golden Sample</span> · Sealed into protected reference storage (<span className="code">REF-A03-14</span>).</td>
+                  <td><span className="tag green">Convert to Golden Sample</span> · Sealed into secure reference sample storage (<span className="code">REF-A03-14</span>).</td>
                 </tr>
                 <tr>
                   <td className="mono"><strong>S-8H2K4B</strong></td>
@@ -754,14 +787,14 @@ export function ReportGuide() {
           </p>
         </section>
 
-        {/* 9. Report Version & Review Information */}
+        {/* 9. Report Version & PDF Export */}
         <section className="pub-report-section" id="version-history">
-          <p className="pub-eyebrow">09 · REPORT VERSION &amp; IMMUTABILITY RECORD</p>
-          <h3>Published Revision Audit Trail</h3>
+          <p className="pub-eyebrow">09 · REPORT VERSION, IMMUTABILITY &amp; PDF EXPORT</p>
+          <h3>Published Revision Audit Trail &amp; Printable PDF</h3>
           <div className="grid cols3" style={{ marginTop: 12 }}>
             <div className="def">
               <dt>Published Snapshot</dt>
-              <dd>Version 2 · Locked &amp; Immutable</dd>
+              <dd>Version 2 · Reviewed &amp; Locked</dd>
             </div>
             <div className="def">
               <dt>Bench &amp; QA Sign-Off</dt>
@@ -772,17 +805,15 @@ export function ReportGuide() {
               <dd>Added Sample B seam macro translation</dd>
             </div>
           </div>
-          <div className="line-note success" style={{ marginTop: 12, marginBottom: 0 }}>
-            Every published report version in QCWarehouse is stored as an immutable snapshot—online views and downloaded PDFs always render the exact same verified measurements, defect coordinates, and revision history without silent edits.
+          <div className="line-note success" style={{ marginTop: 12, marginBottom: 16 }}>
+            Every reviewed inspection report version in QCWarehouse is locked as a permanent snapshot—online views and downloaded PDFs always render the exact same verified measurements, defect coordinates, and revision history without silent edits.
           </div>
-        </section>
 
-        {/* 10. Sample PDF Preview / Conversion Action */}
-        <section className="pub-report-section no-print" id="pdf-download" style={{ background: "#f8fafd" }}>
-          <div className="row between flexwrap" style={{ gap: 16 }}>
+          <div className="row between flexwrap no-print" id="pdf-download" style={{ gap: 16, padding: 18, background: "#f8fafd", borderRadius: 12, border: "1px solid #e2ebf5" }}>
             <div>
-              <p className="pub-eyebrow" style={{ marginBottom: 4 }}>10 · SAMPLE PDF &amp; NEXT STEP</p>
-              <h3 style={{ marginBottom: 4 }}>Save a Print/PDF Copy or Commission Your Own Inspection</h3>
+              <strong style={{ display: "block", fontSize: 15, color: "#102038", marginBottom: 4 }}>
+                Save a Print/PDF Copy or Commission Your Own Inspection
+              </strong>
               <p className="small muted" style={{ margin: 0 }}>
                 Real customer orders include one-click server-generated PDF downloads and optional revocable read-only share links for suppliers.
               </p>

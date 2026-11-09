@@ -30,7 +30,7 @@ const FAQ_CATEGORIES: FaqCategory[] = [
         id: "sourcing",
         question: "Are you a sourcing or purchasing agent?",
         answer:
-          "No. You purchase merchandise directly from your suppliers. QCWarehouse does not source factories, pay sellers, or negotiate merchandise prices—remaining independent ensures our inspection reports stay objective.",
+          "No. You purchase merchandise directly from your suppliers. We don't source or sell products, pay sellers, or negotiate merchandise prices—staying independent from your suppliers ensures our inspection reports remain objective.",
       },
       {
         id: "receiving-address",
@@ -70,15 +70,15 @@ const FAQ_CATEGORIES: FaqCategory[] = [
       },
       {
         id: "piece-by-piece-batch",
-        question: "Can you inspect 30 or 50 items individually?",
+        question: "Can you inspect 30 or 50 items individually, and how does that differ from a 1–3 item sample check?",
         answer:
-          "Yes. Standard Product Inspection supports 1 to 100 items self-serve online, checking every single unit piece by piece with its own barcode ID and defect log. Orders of 101 to 300 items are supported via a manual staff capacity quote.",
+          "Yes. Standard Product Inspection supports 1 to 100 items self-serve online, assigning every single unit its own barcode ID, measurements, and defect log—whether you are evaluating 1–3 prototype samples in detail or screening 10–100 small-batch stock garments before export. Orders of 101 to 300 items are supported via a manual staff capacity quote.",
       },
       {
         id: "golden-sample",
         question: "Can you compare new items with my approved sample?",
         answer:
-          "Yes—through Golden Sample / Reference Matching. After an item has been inspected in QCWarehouse, you can request its conversion into a Golden Sample; our staff seals it inside dedicated tamper-sealed reference storage. Future incoming samples can then be ordered under Reference Matching for direct physical side-by-side comparison.",
+          "Yes—through Golden Sample / Reference Matching. After an item has been inspected in QCWarehouse, you can request its conversion into a Golden Sample; our staff seals it inside secure reference sample storage. Future incoming samples can then be ordered under Reference Matching for direct physical side-by-side comparison.",
       },
       {
         id: "measurements",
@@ -114,7 +114,7 @@ const FAQ_CATEGORIES: FaqCategory[] = [
         id: "fee-included",
         question: "What is included in the inspection fee?",
         answer:
-          "The inspection or comparison fee covers parcel arrival check-in, individual barcode tagging, execution of all checkpoints in the selected template, mandatory overview/measurement/defect photography, independent QA review, versioned English report + PDF, and the initial post-report decision custody window. Outbound domestic postage and extended storage are separate.",
+          "The inspection or comparison fee covers parcel arrival check-in, individual barcode tagging, execution of all checkpoints in the selected template, mandatory overview/measurement/defect photography, independent QA review, a reviewed English inspection report + PDF, and the initial post-report decision custody window. Outbound domestic postage and extended storage are separate.",
       },
       {
         id: "turnaround",

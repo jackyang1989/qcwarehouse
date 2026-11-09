@@ -51,12 +51,12 @@ const TRUST_CAPABILITIES = [
   ],
   [
     "scan",
-    "1 to 100+ Items Individually",
-    "Inspect single supplier samples or check small-batch inventory piece by piece.",
+    "Individual Sample & Small-Batch Inspection",
+    "Inspect 1–3 prototype samples in detail or screen 10–100+ small-batch items piece by piece.",
   ],
   [
     "reports",
-    "Photo & Tape-Measure Proof",
+    "Measurements, Photos & Documented Findings",
     "Flat-lay measurements, seam details, and defect bounding boxes linked to item IDs.",
   ],
   [
@@ -88,7 +88,7 @@ const BUYER_SCENARIOS: BuyerScenario[] = [
   {
     tag: "Small-Batch QC",
     title: "Inspect small-batch orders item by item",
-    body: "Traditional factory AQL agencies rarely visit for 15, 40, or 80 garments. Send small-batch stock to our studio so every individual unit gets its own ID, checklist, and defect log.",
+    body: "Traditional factory AQL agencies rarely visit for 15, 30, or 80 garments. Whether you need a detailed check on 1–3 prototype samples or piece-by-piece screening across 10–100+ stock items, every unit gets its own ID, checklist, and defect log.",
     wide: false,
     image: "/marketing/home-small-batch-inspection.webp",
     imageAlt:
@@ -97,7 +97,7 @@ const BUYER_SCENARIOS: BuyerScenario[] = [
   {
     tag: "Restock Consistency",
     title: "Match new items against approved reference samples",
-    body: "Seal an approved Golden Sample at QCWarehouse and benchmark future pre-production or restock units directly against your physical standard to catch silent fabric or sizing drift.",
+    body: "Keep an approved Golden Sample in secure reference sample storage at QCWarehouse and benchmark future pre-production or restock units directly against your physical standard to catch silent fabric or sizing drift.",
     wide: false,
     image: "/marketing/home-reference-comparison.webp",
     imageAlt:
@@ -176,13 +176,13 @@ export default async function Home() {
       href: "/services/inspection",
       orderHref: primaryInspOffer ? `/orders/new?offer=${primaryInspOffer.offer_id}` : "/orders/new",
       whatItIs:
-        "Piece-by-piece physical inspection at our China receiving center—from a single prototype sample up to dozens of small-batch units.",
+        "Individual sample inspection (1–3 items) and small-batch piece-by-piece checks (10–100+ items) at our China receiving center.",
       whoItsFor:
-        "Shopify & TikTok Shop brands, boutique retailers, and private-label buyers ordering small runs or stock lots.",
+        "Shopify & TikTok Shop brands, boutique retailers, and private-label buyers verifying prototype samples or screening small-batch stock lots.",
       whatWeCheck:
         "Visible workmanship across defined garment zones, flat-lay metric tape measurements (with two-pass re-checks), garment weight, and label details per approved template.",
       whatYouReceive:
-        "Per-item traceable IDs, mandatory angle & tape-in-frame photos, coordinate-boxed defect notes, and an immutable English report + PDF.",
+        "Per-item traceable IDs, mandatory angle & tape-in-frame photos, coordinate-boxed defect notes, and a reviewed inspection report + PDF.",
     },
     {
       icon: "compare",
@@ -212,7 +212,7 @@ export default async function Home() {
       whatWeCheck:
         "Side-by-side dimensional variance, visual shade & rib alignment, seam construction consistency, and weight difference against your retained reference.",
       whatYouReceive:
-        "Paired Reference-vs-Incoming photos, exact dimensional variance records, and protected resealing of your Golden Sample in dedicated reference storage.",
+        "Paired Reference-vs-Incoming photos, exact dimensional variance records, and protected resealing of your Golden Sample in secure reference sample storage.",
     },
   ] as const;
 
@@ -239,11 +239,11 @@ export default async function Home() {
           </div>
           <div className="pub-hero-inner">
             <p className="pub-hero-kicker">
-              Product Inspection &amp; Sample Comparison in China
+              Independent Product Inspection in China
             </p>
             <h1 id="home-title">Inspect Before You Ship from China.</h1>
             <p className="pub-hero-sub">
-              We inspect and compare supplier samples, check small-batch orders item by item, and document quality issues with photos and measurements at our China receiving center. After inspection, choose which items to return, store, or forward.
+              Know what arrived, what was checked, and what to do next — before paying for international shipping. We inspect supplier samples, check small-batch orders item by item, and document quality issues with measurements and photos so you can decide which items to return, store, or forward.
             </p>
             <div className="pub-hero-actions">
               <Link className="button primary" href="/orders/new">
@@ -254,9 +254,9 @@ export default async function Home() {
               </Link>
             </div>
             <ul className="pub-hero-facts">
-              <li><span aria-hidden="true">✓</span>Piece-by-piece checks (1 to 100+ items)</li>
+              <li><span aria-hidden="true">✓</span>Individual sample &amp; small-batch inspection</li>
               <li><span aria-hidden="true">✓</span>2–3 supplier sample comparison</li>
-              <li><span aria-hidden="true">✓</span>Tape-measure &amp; defect photo proof</li>
+              <li><span aria-hidden="true">✓</span>Measurements, photos &amp; documented findings</li>
               <li><span aria-hidden="true">✓</span>Per-item return, storage, or forwarding</li>
             </ul>
           </div>
@@ -287,7 +287,7 @@ export default async function Home() {
                 <p className="pub-eyebrow">BUILT FOR OVERSEAS E-COMMERCE &amp; SMALL-BATCH BUYERS</p>
                 <h2 id="home-scenarios">What We Help You Do Before Goods Leave China</h2>
                 <p className="pub-lead">
-                  QCWarehouse is an independent receiving-center inspection studio—not a purchasing agent, 3PL warehouse, or factory-floor AQL firm. Send the items you buy from Chinese sellers and get actionable evidence on every piece.
+                  QCWarehouse is independent from your suppliers—we don&apos;t source or sell products, and we are not a 3PL warehouse or factory-floor AQL firm. Send the items you buy from Chinese sellers and get actionable evidence on every piece.
                 </p>
               </div>
               <Link className="button" href="/how-it-works">

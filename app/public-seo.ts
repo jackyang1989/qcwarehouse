@@ -16,19 +16,19 @@ type RouteSeoConfig = {
 
 const PUBLIC_ROUTE_SEO: Record<string, RouteSeoConfig> = {
   "/": {
-    title: "Product Inspection & Sample Comparison in China | QCWarehouse",
+    title: "Independent Product Inspection in China | QCWarehouse",
     description:
-      "Independent China receiving-center product inspection, 2–3 supplier sample comparison, and Golden Sample matching for e-commerce brands and small-batch buyers. Inspect item by item before shipping internationally.",
+      "Know what arrived, what was checked, and what to do next — before paying for international shipping. Individual sample & small-batch inspection, 2–3 supplier sample comparison, and Golden Sample matching in China.",
     ogImage: "/marketing/home-inspection-studio.webp",
   },
   "/catalog": {
-    title: "Inspection Services in China — Piece-by-Piece, Comparison & Reference",
+    title: "Inspection Services in China — Individual Sample, Small-Batch & Comparison",
     description:
-      "Compare QCWarehouse services in China: piece-by-piece Product Inspection (1–100+ items), side-by-side Sample Comparison (2–3 items), and Golden Sample Matching with photo and measurement evidence.",
+      "Compare QCWarehouse services in China: individual sample & small-batch Product Inspection (1–100+ items), side-by-side Sample Comparison (2–3 items), and Golden Sample Matching with measurements, photos & documented findings.",
     ogImage: "/brand/inspection-hero.webp",
   },
   "/services/inspection": {
-    title: "Piece-by-Piece Product Inspection in China (1 to 100+ Items)",
+    title: "Product Inspection in China — Individual Sample & Small-Batch Inspection",
     description:
       "Individual physical product inspection at our China receiving center. Every item gets a unique traceable ID, flat-lay measurements with tape photos, workmanship checks, and per-item routing.",
     ogImage: "/marketing/service-item-inspection.webp",
@@ -42,7 +42,7 @@ const PUBLIC_ROUTE_SEO: Record<string, RouteSeoConfig> = {
   "/services/reference": {
     title: "Golden Sample & Reference Matching Service in China",
     description:
-      "Retain your approved Golden Sample in sealed storage in China and inspect new supplier samples or restock units directly against your physical benchmark.",
+      "Retain your approved Golden Sample in secure reference sample storage in China and inspect new supplier samples or restock units directly against your physical benchmark.",
     ogImage: "/marketing/service-golden-matching.webp",
   },
   "/categories": {
@@ -54,13 +54,13 @@ const PUBLIC_ROUTE_SEO: Record<string, RouteSeoConfig> = {
   "/how-it-works": {
     title: "How It Works — China Receiving, Item Inspection & Post-QC Routing",
     description:
-      "Step-by-step chain of custody from your Chinese supplier shipment to parcel check-in, piece-by-piece inspection, independent report review, and return, storage, or freight-forwarder dispatch.",
+      "Step-by-step chain of custody from your Chinese supplier shipment to parcel check-in, piece-by-piece inspection, reviewed inspection report, and return, storage, or freight-forwarder dispatch.",
     ogImage: "/marketing/workflow-create-order-ui.webp",
   },
   "/report-guide": {
-    title: "Sample Inspection Report — Photos, Measurements & Defect Proof",
+    title: "Sample Inspection Report — Measurements, Photos & Documented Findings",
     description:
-      "Explore an interactive demonstration QCWarehouse inspection report featuring metric tape photos, re-measurement logs, UI defect bounding boxes, side-by-side sample comparison, and scope boundaries.",
+      "Explore an interactive demonstration QCWarehouse reviewed inspection report featuring metric tape photos, re-measurement logs, UI defect bounding boxes, side-by-side sample comparison, and scope boundaries.",
     ogImage: "/marketing/report-sample-a-chest-measure.webp",
   },
   "/pricing": {

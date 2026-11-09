@@ -62,46 +62,31 @@ function summarizeRate(pool: CatalogOffer[], suffix: string): string {
   return lo === hi ? `${usd(lo)} ${suffix}` : `${usd(lo)}–${usd(hi)} ${suffix}`;
 }
 
-function packageSummary(offer: CatalogOffer): { useCase: string; coreScope: string; billingBasis: string } {
+function packageSummary(offer: CatalogOffer): { coreScope: string; capacityBadge: string } {
   const sub = offer.content?.subcategory ?? "general";
   const checkCount = offer.content?.checks?.length ?? 0;
   if (offer.service === "compare") {
     const n = offer.rules.minimum;
-    const subText =
-      sub === "tops"
-        ? "T-shirts, hoodies, knitwear, and upper-body tops"
-        : sub === "bottoms"
-          ? "leggings, trousers, joggers, and shorts"
-          : "apparel styles";
     return {
-      useCase: `Side-by-side comparison of ${n} candidate supplier samples for ${subText}.`,
-      coreScope: `Synchronized group photo, ${checkCount}-point measurement delta table & workmanship notes`,
-      billingBasis: `Fixed ${n}-item comparison set · Est. ${offer.rules.business_days} business days`,
+      coreScope: `Synchronized group photo, ${checkCount}-point measurement delta table & workmanship comparison`,
+      capacityBadge: `${n}-item comparison set · ${offer.rules.business_days} business days`,
     };
   }
   if (offer.service === "reference_match") {
     return {
-      useCase: "Benchmark 1 incoming pre-production or restock sample against 1 sealed Golden Sample in your account.",
       coreScope: `Paired Reference-vs-Incoming photos, ${checkCount}-point dimensional & shade drift check`,
-      billingBasis: `Billed per incoming item match · Est. ${offer.rules.business_days} business days`,
+      capacityBadge: `1 incoming match · ${offer.rules.business_days} business days`,
     };
   }
-  const useCaseBySub: Record<string, string> = {
-    general: "Individual sample evaluation (1–3 pcs) or small-batch screening (10–100 pcs) for dresses, outerwear, and mixed apparel.",
-    tops: "Individual sample evaluation or small-batch screening (1–100 pcs) for T-shirts, hoodies, polos, sweaters, and knitwear.",
-    bottoms: "Individual sample evaluation or small-batch screening (1–100 pcs) for leggings, pants, denim, joggers, and shorts.",
-    sports_bra: "Individual sample evaluation or small-batch screening (1–100 pcs) for sports bras, crop tanks, and activewear tops.",
-  };
   const scopeBySub: Record<string, string> = {
-    general: `${checkCount} checkpoints · Flat width, workmanship, label check & mandatory angle photos`,
-    tops: `${checkCount} checkpoints · HPS length, 1/2 chest, shoulder, sleeve, collar rib & seam scan`,
-    bottoms: `${checkCount} checkpoints · Waist, hip, front/back rise, inseam, outseam, leg opening & gusset`,
-    sports_bra: `${checkCount} checkpoints · Underband, bust width, strap symmetry, lining/pad & seam scan`,
+    general: `${checkCount} checkpoints · Flat width, garment weight, label check, zone workmanship & mandatory angle photos`,
+    tops: `${checkCount} checkpoints · HPS length, 1/2 chest, shoulder, sleeve, collar rib, weight & seam scan`,
+    bottoms: `${checkCount} checkpoints · Waist, hip, front/back rise, inseam, outseam, leg opening & gusset scan`,
+    sports_bra: `${checkCount} checkpoints · Underband, bust width, strap symmetry, lining/pad & stretch seam scan`,
   };
   return {
-    useCase: useCaseBySub[sub] ?? useCaseBySub.general,
     coreScope: scopeBySub[sub] ?? `${checkCount} template checkpoints + mandatory studio photos`,
-    billingBasis: `Billed per physical item (1–${offer.rules.maximum} items online) · Est. ${offer.rules.business_days} business days`,
+    capacityBadge: `1–${offer.rules.maximum} items online · ${offer.rules.business_days} business days`,
   };
 }
 
@@ -109,13 +94,15 @@ function PackageCard({ offer }: { offer: CatalogOffer }) {
   const isUnit = offer.rules.unit_cents != null;
   const cents = offer.rules.unit_cents ?? offer.rules.package_cents ?? 0;
   const checks = offer.content?.checks ?? [];
-  const { useCase, coreScope, billingBasis } = packageSummary(offer);
+  const { coreScope, capacityBadge } = packageSummary(offer);
 
   return (
     <article className="pub-package-card">
       <div>
         <div className="row flexwrap" style={{ gap: 8, marginBottom: 6 }}>
           <span className="tag blue">{subcategoryLabel(offer.content?.subcategory)}</span>
+          <span className="tag">{capacityBadge}</span>
+          <span className="pub-sku-ref" title="Catalog SKU code">SKU: {offer.sku_code}</span>
           {offer.rules.demo && (
             <span className="tag yellow" title="Active pre-launch / demo catalog schedule">
               Pre-launch / Demo Rate
@@ -123,22 +110,16 @@ function PackageCard({ offer }: { offer: CatalogOffer }) {
           )}
         </div>
         <h3>{offer.title.en}</h3>
-        <p className="pub-package-usecase">{useCase}</p>
-        <div className="pub-package-meta">
-          <span className="pub-package-scope-pill">{coreScope}</span>
-          <span aria-hidden="true">·</span>
-          <span><strong>Billing:</strong> {billingBasis}</span>
-        </div>
+        <p className="pub-package-scope">{coreScope}</p>
         {checks.length > 0 && (
           <details className="pub-package-checks">
-            <summary>View {checks.length} detailed checkpoints</summary>
+            <summary>Inspect {checks.length} template checkpoints</summary>
             <div className="pub-chip-row">
               {checks.map((c) => (
                 <span className="pub-chip" key={c.key}>
                   {c.label}{c.unit ? ` (${c.unit})` : ""}
                 </span>
               ))}
-              <span className="pub-sku-ref" title="Catalog SKU code">SKU: {offer.sku_code}</span>
             </div>
           </details>
         )}
@@ -539,7 +520,7 @@ export function PublicServicesOverview() {
               </div>
               <div className="pub-meta-cell">
                 <span>Extended Storage Rate</span>
-                <strong>$0.25 / item / day ($7.50 per 30-day storage extension)</strong>
+                <strong>Quoted per item before renewal (active demo schedule: $0.25 / item / day)</strong>
               </div>
               <div className="pub-meta-cell">
                 <span>Chain of Custody</span>
@@ -887,7 +868,7 @@ export function PublicServiceDetail({
                   />
                 </figure>
                 <p className="small" style={{ margin: 0, color: "#42566e", lineHeight: 1.55 }}>
-                  Approved Golden Samples stay sealed inside tamper-evident protective sleeves in our lockable reference sample storage cabinet (90-day active Golden Sample retention window upon conversion; extended storage billed at $0.25 / item / day, i.e., $7.50 per 30 days). After each comparison, the reference unit is resealed and logged back into storage.
+                  Approved Golden Samples stay sealed inside tamper-evident protective sleeves in our lockable reference sample storage cabinet (90-day active Golden Sample retention window upon conversion; extensions are quoted per item from the active storage schedule before renewal). After each comparison, the reference unit is resealed and logged back into storage.
                 </p>
               </>
             ) : (

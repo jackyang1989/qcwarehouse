@@ -163,14 +163,13 @@ export default async function Home() {
       rate: inspRate,
       href: "/services/inspection",
       orderHref: primaryInspOffer ? `/orders/new?offer=${primaryInspOffer.offer_id}` : "/orders/new",
-      whatItIs:
-        "Individual sample inspection (1–3 items) and small-batch piece-by-piece checks (10–100+ items) at our China receiving center.",
-      whoItsFor:
-        "Shopify & TikTok Shop brands, boutique retailers, and private-label buyers verifying prototype samples or screening small-batch stock lots.",
-      whatWeCheck:
-        "Visible workmanship across defined garment zones, flat-lay metric tape measurements (with two-pass re-checks), garment weight, and label details per approved template.",
-      whatYouReceive:
-        "Per-item traceable IDs, mandatory angle & tape-in-frame photos, coordinate-boxed defect notes, and a reviewed inspection report + PDF.",
+      positioning:
+        "Piece-by-piece verification for prototype samples (1–3 pcs) and small-batch inventory (10–100+ pcs) at our China studio.",
+      highlights: [
+        "Unique barcode ID & mandatory angle photos per garment",
+        "0.1 cm flat-lay tape measurements with two-pass re-checks",
+        "Coordinate-boxed defect notes & English PDF report",
+      ],
     },
     {
       icon: "compare",
@@ -178,14 +177,13 @@ export default async function Home() {
       rate: compRate,
       href: "/services/compare",
       orderHref: primaryCompOffer ? `/orders/new?offer=${primaryCompOffer.offer_id}` : "/orders/new",
-      whatItIs:
-        "Side-by-side evaluation of 2 or 3 comparable samples from different Chinese suppliers or production batches under identical studio conditions.",
-      whoItsFor:
-        "Buyers shortlisting factories on 1688, Alibaba, or direct sourcing before committing to bulk deposits or private-label packaging.",
-      whatWeCheck:
-        "Uniform flat measurements at identical landmarks, garment weight comparison, stitching & trim differences, and single-frame group photography.",
-      whatYouReceive:
-        "A side-by-side measurement delta table, comparative overhead and detail photos, and objective observations so you choose the right supplier.",
+      positioning:
+        "Side-by-side evaluation of 2 or 3 comparable candidate samples from different suppliers under identical lighting.",
+      highlights: [
+        "Single-frame group photo & aligned detail shots",
+        "Unified measurement delta table across identical landmarks",
+        "Fabric weight, stitching & trim comparison before deposit",
+      ],
     },
     {
       icon: "packages",
@@ -193,14 +191,13 @@ export default async function Home() {
       rate: refRate,
       href: "/services/reference",
       orderHref: primaryRefOffer ? `/orders/new?offer=${primaryRefOffer.offer_id}` : "/orders/new",
-      whatItIs:
-        "Direct physical benchmark comparison of a newly arrived sample against an approved Golden Sample sealed in your QCWarehouse account.",
-      whoItsFor:
-        "Apparel brands reordering bestsellers or verifying pre-production samples against a previously signed-off prototype.",
-      whatWeCheck:
-        "Side-by-side dimensional variance, visual shade & rib alignment, seam construction consistency, and weight difference against your retained reference.",
-      whatYouReceive:
-        "Paired Reference-vs-Incoming photos, exact dimensional variance records, and protected resealing of your Golden Sample in secure reference sample storage.",
+      positioning:
+        "Physical benchmark verification of a new pre-production or restock piece against your sealed Golden Sample.",
+      highlights: [
+        "Paired Reference-vs-Incoming side-by-side studio photos",
+        "Point-by-point dimensional, weight & shade drift log",
+        "Tamper-evident resealing in our reference sample vault",
+      ],
     },
   ] as const;
 
@@ -339,24 +336,13 @@ export default async function Home() {
                       <span className="pub-price-chip">{svc.rate}</span>
                     </div>
 
-                    <dl className="pub-pillar-specs">
-                      <div>
-                        <dt>What it is</dt>
-                        <dd>{svc.whatItIs}</dd>
-                      </div>
-                      <div>
-                        <dt>Who it’s for</dt>
-                        <dd>{svc.whoItsFor}</dd>
-                      </div>
-                      <div>
-                        <dt>What we check</dt>
-                        <dd>{svc.whatWeCheck}</dd>
-                      </div>
-                      <div>
-                        <dt>What you receive</dt>
-                        <dd>{svc.whatYouReceive}</dd>
-                      </div>
-                    </dl>
+                    <p className="pub-pillar-positioning">{svc.positioning}</p>
+
+                    <ul className="pub-pillar-highlights">
+                      {svc.highlights.map((pt) => (
+                        <li key={pt}>{pt}</li>
+                      ))}
+                    </ul>
 
                     <div className="pub-pillar-foot">
                       <Link className="button sm" href={svc.href}>

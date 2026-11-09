@@ -511,7 +511,7 @@ export function PublicServicesOverview() {
               Secure Reference Sample Storage Between Reorders
             </h3>
             <p className="pub-lead" style={{ fontSize: 14, marginBottom: 14 }}>
-              After any inspection or comparison order, convert an approved unit into your retained Golden Sample. We seal it inside an individually barcoded protective bag in our lockable reference sample storage cabinet so future restock shipments are checked against the exact physical garment you signed off.
+              After any inspection or comparison order, convert an approved unit into your retained Golden Sample. We seal it inside an individually barcoded, tamper-evident protective garment bag in our dedicated reference sample archive room so future restock shipments are checked against the exact physical garment you signed off.
             </p>
             <div className="pub-meta-grid" style={{ margin: 0 }}>
               <div className="pub-meta-cell">
@@ -524,18 +524,18 @@ export function PublicServicesOverview() {
               </div>
               <div className="pub-meta-cell">
                 <span>Chain of Custody</span>
-                <strong>Tamper-evident seal + lockable reference cabinet tracking</strong>
+                <strong>Tamper-evident seal + dedicated archive rack &amp; bin tracking</strong>
               </div>
               <div className="pub-meta-cell">
                 <span>Post-Match Handling</span>
-                <strong>Automatically resealed &amp; returned to cabinet after each check</strong>
+                <strong>Automatically resealed &amp; returned to archive after each check</strong>
               </div>
             </div>
           </div>
           <figure className="pub-photo-box ratio-3-2">
             <img
               src="/marketing/service-reference-storage.webp"
-              alt="Dedicated lockable steel reference sample storage cabinet with tamper-sealed clear garment sleeves and white-gloved custody handling"
+              alt="QCWarehouse sample archivist in white cotton gloves logging a tamper-sealed Golden Sample inside the dedicated multi-tier garment reference sample archive room"
               width={1200}
               height={900}
               loading="eager"
@@ -861,14 +861,14 @@ export function PublicServiceDetail({
                 <figure className="pub-photo-box ratio-3-2">
                   <img
                     src="/marketing/service-reference-storage.webp"
-                    alt="Dedicated lockable steel reference sample storage cabinet with tamper-sealed clear garment sleeves and white-gloved custody handling"
+                    alt="QCWarehouse sample archivist in white cotton gloves logging a tamper-sealed Golden Sample inside the dedicated multi-tier garment reference sample archive room"
                     width={1200}
                     height={900}
                     loading="eager"
                   />
                 </figure>
                 <p className="small" style={{ margin: 0, color: "#42566e", lineHeight: 1.55 }}>
-                  Approved Golden Samples stay sealed inside tamper-evident protective sleeves in our lockable reference sample storage cabinet (90-day active Golden Sample retention window upon conversion; extensions are quoted per item from the active storage schedule before renewal). After each comparison, the reference unit is resealed and logged back into storage.
+                  Approved Golden Samples stay sealed inside tamper-evident protective garment bags in our dedicated reference sample archive room (90-day active Golden Sample retention window upon conversion; extensions are quoted per item from the active storage schedule before renewal). After each comparison, the reference unit is resealed and logged back into the archive.
                 </p>
               </>
             ) : (
@@ -1058,10 +1058,10 @@ export function PublicCategories() {
     },
     {
       title: "Leggings, Pants, Joggers & Shorts",
-      examples: "Activewear leggings, woven trousers, denim, sweatpants, athletic shorts",
+      examples: "Activewear leggings, yoga biker shorts, woven trousers, denim, sweatpants",
       checks: "Relaxed waistband, hip width, front/back rise, inseam, outseam, leg opening & gusset",
       image: "/marketing/category-bottoms-leggings.webp",
-      imageAlt: "Flat-lay inspection of charcoal athletic leggings with waist and inseam measurement landmarks",
+      imageAlt: "Overhead flat-lay inspection of charcoal high-waisted yoga leggings and sage-green yoga biker shorts beside a coiled yellow metric measuring tape",
       diagramId: "bottoms" as const,
       offer: bottomsOffer,
     },

@@ -271,7 +271,7 @@ const PHOTO_EVIDENCE: LightboxItem[] = [
     title: "S-8H2K4A · Front Overview (Heather-Gray Crewneck, Size L)",
     src: "/marketing/report-sample-a-front.webp",
     alt: "Overhead flat-lay front overview of Sample A heather-gray cotton crewneck T-shirt on the QCWarehouse inspection bench",
-    caption: "Mandatory flat front frame linking Sample A to collar neck label hangtag, rib, cuffs, and intake records.",
+    caption: "Mandatory flat front frame linking Sample A to collar rib, cuffs, hem finish, and intake records.",
   },
   {
     code: "FRM-02 · BACK OVERVIEW",

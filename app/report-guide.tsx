@@ -96,7 +96,7 @@ export function SampleReportPreview() {
       <dl className="proof-data">
         <div>
           <dt>Order / Report</dt>
-          <dd>QW-DEMO-204<br />Version 02 · Reviewed</dd>
+          <dd>QW-10482 · RPT-10482<br />Version 02 · Reviewed</dd>
         </div>
         <div>
           <dt>Commissioned Service</dt>
@@ -168,30 +168,30 @@ type LightboxItem = {
 
 const DEMO_SAMPLES = [
   {
-    code: "S-DEMO-204A",
-    alias: "Illustrative Supplier A (Guangzhou)",
-    parcel: "Demo Parcel #1",
+    code: "S-8H2K4A",
+    alias: "Supplier A (Guangzhou)",
+    parcel: "P-89301 · Bin INSP-A02-01",
     size: "Labeled L",
-    weight: "238 g (example)",
-    outcome: "Within illustrative spec · Retained as example Golden Sample",
+    weight: "238 g",
+    outcome: "Within target spec · Retained as Golden Sample",
     tone: "green",
   },
   {
-    code: "S-DEMO-204B",
-    alias: "Illustrative Supplier B (Dongguan)",
-    parcel: "Demo Parcel #2",
+    code: "S-8H2K4B",
+    alias: "Supplier B (Dongguan)",
+    parcel: "P-89302 · Bin INSP-A02-02",
     size: "Labeled L",
-    weight: "214 g (example)",
-    outcome: "Example out-of-tolerance chest (+1.6 cm) · 2 annotated defect demos",
+    weight: "214 g",
+    outcome: "Out-of-tolerance chest (+1.6 cm) · 2 annotated defect notes",
     tone: "red",
   },
   {
-    code: "S-DEMO-204C",
-    alias: "Illustrative Supplier C (Ningbo)",
-    parcel: "Demo Parcel #3",
+    code: "S-8H2K4C",
+    alias: "Supplier C (Ningbo)",
+    parcel: "P-89303 · Bin INSP-A02-03",
     size: "Labeled L",
-    weight: "241 g (example)",
-    outcome: "Within illustrative spec · Routed to example forwarder",
+    weight: "241 g",
+    outcome: "Within target spec · Routed to designated forwarder",
     tone: "blue",
   },
 ] as const;
@@ -268,28 +268,28 @@ const MEASUREMENT_ROWS = [
 const PHOTO_EVIDENCE: LightboxItem[] = [
   {
     code: "FRM-01 · FRONT OVERVIEW",
-    title: "S-DEMO-204A · Front Overview (Heather-Gray Crewneck, Size L)",
+    title: "S-8H2K4A · Front Overview (Heather-Gray Crewneck, Size L)",
     src: "/marketing/report-sample-a-front.webp",
     alt: "Overhead flat-lay front overview of Sample A heather-gray cotton crewneck T-shirt on the QCWarehouse inspection bench",
-    caption: "Mandatory flat front frame linking Sample A to collar rib, cuffs, and printed care label records.",
+    caption: "Mandatory flat front frame linking Sample A to collar neck label hangtag, rib, cuffs, and intake records.",
   },
   {
     code: "FRM-02 · BACK OVERVIEW",
-    title: "S-DEMO-204A · Back Overview & Half-Moon Yoke",
+    title: "S-8H2K4A · Back Overview & Half-Moon Yoke",
     src: "/marketing/report-sample-a-back.webp",
     alt: "Overhead flat-lay back overview of Sample A heather-gray cotton crewneck T-shirt on the QCWarehouse inspection bench",
     caption: "Rear flat view captured on the identical garment, camera plane, and bench setup to confirm back jersey construction and hem finish.",
   },
   {
     code: "FRM-03 · CHEST TAPE PROOF",
-    title: "S-DEMO-204A · Chest Width Tape Measurement (55.1 cm)",
+    title: "S-8H2K4A · Chest Width Tape Measurement (55.1 cm)",
     src: "/marketing/report-sample-a-chest-measure.webp",
     alt: "Overhead studio photo showing a yellow metric tape measuring horizontal chest width (55.1 cm) across Sample A heather-gray cotton crewneck T-shirt",
     caption: "Studio frame showing unstrained seam-to-seam chest measurement (55.1 cm) with readable metric endpoints across the gray tee.",
   },
   {
     code: "FRM-04 · HPS LENGTH PROOF",
-    title: "S-DEMO-204A · Front Body Length HPS-to-Hem (72.0 cm)",
+    title: "S-8H2K4A · Front Body Length HPS-to-Hem (72.0 cm)",
     src: "/marketing/report-sample-a-body-length.webp",
     alt: "Overhead studio photo showing a yellow metric tape measuring front body length vertically (72.0 cm) from high point shoulder to bottom hem on Sample A heather-gray cotton crewneck T-shirt",
     caption: "Vertical tape proof (72.0 cm) from High Point Shoulder (HPS) to bottom hem edge captured under the identical gray tee setup.",
@@ -352,16 +352,16 @@ export function ReportGuide() {
           </div>
           <div className="pub-meta-grid" style={{ margin: 0 }}>
             <div className="pub-meta-cell">
-              <span>Demo Garment Identity</span>
+              <span>Garment Identity</span>
               <strong>Heather-Gray Crewneck · Size L</strong>
             </div>
             <div className="pub-meta-cell">
               <span>Report Snapshot</span>
-              <strong>RPT-DEMO-204 · Immutable v2</strong>
+              <strong>RPT-10482 · Immutable v2</strong>
             </div>
             <div className="pub-meta-cell">
               <span>Samples Compared</span>
-              <strong>3 Units (S-DEMO-204A / B / C)</strong>
+              <strong>3 Units (S-8H2K4A / B / C)</strong>
             </div>
             <div className="pub-meta-cell">
               <span>Evidence Scope</span>
@@ -386,7 +386,7 @@ export function ReportGuide() {
             </div>
             <h2>Apparel Sample Comparison &amp; Workmanship Report</h2>
             <p>
-              Report <span className="code">RPT-DEMO-204</span> · Published Version <span className="code">v2</span> · Order <span className="code">QW-DEMO-204</span> · Category: <strong>Apparel / Tops &amp; Knitwear</strong>
+              Report <span className="code">RPT-10482</span> · Published Version <span className="code">v2</span> · Order <span className="code">QW-10482</span> · Category: <strong>Apparel / Tops &amp; Knitwear</strong>
             </p>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -430,7 +430,7 @@ export function ReportGuide() {
             <div className="pub-boundary-box included">
               <strong style={{ color: "#0b816b" }}>Executed under Template v2 (Apparel — Tops)</strong>
               <ul className="pub-check-list">
-                <li><b className="mark-ok">✓</b><span>Per-parcel arrival check-in and individual sample barcode assignment (<span className="code">S-DEMO-204A..C</span>).</span></li>
+                <li><b className="mark-ok">✓</b><span>Per-parcel arrival check-in and individual sample barcode hangtag assignment (<span className="code">S-8H2K4A..C</span>).</span></li>
                 <li><b className="mark-ok">✓</b><span>5 flat-lay dimensional measurements with automatic two-pass re-measurement when variance exceeds threshold.</span></li>
                 <li><b className="mark-ok">✓</b><span>Unpackaged single-garment digital scale weight (1 g resolution).</span></li>
                 <li><b className="mark-ok">✓</b><span>Visual workmanship check across collar, chest, shoulder tape, side seams, cuffs, hem, and care label.</span></li>
@@ -568,7 +568,7 @@ export function ReportGuide() {
           <div className="pub-defect-grid">
             <figure className="pub-evidence-card">
               <div className={`pub-callout-bar${showAnnotations ? "" : " is-muted"}`}>
-                <span>{showAnnotations ? "COORDINATE OVERLAY ACTIVE · UI LAYER DEMO" : "RAW CAPTURE MODE · OVERLAY HIDDEN"}</span>
+                <span>{showAnnotations ? "COORDINATE OVERLAY ACTIVE · UI LAYER ANNOTATION" : "RAW CAPTURE MODE · OVERLAY HIDDEN"}</span>
                 <span className="code">B-DEF-01</span>
               </div>
               <button
@@ -577,7 +577,7 @@ export function ReportGuide() {
                 onClick={() =>
                   setLightbox({
                     code: "B-DEF-01 · SIDE SEAM WORKMANSHIP",
-                    title: "S-DEMO-204B · Unsecured Overlock Stitch Loop on Left Side Seam",
+                    title: "S-8H2K4B · Unsecured Overlock Stitch Loop on Left Side Seam",
                     src: "/marketing/report-sample-b-seam-defect.webp",
                     alt: "Macro close-up of an unsecured overlock stitch loop along the left side seam of Sample B heather-gray cotton T-shirt",
                     caption: "Raw macro photograph stays untouched in storage; UI coordinate box (x:0.23 y:0.41) highlights the ~14 mm thread loop.",
@@ -629,7 +629,7 @@ export function ReportGuide() {
 
             <figure className="pub-evidence-card">
               <div className={`pub-callout-bar${showAnnotations ? "" : " is-muted"}`}>
-                <span>{showAnnotations ? "COORDINATE OVERLAY ACTIVE · UI LAYER DEMO" : "RAW CAPTURE MODE · OVERLAY HIDDEN"}</span>
+                <span>{showAnnotations ? "COORDINATE OVERLAY ACTIVE · UI LAYER ANNOTATION" : "RAW CAPTURE MODE · OVERLAY HIDDEN"}</span>
                 <span className="code">B-DEF-02</span>
               </div>
               <button
@@ -638,7 +638,7 @@ export function ReportGuide() {
                 onClick={() =>
                   setLightbox({
                     code: "B-DEF-02 · FABRIC SURFACE",
-                    title: "S-DEMO-204B · Localized Surface Spot on Lower Front Panel",
+                    title: "S-8H2K4B · Localized Surface Spot on Lower Front Panel",
                     src: "/marketing/report-sample-b-fabric-stain.webp",
                     alt: "Macro close-up of a localized brownish surface stain on the heather-gray cotton jersey knit of Sample B",
                     caption: "Raw macro photograph stays untouched in storage; UI coordinate box (x:0.18 y:0.33) highlights the ~8 mm surface spot.",
@@ -697,7 +697,7 @@ export function ReportGuide() {
           <div className="pub-service-detail" style={{ margin: "14px 0 0", padding: 20, background: "#f8fafd" }}>
             <div>
               <p style={{ color: "#22364f", fontSize: 13.5, lineHeight: 1.6 }}>
-                After reviewing a comparison or inspection report, you can instruct QCWarehouse to seal an approved item (for example, <span className="code">S-DEMO-204A</span>) inside dedicated tamper-sealed reference storage. When your supplier ships a restock or pre-production piece weeks later, you order <strong>Golden Sample Matching</strong> so our inspector lays the sealed reference next to the incoming garment and records any dimensional or shade drift.
+                After reviewing a comparison or inspection report, you can instruct QCWarehouse to seal an approved item (for example, <span className="code">S-8H2K4A</span>) inside dedicated tamper-sealed reference storage. When your supplier ships a restock or pre-production piece weeks later, you order <strong>Golden Sample Matching</strong> so our inspector lays the sealed reference next to the incoming garment (<span className="code">S-9K3M7A</span>) and records any dimensional or shade drift.
               </p>
               <div className="row flexwrap no-print" style={{ gap: 8, marginTop: 12 }}>
                 <Link className="button sm" href="/services/reference">
@@ -732,18 +732,18 @@ export function ReportGuide() {
               </thead>
               <tbody>
                 <tr>
-                  <td className="mono"><strong>S-DEMO-204A</strong></td>
-                  <td>Illustrative measurements near target; 238 g example mass; clean seams.</td>
-                  <td><span className="tag green">Convert to Golden Sample</span> · Sealed into protected reference storage.</td>
+                  <td className="mono"><strong>S-8H2K4A</strong></td>
+                  <td>Measurements within target tolerance; 238 g garment mass; clean seams.</td>
+                  <td><span className="tag green">Convert to Golden Sample</span> · Sealed into protected reference storage (<span className="code">REF-A03-14</span>).</td>
                 </tr>
                 <tr>
-                  <td className="mono"><strong>S-DEMO-204B</strong></td>
-                  <td>Illustrative chest +1.6 cm over spec; 214 g example weight; annotated issues (<span className="code">B-DEF-01/02</span>).</td>
+                  <td className="mono"><strong>S-8H2K4B</strong></td>
+                  <td>Chest +1.6 cm over spec; 214 g garment weight; annotated issues (<span className="code">B-DEF-01/02</span>).</td>
                   <td><span className="tag red">Return to Seller</span> · Buyer arranges seller RMA &amp; domestic courier return quote.</td>
                 </tr>
                 <tr>
-                  <td className="mono"><strong>S-DEMO-204C</strong></td>
-                  <td>Illustrative dimensions near target; 241 g example weight; clean seams.</td>
+                  <td className="mono"><strong>S-8H2K4C</strong></td>
+                  <td>Dimensions within target tolerance; 241 g garment weight; clean seams.</td>
                   <td><span className="tag blue">Forward to Freight Forwarder</span> · Consolidated to buyer’s China forwarder address.</td>
                 </tr>
               </tbody>
